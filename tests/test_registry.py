@@ -1,37 +1,35 @@
-from canopy.registry import RegistryEntry, matched_by_workspace, merge_registry
+from canopy.ancestry import Surface
+from canopy.registry import RegistryEntry, merge_registry
 
 
-def _entry(pid: int, kind: str = "pi", tracked: bool = False, workspace_ids: list[str] | None = None) -> RegistryEntry:
-    return RegistryEntry(
-        pid=pid, kind=kind, tty="ttys000", cwd="/x", tracked=tracked, workspace_ids=workspace_ids or []
-    )
+def _entry(pid: int, kind: str = "pi", surface: Surface = Surface.GHOSTTY, state: str = "idle") -> RegistryEntry:
+    return RegistryEntry(pid=pid, kind=kind, tty="s000", cwd="/x", surface=surface, state=state)
 
 
-def test_merge_registry_keeps_a_still_present_entry_and_resets_misses():
-    previous = [_entry(1)]
+def test_merge_registry_prefers_the_fresh_copy_of_a_still_present_entry():
+    previous = [_entry(1, state="idle")]
     previous[0].misses = 1
-    fresh = [_entry(1)]
+    fresh = [_entry(1, state="working")]
 
     merged = merge_registry(previous, fresh)
 
     assert len(merged) == 1
+    assert merged[0].state == "working"
     assert merged[0].misses == 0
-    assert merged[0].stale is False
 
 
-def test_merge_registry_marks_a_missing_entry_stale_before_dropping_it():
+def test_merge_registry_keeps_a_missing_entry_within_the_debounce_window():
     previous = [_entry(1)]
 
     merged = merge_registry(previous, [])
 
     assert len(merged) == 1
-    assert merged[0].stale is True
     assert merged[0].misses == 1
 
 
-def test_merge_registry_drops_an_entry_after_the_debounce_window():
+def test_merge_registry_drops_an_entry_once_past_the_debounce_window():
     previous = [_entry(1)]
-    previous[0].misses = 1  # already missed once
+    previous[0].misses = 1  # already missed once, at MISS_LIMIT
 
     merged = merge_registry(previous, [])
 
@@ -41,44 +39,12 @@ def test_merge_registry_drops_an_entry_after_the_debounce_window():
 def test_merge_registry_adds_a_newly_seen_entry():
     merged = merge_registry([], [_entry(2)])
     assert [e.pid for e in merged] == [2]
-    assert merged[0].misses == 0
 
 
-def test_merge_registry_preserves_first_seen_across_polls():
-    previous = [_entry(1)]
-    previous[0].first_seen = 100.0
-    fresh = [_entry(1)]
-    fresh[0].first_seen = 999.0  # would be wrong if not overwritten by the merge
-
-    merged = merge_registry(previous, fresh)
-
-    assert merged[0].first_seen == 100.0
-
-
-def test_matched_by_workspace_ignores_tracked_and_stale_entries():
-    entries = [
-        _entry(1, tracked=True, workspace_ids=["wA"]),
-        _entry(2, workspace_ids=["wB"]),
-        _entry(3, workspace_ids=["wB"]),
-    ]
-    entries[1].stale = True
-
-    result = matched_by_workspace(entries)
-
-    assert result == {"wB": {"pi"}}
-
-
-def test_matched_by_workspace_groups_multiple_kinds_per_workspace():
-    entries = [
-        _entry(1, kind="pi", workspace_ids=["wA"]),
-        _entry(2, kind="claude", workspace_ids=["wA"]),
-    ]
-
-    result = matched_by_workspace(entries)
-
-    assert result == {"wA": {"pi", "claude"}}
-
-
-def test_matched_by_workspace_ignores_unmatched_entries():
-    result = matched_by_workspace([_entry(1, workspace_ids=[])])
-    assert result == {}
+def test_registry_entry_key_disambiguates_same_pid_different_kind():
+    # pids get reused by the OS; scoping the key by kind too avoids two
+    # genuinely different processes colliding if a pid is recycled
+    # between polls faster than the debounce window notices.
+    a = _entry(1, kind="pi")
+    b = _entry(1, kind="claude")
+    assert a.key != b.key

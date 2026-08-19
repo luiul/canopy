@@ -1,7 +1,9 @@
 from canopy.scan import (
     SECOND_TOKEN_DENYLIST,
+    ProcessInfo,
     ProcessMatch,
     parse_lsof_cwd_output,
+    parse_process_table_output,
     parse_ps_output,
 )
 
@@ -51,3 +53,29 @@ def test_parse_lsof_cwd_output_pairs_pid_and_path():
 
 def test_parse_lsof_cwd_output_empty_input():
     assert parse_lsof_cwd_output("") == {}
+
+
+def test_parse_process_table_output_parses_pid_ppid_pcpu_tty_comm():
+    output = "56621   53610   3.2 s017 /Users/luis.aceituno/.local/bin/pi\n"
+    table = parse_process_table_output(output)
+    assert table[56621] == ProcessInfo(
+        pid=56621, ppid=53610, pcpu=3.2, tty="s017", comm="/Users/luis.aceituno/.local/bin/pi"
+    )
+
+
+def test_parse_process_table_output_preserves_spaces_in_comm():
+    # macOS `comm` is the full executable path, and paths like VS Code's
+    # helper processes contain literal spaces; comm must stay the last,
+    # greedily-parsed column or this truncates.
+    output = (
+        "52562 1350 0.5 ?? /Applications/Visual Studio Code.app/Contents/Frameworks/"
+        "Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer) --type=renderer\n"
+    )
+    table = parse_process_table_output(output)
+    assert table[52562].comm.endswith("Code Helper (Renderer) --type=renderer")
+
+
+def test_parse_process_table_output_skips_malformed_lines():
+    output = "\nnot enough fields\n1 0 0.0 ?? launchd\n"
+    table = parse_process_table_output(output)
+    assert list(table) == [1]

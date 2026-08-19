@@ -119,3 +119,62 @@ def resolve_cwds(pids: list[int]) -> dict[int, str]:
     if proc.returncode != 0:
         return {}
     return parse_lsof_cwd_output(proc.stdout)
+
+
+@dataclass(frozen=True)
+class ProcessInfo:
+    """One row of the whole-machine process table: enough to walk an
+    ancestor chain (`ppid`, `comm`) and to sample CPU usage (`pcpu`) for
+    the idle/working heuristic used on processes herdr doesn't track.
+    `tty` is only needed to find which OS terminal window is currently
+    running an attached `herdr` client, for `canopy.jump`'s herdr case.
+    """
+
+    pid: int
+    ppid: int
+    pcpu: float
+    tty: str
+    comm: str
+
+
+def parse_process_table_output(output: str) -> dict[int, ProcessInfo]:
+    """Pure parsing logic for `ps -A -o pid=,ppid=,pcpu=,tty=,comm=`
+    output. `comm` is the full executable path on macOS and is always
+    last, so it is parsed greedily: paths like `.../Code Helper
+    (Plugin).app/.../Code Helper (Plugin)` contain spaces and would
+    otherwise be truncated. `comm` is what makes ancestor-chain surface
+    detection (`canopy.ancestry`) possible: an agent under VS Code's
+    integrated terminal has a `Code Helper` (under `.../Visual Studio
+    Code.app/...`) a couple of hops up; one under a bare Ghostty tab has
+    `ghostty` (under `.../Ghostty.app/...`) instead.
+    """
+    table: dict[int, ProcessInfo] = {}
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 4)
+        if len(parts) < 5:
+            continue
+        pid_str, ppid_str, pcpu_str, tty, comm = parts
+        try:
+            pid, ppid, pcpu = int(pid_str), int(ppid_str), float(pcpu_str)
+        except ValueError:
+            continue
+        table[pid] = ProcessInfo(pid=pid, ppid=ppid, pcpu=pcpu, tty=tty, comm=comm)
+    return table
+
+
+def scan_process_table() -> dict[int, ProcessInfo]:
+    """One whole-machine snapshot, reused for both ancestry classification
+    and CPU-based state sampling so a poll only shells out to `ps` twice
+    total (once filtered for agent kinds, once for everything).
+    """
+    proc = subprocess.run(
+        ["ps", "-A", "-o", "pid=,ppid=,pcpu=,tty=,comm="],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return {}
+    return parse_process_table_output(proc.stdout)

@@ -1,21 +1,29 @@
-"""Build and persist the agent registry: every known-kind process, split
-into tracked (already visible in herdr's own Agents section) vs external
-(the gap canopy exists to surface), matched to herdr workspaces by
-git-worktree-aware repo identity, with a debounce window so one bad `ps`/
-`lsof` snapshot doesn't flicker an entry in and out.
+"""In-memory model of every known-kind agent process on the machine right
+now: which app surface is actually hosting it (herdr / VS Code / a bare
+Ghostty tab / unknown), and its state (herdr's own idle/working/blocked
+/done/unknown for a pane it tracks, a CPU-delta idle/working heuristic
+for anything it doesn't).
+
+No file is written here, canopy holds this only for as long as its own
+process (the Textual app) is running; there is no background daemon, no
+LaunchAgent, and nothing is reported back into herdr. `poll_once` is
+meant to be called on a timer from `canopy.cli`.
 """
 
 from __future__ import annotations
 
-import json
-import time
-from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any
 
-from canopy import herdr, repo, scan
+from canopy import herdr
+from canopy.ancestry import Surface, classify_surface
+from canopy.scan import ProcessMatch, resolve_cwds, scan_agent_processes, scan_process_table
+from canopy.state import classify_state
 
-MISS_LIMIT = 2  # consecutive misses before an entry is dropped
+# How many consecutive missed polls a row survives before being dropped.
+# Smooths over a single transient `ps`/herdr hiccup instead of a row
+# flickering away and back while someone is about to press Enter on it.
+MISS_LIMIT = 1
 
 
 @dataclass
@@ -24,146 +32,118 @@ class RegistryEntry:
     kind: str
     tty: str
     cwd: str | None
-    tracked: bool
-    workspace_ids: list[str] = field(default_factory=list)
-    first_seen: float = 0.0
-    last_seen: float = 0.0
-    misses: int = 0
-    stale: bool = False
+    surface: Surface
+    state: str
+    workspace_id: str | None = None
+    tab_id: str | None = None
+    pane_id: str | None = None
+    misses: int = field(default=0, compare=False)
 
     @property
     def key(self) -> str:
         return f"{self.pid}:{self.kind}"
 
 
-def herdr_tracked_pids() -> tuple[set[int], list[dict[str, Any]]]:
-    """Pids herdr already has under management (visible in its Agents
-    section today), plus the raw pane list, so callers don't have to fetch
-    it twice.
+def _herdr_entries() -> tuple[set[int], list[RegistryEntry]]:
+    """Panes herdr already tracks: build rows straight from herdr's own
+    data (its `agent_status` is authoritative there) and the pids to
+    exclude from the plain `ps` scan below, so nothing is listed twice.
     """
-    panes = herdr.pane_list()
-    tracked: set[int] = set()
-    for pane in panes:
-        info = herdr.pane_process_info(pane["pane_id"])
-        if not info:
+    tracked_pids: set[int] = set()
+    entries: list[RegistryEntry] = []
+    for pane in herdr.pane_list():
+        agent_kind = pane.get("agent")
+        pane_id = pane.get("pane_id")
+        if not agent_kind or not pane_id:
             continue
-        shell_pid = info.get("shell_pid")
-        if shell_pid:
-            tracked.add(shell_pid)
-        for proc in info.get("foreground_processes", []):
-            if proc.get("pid"):
-                tracked.add(proc["pid"])
-    return tracked, panes
-
-
-def build_workspace_identity_map(panes: list[dict[str, Any]]) -> dict[Path, set[str]]:
-    """identity -> set(workspace_id), from every pane's own cwd."""
-    identity_map: dict[Path, set[str]] = {}
-    for pane in panes:
-        cwd = pane.get("cwd")
-        workspace_id = pane.get("workspace_id")
-        if not cwd or not workspace_id:
+        info = herdr.pane_process_info(pane_id)
+        fg_pid = info.get("foreground_process_group_id") if info else None
+        if fg_pid is None:
             continue
-        identity = repo.repo_identity(cwd)
-        identity_map.setdefault(identity, set()).add(workspace_id)
-    return identity_map
+        tracked_pids.add(fg_pid)
+        entries.append(
+            RegistryEntry(
+                pid=fg_pid,
+                kind=agent_kind,
+                tty="",
+                cwd=pane.get("cwd"),
+                surface=Surface.HERDR,
+                state=pane.get("agent_status") or "unknown",
+                workspace_id=pane.get("workspace_id"),
+                tab_id=pane.get("tab_id"),
+                pane_id=pane_id,
+            )
+        )
+    return tracked_pids, entries
 
 
-def merge_registry(previous: list[RegistryEntry], fresh: list[RegistryEntry]) -> list[RegistryEntry]:
-    """Debounced merge: an entry missing from `fresh` survives up to
-    MISS_LIMIT - 1 extra polls (marked stale) before it's dropped, so a
-    single missed `ps`/`lsof` read doesn't flicker it out of the registry
-    or the workspace badge it may be backing.
+def _external_entries(matches: list[ProcessMatch], exclude_pids: set[int]) -> list[RegistryEntry]:
+    """Every scanned agent process herdr doesn't already track: classify
+    which app surface hosts it and estimate idle/working from CPU usage,
+    since there's no pty here for canopy to read a real status from.
     """
-    now = time.time()
-    fresh_by_key = {e.key: e for e in fresh}
-    merged: dict[str, RegistryEntry] = {}
+    candidates = [m for m in matches if m.pid not in exclude_pids]
+    if not candidates:
+        return []
 
-    for prev in previous:
-        current = fresh_by_key.pop(prev.key, None)
-        if current is not None:
-            current.first_seen = prev.first_seen
-            current.misses = 0
-            merged[prev.key] = current
-        else:
-            misses = prev.misses + 1
-            if misses < MISS_LIMIT:
-                prev.misses = misses
-                prev.stale = True
-                merged[prev.key] = prev
-            # else: dropped, exceeded the debounce window
+    table = scan_process_table()
+    cwd_by_pid = resolve_cwds([m.pid for m in candidates])
 
-    for key, entry in fresh_by_key.items():
-        entry.first_seen = now
-        entry.misses = 0
-        merged[key] = entry
-
-    return list(merged.values())
-
-
-def poll_once(user: str, previous: list[RegistryEntry]) -> list[RegistryEntry]:
-    """One full scan-match-debounce cycle. Pure aside from the subprocess
-    calls inside `scan`/`herdr`/`repo`.
-    """
-    now = time.time()
-    matches = scan.scan_agent_processes(user)
-    cwd_by_pid = scan.resolve_cwds([m.pid for m in matches])
-    tracked_pids, panes = herdr_tracked_pids()
-    identity_map = build_workspace_identity_map(panes)
-
-    fresh: list[RegistryEntry] = []
-    for m in matches:
-        cwd = cwd_by_pid.get(m.pid)
-        is_tracked = m.pid in tracked_pids
-        workspace_ids: list[str] = []
-        if not is_tracked and cwd:
-            identity = repo.repo_identity(cwd)
-            workspace_ids = sorted(identity_map.get(identity, set()))
-        fresh.append(
+    entries: list[RegistryEntry] = []
+    for m in candidates:
+        surface = classify_surface(m.pid, table, herdr_tracked=False)
+        pcpu = table[m.pid].pcpu if m.pid in table else None
+        entries.append(
             RegistryEntry(
                 pid=m.pid,
                 kind=m.kind,
                 tty=m.tty,
-                cwd=cwd,
-                tracked=is_tracked,
-                workspace_ids=workspace_ids,
-                last_seen=now,
+                cwd=cwd_by_pid.get(m.pid),
+                surface=surface,
+                state=classify_state(pcpu).value,
             )
         )
+    return entries
 
-    return merge_registry(previous, fresh)
+
+def merge_registry(previous: list[RegistryEntry], fresh: list[RegistryEntry]) -> list[RegistryEntry]:
+    fresh_by_key = {e.key: e for e in fresh}
+    merged: list[RegistryEntry] = []
+
+    for prev in previous:
+        if prev.key in fresh_by_key:
+            continue  # fresh entry for this key is added below, in fresh's own order
+        prev.misses += 1
+        if prev.misses <= MISS_LIMIT:
+            merged.append(prev)
+
+    merged.extend(fresh)
+    return merged
 
 
-def matched_by_workspace(entries: list[RegistryEntry]) -> dict[str, set[str]]:
-    """workspace_id -> set(kind), for entries that are external, currently
-    seen (not stale), and matched to at least one workspace. Only these
-    are worth a badge; tracked agents are already visible natively, and a
-    stale entry shouldn't refresh a badge it may be about to lose.
+def poll_once(user: str, previous: list[RegistryEntry]) -> list[RegistryEntry]:
+    tracked_pids, herdr_rows = _herdr_entries()
+    matches = scan_agent_processes(user)
+    external_rows = _external_entries(matches, tracked_pids)
+    return merge_registry(previous, herdr_rows + external_rows)
+
+
+def to_jsonable(entries: list[RegistryEntry]) -> list[dict[str, Any]]:
+    """Debug/test helper: plain dicts, `Surface` unwrapped to its string
+    value so this round-trips through `json.dumps` without a custom
+    encoder.
     """
-    result: dict[str, set[str]] = {}
-    for entry in entries:
-        if entry.tracked or entry.stale:
-            continue
-        for workspace_id in entry.workspace_ids:
-            result.setdefault(workspace_id, set()).add(entry.kind)
-    return result
-
-
-def load_registry(path: Path) -> list[RegistryEntry]:
-    try:
-        raw = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return []
-    return [RegistryEntry(**e) for e in raw.get("entries", [])]
-
-
-def save_registry(path: Path, entries: list[RegistryEntry], *, poll_interval_s: float, dry_run: bool) -> None:
-    payload = {
-        "generated_at": time.time(),
-        "poll_interval_s": poll_interval_s,
-        "dry_run": dry_run,
-        "entries": [asdict(e) for e in entries],
-    }
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2))
-    tmp.replace(path)
+    return [
+        {
+            "pid": e.pid,
+            "kind": e.kind,
+            "tty": e.tty,
+            "cwd": e.cwd,
+            "surface": e.surface.value,
+            "state": e.state,
+            "workspace_id": e.workspace_id,
+            "tab_id": e.tab_id,
+            "pane_id": e.pane_id,
+        }
+        for e in entries
+    ]

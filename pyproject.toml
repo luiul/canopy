@@ -1,7 +1,7 @@
 [project]
 name = "canopy"
 version = "0.1.0"
-description = "Read-only visibility into agent CLI sessions running outside herdr"
+description = "Interactive dashboard for every agent CLI session on this machine, with jump-to-window"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -19,7 +19,11 @@ classifiers = [
     "Topic :: Software Development :: Version Control :: Git",
     "Typing :: Typed",
 ]
-dependencies = ["typer>=0.12", "rich>=13"]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13",
+    "textual>=8.2.8",
+]
 
 [project.urls]
 Repository = "https://github.com/luiul/canopy"
