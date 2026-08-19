@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 )
 
 func TestParsePsOutputMatchesKnownKindWithTty(t *testing.T) {
@@ -73,9 +74,9 @@ func TestParseLsofCwdOutputEmptyInput(t *testing.T) {
 }
 
 func TestParseProcessTableOutputParsesPidPpidPcpuTtyComm(t *testing.T) {
-	out := "56621   53610   3.2 s017 /Users/luis.aceituno/.local/bin/pi\n"
+	out := "56621   53610   3.2 s017 14:28.08 /Users/luis.aceituno/.local/bin/pi\n"
 	table := ParseProcessTableOutput(out)
-	want := ProcessInfo{Pid: 56621, Ppid: 53610, Pcpu: 3.2, Tty: "s017", Comm: "/Users/luis.aceituno/.local/bin/pi"}
+	want := ProcessInfo{Pid: 56621, Ppid: 53610, Pcpu: 3.2, CPUTime: 14*time.Minute + 28*time.Second + 80*time.Millisecond, Tty: "s017", Comm: "/Users/luis.aceituno/.local/bin/pi"}
 	if got := table[56621]; got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
@@ -85,7 +86,7 @@ func TestParseProcessTableOutputPreservesSpacesInComm(t *testing.T) {
 	// macOS `comm` is the full executable path, and paths like VS Code's
 	// helper processes contain literal spaces; comm must stay the last,
 	// greedily-parsed column or this truncates.
-	out := "52562 1350 0.5 ?? /Applications/Visual Studio Code.app/Contents/Frameworks/" +
+	out := "52562 1350 0.5 ?? 0:00.00 /Applications/Visual Studio Code.app/Contents/Frameworks/" +
 		"Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer) --type=renderer\n"
 	table := ParseProcessTableOutput(out)
 	got := table[52562].Comm
@@ -96,12 +97,44 @@ func TestParseProcessTableOutputPreservesSpacesInComm(t *testing.T) {
 }
 
 func TestParseProcessTableOutputSkipsMalformedLines(t *testing.T) {
-	out := "\nnot enough fields\n1 0 0.0 ?? launchd\n"
+	out := "\nnot enough fields\n1 0 0.0 ?? 0:00.01 launchd\n"
 	table := ParseProcessTableOutput(out)
 	if len(table) != 1 {
 		t.Fatalf("got %+v, want only pid 1", table)
 	}
 	if _, ok := table[1]; !ok {
 		t.Fatalf("missing pid 1 in %+v", table)
+	}
+}
+
+func TestParsePsCPUTime(t *testing.T) {
+	cases := []struct {
+		in   string
+		want time.Duration
+	}{
+		{"0:00.00", 0},
+		{"0:00.01", 10 * time.Millisecond},
+		{"14:28.08", 14*time.Minute + 28*time.Second + 80*time.Millisecond},
+		// macOS never rolls a long-running process's cputime over into an
+		// hours component; minutes just keep growing.
+		{"1876:29.89", 1876*time.Minute + 29*time.Second + 890*time.Millisecond},
+		// tolerated in case some other ps ever does format it this way.
+		{"1:02:03.50", time.Hour + 2*time.Minute + 3*time.Second + 500*time.Millisecond},
+	}
+	for _, c := range cases {
+		got, err := parsePsCPUTime(c.in)
+		if err != nil {
+			t.Errorf("parsePsCPUTime(%q) error: %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("parsePsCPUTime(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+
+	for _, bad := range []string{"", "abc", "1:2:3:4"} {
+		if _, err := parsePsCPUTime(bad); err == nil {
+			t.Errorf("parsePsCPUTime(%q): want an error, got none", bad)
+		}
 	}
 }

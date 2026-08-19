@@ -7,10 +7,12 @@
 package scan
 
 import (
+	"fmt"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // KnownKinds is kept in sync with `herdr agent start --help`'s `--kind`
@@ -134,16 +136,54 @@ func ResolveCwds(pids []int) map[int]string {
 }
 
 // ProcessInfo is one row of the whole-machine process table: enough to walk
-// an ancestor chain (Ppid, Comm) and to sample CPU usage (Pcpu) for the
-// idle/working heuristic used on processes herdr doesn't track. Tty is only
-// needed to find which OS terminal window is currently running an attached
-// `herdr` client, for canopy's jump package's herdr case.
+// an ancestor chain (Ppid, Comm), to sample instantaneous CPU usage (Pcpu)
+// for a brand new process canopy has no prior sample for yet, and to
+// compute a poll-to-poll CPU delta (CPUTime) for everything else, since
+// Pcpu itself is a decaying average macOS computes over up to a minute of
+// real time and lags well behind a process actually going idle (see
+// registry.refineExternalStates). Tty is only needed to find which OS
+// terminal window is currently running an attached `herdr` client, for
+// canopy's jump package's herdr case.
 type ProcessInfo struct {
-	Pid  int
-	Ppid int
-	Pcpu float64
-	Tty  string
-	Comm string
+	Pid     int
+	Ppid    int
+	Pcpu    float64
+	CPUTime time.Duration
+	Tty     string
+	Comm    string
+}
+
+// parsePsCPUTime parses ps's "time"/"cputime" field: on macOS this is
+// M+:SS.ss with unbounded minutes (a long-running process reads e.g.
+// "1876:29.89", never rolling over into an hours component), but this
+// tolerates an optional leading hours component too (H:MM:SS.ss) in case a
+// different ps implementation ever formats it that way. The last
+// colon-separated part is seconds (with an optional fractional part);
+// anything before it is minutes, then hours.
+func parsePsCPUTime(s string) (time.Duration, error) {
+	parts := strings.Split(strings.TrimSpace(s), ":")
+	if len(parts) == 0 || len(parts) > 3 {
+		return 0, fmt.Errorf("unrecognized ps time format %q", s)
+	}
+	seconds, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+	if err != nil {
+		return 0, err
+	}
+	var hours, minutes int
+	switch len(parts) {
+	case 2:
+		if minutes, err = strconv.Atoi(parts[0]); err != nil {
+			return 0, err
+		}
+	case 3:
+		if hours, err = strconv.Atoi(parts[0]); err != nil {
+			return 0, err
+		}
+		if minutes, err = strconv.Atoi(parts[1]); err != nil {
+			return 0, err
+		}
+	}
+	return time.Duration(hours)*time.Hour + time.Duration(minutes)*time.Minute + time.Duration(seconds*float64(time.Second)), nil
 }
 
 // pySplitN mimics Python's str.split(sep=None, maxsplit=n): runs of
@@ -175,14 +215,14 @@ func pySplitN(s string, maxSplit int) []string {
 }
 
 // ParseProcessTableOutput is the pure parsing logic for
-// `ps -A -o pid=,ppid=,pcpu=,tty=,comm=` output. comm is the full executable
-// path on macOS and is always last, so it is parsed greedily: paths like
-// `.../Code Helper (Plugin).app/.../Code Helper (Plugin)` contain spaces and
-// would otherwise be truncated. comm is what makes ancestor-chain surface
-// detection possible: an agent under VS Code's integrated terminal has a
-// `Code Helper` (under `.../Visual Studio Code.app/...`) a couple of hops
-// up; one under a bare Ghostty tab has `ghostty` (under
-// `.../Ghostty.app/...`) instead.
+// `ps -A -o pid=,ppid=,pcpu=,tty=,time=,comm=` output. comm is the full
+// executable path on macOS and is always last, so it is parsed greedily:
+// paths like `.../Code Helper (Plugin).app/.../Code Helper (Plugin)`
+// contain spaces and would otherwise be truncated. comm is what makes
+// ancestor-chain surface detection possible: an agent under VS Code's
+// integrated terminal has a `Code Helper` (under
+// `.../Visual Studio Code.app/...`) a couple of hops up; one under a bare
+// Ghostty tab has `ghostty` (under `.../Ghostty.app/...`) instead.
 func ParseProcessTableOutput(output string) map[int]ProcessInfo {
 	table := map[int]ProcessInfo{}
 	for _, rawLine := range strings.Split(output, "\n") {
@@ -190,18 +230,19 @@ func ParseProcessTableOutput(output string) map[int]ProcessInfo {
 		if line == "" {
 			continue
 		}
-		parts := pySplitN(line, 4)
-		if len(parts) < 5 {
+		parts := pySplitN(line, 5)
+		if len(parts) < 6 {
 			continue
 		}
-		pidStr, ppidStr, pcpuStr, tty, comm := parts[0], parts[1], parts[2], parts[3], parts[4]
+		pidStr, ppidStr, pcpuStr, tty, timeStr, comm := parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
 		pid, err1 := strconv.Atoi(pidStr)
 		ppid, err2 := strconv.Atoi(ppidStr)
 		pcpu, err3 := strconv.ParseFloat(pcpuStr, 64)
-		if err1 != nil || err2 != nil || err3 != nil {
+		cpuTime, err4 := parsePsCPUTime(timeStr)
+		if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
 			continue
 		}
-		table[pid] = ProcessInfo{Pid: pid, Ppid: ppid, Pcpu: pcpu, Tty: tty, Comm: comm}
+		table[pid] = ProcessInfo{Pid: pid, Ppid: ppid, Pcpu: pcpu, CPUTime: cpuTime, Tty: tty, Comm: comm}
 	}
 	return table
 }
@@ -211,7 +252,7 @@ func ParseProcessTableOutput(output string) map[int]ProcessInfo {
 // out to `ps` twice total (once filtered for agent kinds, once for
 // everything).
 func ScanProcessTable() map[int]ProcessInfo {
-	out, err := exec.Command("ps", "-A", "-o", "pid=,ppid=,pcpu=,tty=,comm=").Output()
+	out, err := exec.Command("ps", "-A", "-o", "pid=,ppid=,pcpu=,tty=,time=,comm=").Output()
 	if err != nil {
 		return map[int]ProcessInfo{}
 	}

@@ -39,3 +39,21 @@ func TestAgentStateValuesArePlainStringsForDisplay(t *testing.T) {
 		t.Fatalf("got %q", Unknown)
 	}
 }
+
+func TestClassifyStateFromRateWorkingAtOrAboveThreshold(t *testing.T) {
+	if got := ClassifyStateFromRate(5.0, 1.5); got != Working {
+		t.Fatalf("got %v, want Working", got)
+	}
+	if got := ClassifyStateFromRate(1.5, 1.5); got != Working {
+		t.Fatalf("got %v, want Working", got)
+	}
+}
+
+func TestClassifyStateFromRateIdleBelowThreshold(t *testing.T) {
+	if got := ClassifyStateFromRate(0.0, 1.5); got != Idle {
+		t.Fatalf("got %v, want Idle", got)
+	}
+	if got := ClassifyStateFromRate(1.4, 1.5); got != Idle {
+		t.Fatalf("got %v, want Idle", got)
+	}
+}

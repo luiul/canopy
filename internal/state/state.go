@@ -3,10 +3,17 @@
 // shell-integration-based, agent_status isn't available for them).
 //
 // There's no pty herdr doesn't already own for canopy to read output from;
-// per-process CPU% deltas across polls are the only signal available from
-// outside the terminal. This is coarser than herdr's own status (it cannot
-// distinguish "idle" from "blocked on user input", both look like ~0% CPU),
-// so both collapse to AgentState Idle here.
+// per-process CPU usage is the only signal available from outside the
+// terminal. macOS's own `ps` %cpu is a decaying average over up to a
+// minute of real time (see `man ps`), so a single sample lags well behind a
+// process actually going idle after a burst of work; ClassifyStateFromRate
+// exists so canopy's registry package can compute its own rate from two
+// poll samples instead, bounded by canopy's own poll interval rather than
+// that ~60s window. ClassifyState (a single raw sample) is only the
+// fallback for a process's first poll, when there's no previous sample yet
+// to diff against. Both are coarser than herdr's own status either way (
+// neither can distinguish "idle" from "blocked on user input", both look
+// like ~0% CPU), so both collapse to AgentState Idle here.
 package state
 
 // DefaultThreshold: a process actively doing agent work (tool calls,
@@ -23,21 +30,32 @@ const (
 	Unknown AgentState = "unknown"
 )
 
-// ClassifyState classifies a single `ps -o pcpu=` sample, i.e. the process's
-// average CPU usage since it started, not an instantaneous rate. That is
-// still a usable signal here because `ps -A` runs on every poll: a process
-// that has been quietly idling for a while has a low, slowly-drifting
-// average, while one mid-generation pulls that average up within a few poll
-// cycles. It is a heuristic, not a measurement of "is it doing something
-// right now": a long-idle process during a brief burst of work may take a
-// couple of polls to cross the threshold, and vice versa on stopping. A nil
-// pcpu means the pid disappeared from the last `ps` snapshot (already gone
-// by the time we sampled).
+// ClassifyState classifies a single `ps -o pcpu=` sample. Used only as the
+// bootstrap fallback, for a process's very first poll, before there's a
+// previous sample to compute a real rate from (see ClassifyStateFromRate
+// and registry.refineExternalStates); a raw macOS %cpu sample is a decaying
+// average over up to a minute of real time, not an instantaneous rate, so
+// relying on it past that first poll is exactly what let a process read as
+// "working" long after it had actually gone idle. A nil pcpu means the pid
+// disappeared from the last `ps` snapshot (already gone by the time we
+// sampled).
 func ClassifyState(pcpu *float64, threshold float64) AgentState {
 	if pcpu == nil {
 		return Unknown
 	}
 	if *pcpu >= threshold {
+		return Working
+	}
+	return Idle
+}
+
+// ClassifyStateFromRate classifies a CPU rate (percent, e.g. 100.0 == one
+// full core saturated) the same threshold-based way ClassifyState does, but
+// for a rate canopy computed itself from two of its own poll samples (see
+// registry.refineExternalStates), rather than a single macOS `ps` %cpu
+// sample.
+func ClassifyStateFromRate(percent, threshold float64) AgentState {
+	if percent >= threshold {
 		return Working
 	}
 	return Idle
