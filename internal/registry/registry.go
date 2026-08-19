@@ -1,8 +1,11 @@
 // Package registry holds the in-memory model of every known-kind agent
 // process on the machine right now: which app surface is actually hosting
 // it (herdr / VS Code / a bare Ghostty tab / unknown), and its state
-// (herdr's own idle/working/blocked/done/unknown for a pane it tracks, a
-// poll-to-poll CPU-delta idle/working heuristic for anything it doesn't).
+// (herdr's own idle/working/blocked/done/unknown for a pane it tracks;
+// canopy-status.ts's real working/idle/done, straight from pi's own
+// agent-lifecycle events, for a `pi` process outside herdr that has it
+// installed, see internal/pistatus; a poll-to-poll CPU-delta idle/working
+// heuristic for anything else).
 //
 // No file is written here, canopy holds this only for as long as its own
 // process (the TUI) is running; there is no background daemon, no
@@ -16,6 +19,7 @@ import (
 
 	"github.com/luiul/canopy/internal/ancestry"
 	"github.com/luiul/canopy/internal/herdrclient"
+	"github.com/luiul/canopy/internal/pistatus"
 	"github.com/luiul/canopy/internal/scan"
 	"github.com/luiul/canopy/internal/state"
 )
@@ -52,6 +56,13 @@ type RegistryEntry struct {
 	// herdr.
 	CPUTime      time.Duration
 	CPUSampledAt time.Time
+	// RealState is true when State this poll came from canopy-status.ts (see
+	// internal/pistatus) rather than the CPU heuristic: pi self-reporting its
+	// own working/idle/done straight from its agent-lifecycle events, for a
+	// `pi` process canopy found outside herdr. refineExternalStates leaves
+	// State alone for any entry with RealState set, rather than
+	// second-guessing it with a CPU-time delta.
+	RealState bool
 	// WorkingStreak counts consecutive poll-to-poll samples that read at or
 	// above state.DefaultThreshold. refineExternalStates only reports
 	// Working once this reaches workingConfirmPolls: a single qualifying
@@ -147,7 +158,7 @@ func externalEntries(matches []scan.ProcessMatch, excludePids map[int]bool) []Re
 			pcpu = &v
 			cpuTime = info.CPUTime
 		}
-		entries = append(entries, RegistryEntry{
+		entry := RegistryEntry{
 			Pid:     m.Pid,
 			Kind:    m.Kind,
 			Tty:     m.Tty,
@@ -155,7 +166,23 @@ func externalEntries(matches []scan.ProcessMatch, excludePids map[int]bool) []Re
 			Surface: surface,
 			State:   string(state.ClassifyStateDefault(pcpu)),
 			CPUTime: cpuTime,
-		})
+		}
+		// `pi` is the one agent kind canopy can ask directly instead of
+		// guessing from CPU: canopy-status.ts (see internal/pistatus) writes
+		// pi's own real working/idle/done straight from its agent-lifecycle
+		// events when it's installed. No file (extension not installed,
+		// stale, or this pid isn't actually `pi`) just leaves the CPU guess
+		// above in place.
+		if m.Kind == "pi" {
+			if st, ok := pistatus.Read(m.Pid); ok {
+				entry.State = st.State
+				entry.RealState = true
+				if entry.Cwd == "" {
+					entry.Cwd = st.Cwd
+				}
+			}
+		}
+		entries = append(entries, entry)
 	}
 	return entries
 }
@@ -194,6 +221,13 @@ func refineExternalStates(previous, fresh []RegistryEntry, now time.Time) []Regi
 		prevByKey[p.Key()] = p
 	}
 	for i := range fresh {
+		if fresh[i].RealState {
+			// pistatus already told us the truth this poll (see externalEntries);
+			// don't let the CPU-time heuristic, built for every agent kind that
+			// can't do that, second-guess it.
+			fresh[i].CPUSampledAt = now
+			continue
+		}
 		prev, ok := prevByKey[fresh[i].Key()]
 		if !ok || prev.CPUSampledAt.IsZero() {
 			fresh[i].CPUSampledAt = now

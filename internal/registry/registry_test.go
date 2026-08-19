@@ -202,6 +202,31 @@ func TestRefineExternalStatesDropsBackToIdleImmediatelyAndResetsTheStreak(t *tes
 	}
 }
 
+func TestRefineExternalStatesLeavesARealStateEntryUntouched(t *testing.T) {
+	// canopy-status.ts (internal/pistatus) already told externalEntries the
+	// truth for this pid; even a CPU delta that would otherwise scream
+	// "idle" must not override it.
+	now := time.Now()
+	previous := []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "done")}
+	previous[0].RealState = true
+	previous[0].CPUSampledAt = now.Add(-5 * time.Second)
+
+	fresh := []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "done")}
+	fresh[0].RealState = true
+	// No CPU activity at all between polls; the heuristic would call this
+	// idle, but RealState means refineExternalStates must not even look.
+	fresh[0].CPUTime = previous[0].CPUTime
+
+	got := refineExternalStates(previous, fresh, now)
+
+	if got[0].State != "done" {
+		t.Fatalf("got state %q, want done left untouched by the CPU heuristic", got[0].State)
+	}
+	if got[0].CPUSampledAt != now {
+		t.Fatalf("got CPUSampledAt %v, want it still stamped to now", got[0].CPUSampledAt)
+	}
+}
+
 func TestRefineExternalStatesIgnoresANegativeDelta(t *testing.T) {
 	// A pid the OS recycled between polls (or any other counter hiccup)
 	// would otherwise produce a nonsensical negative rate; keep the

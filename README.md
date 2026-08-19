@@ -58,6 +58,10 @@ One Go package per concern:
   typed rows.
 - `internal/state`: CPU%-based idle/working heuristic for processes herdr
   doesn't track.
+- `internal/pistatus`: reads the small status file the optional
+  `extensions/canopy-status.ts` companion writes for a running `pi`
+  process, so canopy can use pi's own real working/idle/done instead of
+  the CPU heuristic for that one agent kind (see "Real pi status" below).
 - `internal/ancestry`: walks a process's parent chain to classify which app
   (herdr / VS Code / Ghostty) is hosting it.
 - `internal/herdrclient`: thin JSON-over-subprocess client for the `herdr`
@@ -99,11 +103,41 @@ go test ./...
 gofmt -l .   # should print nothing
 ```
 
+## Real pi status (optional)
+
+Canopy has no pty for a `pi` process outside herdr, so by default it falls
+back to the same CPU% heuristic every other agent kind gets. `pi` is the
+one agent kind canopy can ask directly instead of guessing, though:
+`extensions/canopy-status.ts` is a small companion pi extension (see
+docs/extensions.md in the pi repo) that hooks pi's own agent-lifecycle
+events (`before_agent_start`, `agent_start`, `tool_execution_start`,
+`agent_settled`) and writes a tiny `~/.pi/agent/canopy-status/<pid>.json`
+file with pi's real state, which `internal/pistatus` reads straight into
+that pid's `RegistryEntry`, no CPU sampling involved.
+
+Install it by symlinking (or copying) it into pi's global extensions
+directory:
+
+```bash
+ln -s "$(pwd)/extensions/canopy-status.ts" ~/.pi/agent/extensions/canopy-status.ts
+```
+
+It reports `working` while pi is actively running, and `idle` or `done`
+once a turn ends, depending on whether you were already looking at that
+terminal (same frontmost-app check used by desktop-notification setups) —
+`done` then flips to `idle` on its own, the moment you bring that terminal
+to the front, without waiting for you to send another prompt. It does not
+report `blocked`: vanilla pi has no built-in permission-gate pause to
+detect that from (see the comment at the top of the file for how a
+permission-gate extension could feed it one). macOS only; not installing
+it (or running on another OS) just leaves canopy on the CPU heuristic,
+same as today.
+
 ## Limitations
 
 - Same machine, same user only.
-- Idle/working for non-herdr surfaces is a CPU% heuristic, not a real
-  status.
+- Idle/working for non-herdr, non-`pi` surfaces (and `pi` itself without
+  the extension above installed) is a CPU% heuristic, not a real status.
 - Ghostty jump-to matches by working directory, not tty/pid; ambiguous if
   two tabs share a cwd.
 - VS Code jump-to raises the right window but not necessarily the specific
