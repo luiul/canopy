@@ -5,9 +5,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/luiul/canopy-go/internal/ancestry"
-	"github.com/luiul/canopy-go/internal/jump"
-	"github.com/luiul/canopy-go/internal/registry"
+	"github.com/luiul/canopy/internal/ancestry"
+	"github.com/luiul/canopy/internal/jump"
+	"github.com/luiul/canopy/internal/registry"
 )
 
 func entry(pid int, surface ancestry.Surface, state string) registry.RegistryEntry {

@@ -13,10 +13,10 @@ package registry
 import (
 	"fmt"
 
-	"github.com/luiul/canopy-go/internal/ancestry"
-	"github.com/luiul/canopy-go/internal/herdrclient"
-	"github.com/luiul/canopy-go/internal/scan"
-	"github.com/luiul/canopy-go/internal/state"
+	"github.com/luiul/canopy/internal/ancestry"
+	"github.com/luiul/canopy/internal/herdrclient"
+	"github.com/luiul/canopy/internal/scan"
+	"github.com/luiul/canopy/internal/state"
 )
 
 // MissLimit is how many consecutive missed polls a row survives before

@@ -10,7 +10,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/luiul/canopy-go/internal/tui"
+	"github.com/luiul/canopy/internal/tui"
 )
 
 // version is overridden at build time via:

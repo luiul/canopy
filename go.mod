@@ -1,4 +1,4 @@
-module github.com/luiul/canopy-go
+module github.com/luiul/canopy
 
 go 1.26.6
 

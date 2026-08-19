@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/luiul/canopy-go/internal/ancestry"
-	"github.com/luiul/canopy-go/internal/registry"
+	"github.com/luiul/canopy/internal/ancestry"
+	"github.com/luiul/canopy/internal/registry"
 )
 
 func entry(surface ancestry.Surface, mutate func(*registry.RegistryEntry)) registry.RegistryEntry {

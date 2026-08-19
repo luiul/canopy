@@ -9,10 +9,10 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/luiul/canopy-go/internal/ancestry"
-	"github.com/luiul/canopy-go/internal/applescript"
-	"github.com/luiul/canopy-go/internal/herdrclient"
-	"github.com/luiul/canopy-go/internal/registry"
+	"github.com/luiul/canopy/internal/ancestry"
+	"github.com/luiul/canopy/internal/applescript"
+	"github.com/luiul/canopy/internal/herdrclient"
+	"github.com/luiul/canopy/internal/registry"
 )
 
 // Result reports whether a jump succeeded and a human-readable message

@@ -13,9 +13,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/luiul/canopy-go/internal/ancestry"
-	"github.com/luiul/canopy-go/internal/jump"
-	"github.com/luiul/canopy-go/internal/registry"
+	"github.com/luiul/canopy/internal/ancestry"
+	"github.com/luiul/canopy/internal/jump"
+	"github.com/luiul/canopy/internal/registry"
 )
 
 // DefaultInterval is the poll interval used when none is given.

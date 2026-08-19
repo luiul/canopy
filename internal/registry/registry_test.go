@@ -3,7 +3,7 @@ package registry
 import (
 	"testing"
 
-	"github.com/luiul/canopy-go/internal/ancestry"
+	"github.com/luiul/canopy/internal/ancestry"
 )
 
 func entry(pid int, kind string, surface ancestry.Surface, state string) RegistryEntry {

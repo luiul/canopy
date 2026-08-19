@@ -3,7 +3,7 @@ package ancestry
 import (
 	"testing"
 
-	"github.com/luiul/canopy-go/internal/scan"
+	"github.com/luiul/canopy/internal/scan"
 )
 
 type row struct {

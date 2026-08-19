@@ -15,7 +15,7 @@ package ancestry
 import (
 	"strings"
 
-	"github.com/luiul/canopy-go/internal/scan"
+	"github.com/luiul/canopy/internal/scan"
 )
 
 // MaxAncestorHops caps the ancestor walk so a corrupt table can't spin
