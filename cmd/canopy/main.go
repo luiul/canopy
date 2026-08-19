@@ -10,6 +10,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
 	"github.com/luiul/canopy/internal/tui"
 )
 
@@ -28,6 +31,7 @@ Usage:
 
 Flags:
   --interval <seconds>  Poll interval in seconds (default 2).
+  --no-color             Disable color output (also respects NO_COLOR).
   --version             Show the version and exit.
   -h, --help            Show this help and exit.
 `
@@ -35,6 +39,7 @@ Flags:
 func main() {
 	fs := flag.NewFlagSet("canopy", flag.ExitOnError)
 	interval := fs.Float64("interval", tui.DefaultInterval.Seconds(), "Poll interval in seconds.")
+	noColor := fs.Bool("no-color", false, "Disable color output (also respects NO_COLOR).")
 	showVersion := fs.Bool("version", false, "Show the version and exit.")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, helpText) }
 
@@ -50,6 +55,10 @@ func main() {
 	if *interval <= 0 {
 		fmt.Fprintln(os.Stderr, "canopy: --interval must be positive")
 		os.Exit(2)
+	}
+
+	if *noColor || os.Getenv("NO_COLOR") != "" {
+		lipgloss.SetColorProfile(termenv.Ascii)
 	}
 
 	if err := tui.Run(time.Duration(*interval * float64(time.Second))); err != nil {

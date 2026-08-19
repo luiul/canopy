@@ -5,8 +5,10 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"os/user"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -18,10 +20,27 @@ import (
 	"github.com/luiul/canopy/internal/registry"
 )
 
-// DefaultInterval is the poll interval used when none is given.
+// DefaultInterval is the poll interval used when none is given. Also sets
+// the resolution of refineExternalStates' CPU-time delta: a shorter
+// interval means a tighter, more responsive "has this actually done
+// anything recently" window, at the cost of polling ps/lsof/herdr more
+// often.
 const DefaultInterval = 2 * time.Second
 
 const notifyDuration = 4 * time.Second
+
+// Column indexes, in the order New builds them. Used both for column-width
+// bookkeeping (resizeColumns) and for locating the State/Since columns
+// within an already-rendered line (colorizeRows).
+const (
+	colCursor = iota
+	colSurface
+	colState
+	colSince
+	colKind
+	colPID
+	colLocation
+)
 
 var (
 	surfaceLabels = map[ancestry.Surface]string{
@@ -37,6 +56,16 @@ var (
 	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 )
 
+// cursorMarker is the plain-text glyph shown in the leftmost column of the
+// currently selected row. It replaces bubbles/table's own Selected style
+// (a whole-row background/foreground highlight), which hid State's color
+// coding on whichever row happened to be selected. Deliberately a plain
+// ASCII character rather than a fancier Unicode arrow: colorizeRows slices
+// rendered lines by byte offset assuming 1 byte per display column, which
+// only holds if every column left of State/Since (including this one) is
+// plain ASCII.
+const cursorMarker = ">"
+
 func currentUser() string {
 	if u, err := user.Current(); err == nil && u.Username != "" {
 		return u.Username
@@ -44,25 +73,72 @@ func currentUser() string {
 	return ""
 }
 
-func location(e registry.RegistryEntry) string {
+// homeDir is the current user's home directory, used to shorten Location
+// paths to "~". "" (meaning: don't shorten) if it can't be determined.
+func homeDir() string {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return h
+}
+
+func location(e registry.RegistryEntry, home string) string {
 	if e.Surface == ancestry.Herdr && e.WorkspaceID != "" {
 		return "herdr:" + e.WorkspaceID
 	}
-	if e.Cwd != "" {
-		return e.Cwd
+	if e.Cwd == "" {
+		return "?"
 	}
-	return "?"
+	return shortenHome(e.Cwd, home)
 }
 
-// sortEntries orders working agents first (most likely to need attention or
-// be the one you're looking for), then grouped by surface, then stable by
-// pid.
+// shortenHome replaces a leading home-directory prefix with "~", the same
+// shorthand every shell prompt uses, so Location has more room left over
+// for the part of the path that actually varies row to row.
+func shortenHome(path, home string) string {
+	if home == "" {
+		return path
+	}
+	if path == home {
+		return "~"
+	}
+	if strings.HasPrefix(path, home+"/") {
+		return "~" + path[len(home):]
+	}
+	return path
+}
+
+// statePriority ranks states by how much attention they need: blocked
+// (waiting on you right now) and done (finished, ready to check) rank
+// highest, then working (busy, nothing for you to do), then idle, then
+// unknown (heuristic couldn't tell).
+var statePriority = map[string]int{
+	"blocked": 0,
+	"done":    1,
+	"working": 2,
+	"idle":    3,
+	"unknown": 4,
+}
+
+// stateOrder is statePriority's states in display order, used for the
+// header's per-state summary counts too.
+var stateOrder = []string{"blocked", "done", "working", "idle", "unknown"}
+
+func statePriorityOf(state string) int {
+	if p, ok := statePriority[state]; ok {
+		return p
+	}
+	return len(statePriority) // a state outside the known vocabulary sorts last
+}
+
+// sortEntries orders entries by statePriority, most actionable first, then
+// grouped by surface, then stable by pid.
 func sortEntries(entries []registry.RegistryEntry) {
 	sort.SliceStable(entries, func(i, j int) bool {
 		a, b := entries[i], entries[j]
-		aWorking, bWorking := a.State != "working", b.State != "working" // false (0) sorts first
-		if aWorking != bWorking {
-			return !aWorking
+		if pa, pb := statePriorityOf(a.State), statePriorityOf(b.State); pa != pb {
+			return pa < pb
 		}
 		if a.Surface != b.Surface {
 			return a.Surface < b.Surface
@@ -83,6 +159,7 @@ type clearNotifyMsg struct{ token int }
 type Model struct {
 	interval time.Duration
 	user     string
+	home     string
 
 	entries []registry.RegistryEntry // sorted, parallel to the table's real rows
 	table   table.Model
@@ -98,10 +175,12 @@ type Model struct {
 // New builds the dashboard model, polling at interval.
 func New(interval time.Duration) Model {
 	columns := []table.Column{
-		{Title: "Kind", Width: 10},
-		{Title: "PID", Width: 8},
+		{Title: "", Width: 1}, // cursorMarker
 		{Title: "Surface", Width: 9},
 		{Title: "State", Width: 9},
+		{Title: "Since", Width: 6},
+		{Title: "Kind", Width: 10},
+		{Title: "PID", Width: 8},
 		{Title: "Location", Width: 40},
 	}
 	t := table.New(
@@ -110,12 +189,16 @@ func New(interval time.Duration) Model {
 		table.WithHeight(15),
 	)
 	styles := table.DefaultStyles()
-	styles.Selected = styles.Selected.Bold(true)
+	// No whole-row highlight for the selected row: cursorMarker (the
+	// leftmost column) shows selection instead, without covering up State's
+	// color coding on that row.
+	styles.Selected = lipgloss.NewStyle()
 	t.SetStyles(styles)
 
 	return Model{
 		interval: interval,
 		user:     currentUser(),
+		home:     homeDir(),
 		table:    t,
 	}
 }
@@ -171,6 +254,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			var cmd tea.Cmd
 			m.table, cmd = m.table.Update(msg)
+			m.refreshCursorMarker()
 			return m, cmd
 		}
 
@@ -232,29 +316,129 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) {
 	sortEntries(fresh)
 	m.entries = fresh
 
-	rows := make([]table.Row, 0, len(fresh))
-	if len(fresh) == 0 {
-		rows = append(rows, table.Row{"no known agent-kind processes found on this machine", "", "", "", ""})
-	}
-	for _, e := range fresh {
-		rows = append(rows, table.Row{
-			e.Kind,
-			fmt.Sprintf("%d", e.Pid),
-			surfaceLabel(e.Surface),
-			e.State,
-			location(e),
-		})
-	}
-	m.table.SetRows(rows)
-
+	cursor := m.table.Cursor()
 	if previousKey != "" {
 		for i, e := range fresh {
 			if e.Key() == previousKey {
-				m.table.SetCursor(i)
+				cursor = i
 				break
 			}
 		}
 	}
+	if len(fresh) == 0 {
+		cursor = 0
+	} else {
+		cursor = clampInt(cursor, 0, len(fresh)-1)
+	}
+
+	m.table.SetRows(buildRows(fresh, cursor, m.home, time.Now()))
+	m.table.SetCursor(cursor)
+}
+
+// refreshCursorMarker rebuilds the table's rows so the leftmost
+// cursorMarker cell follows the cursor immediately after it moves (arrow
+// keys, page up/down, etc.), instead of waiting for the next poll.
+func (m *Model) refreshCursorMarker() {
+	if len(m.entries) == 0 {
+		return
+	}
+	m.table.SetRows(buildRows(m.entries, m.table.Cursor(), m.home, time.Now()))
+}
+
+// buildRows constructs the table's rows from already-sorted entries.
+// cursor picks which row's leading cell carries cursorMarker; it's a plain
+// parameter (rather than read from the table itself) so this same helper
+// builds rows both right after a poll (applyEntries) and on every cursor
+// move in between polls (refreshCursorMarker), so the arrow tracks the
+// highlighted row immediately rather than only once every poll interval.
+func buildRows(entries []registry.RegistryEntry, cursor int, home string, now time.Time) []table.Row {
+	if len(entries) == 0 {
+		return []table.Row{{"", "", "", "", "", "", "no known agent-kind processes found on this machine"}}
+	}
+	rows := make([]table.Row, len(entries))
+	for i, e := range entries {
+		marker := ""
+		if i == cursor {
+			marker = cursorMarker
+		}
+		rows[i] = table.Row{
+			marker,
+			surfaceLabel(e.Surface),
+			stateCellText(e, now),
+			sinceCellText(e, now),
+			e.Kind,
+			fmt.Sprintf("%d", e.Pid),
+			location(e, home),
+		}
+	}
+	return rows
+}
+
+// flashDuration is how long a row that just transitioned into blocked or
+// done carries flashMarker and its reverse-video highlight, independent of
+// the poll interval so it stays legible whether polling every second or
+// every ten.
+const flashDuration = 8 * time.Second
+
+// stateCellText is the State column's plain-text cell value: the state
+// word, with a trailing flashMarker if it just transitioned into blocked or
+// done (the two states worth calling out) within flashDuration. Actual
+// coloring happens later, in View, by post-processing the rendered table
+// (see colorize.go).
+func stateCellText(e registry.RegistryEntry, now time.Time) string {
+	if (e.State == "blocked" || e.State == "done") && !e.StateSince.IsZero() && now.Sub(e.StateSince) < flashDuration {
+		return e.State + flashMarker
+	}
+	return e.State
+}
+
+// sinceCellText is the Since column's plain-text cell value: how long the
+// entry has been in its current state, or "" if that's not known yet (a
+// StateSince hasn't been stamped, e.g. in tests that build entries by
+// hand).
+func sinceCellText(e registry.RegistryEntry, now time.Time) string {
+	if e.StateSince.IsZero() {
+		return ""
+	}
+	return humanizeSince(now.Sub(e.StateSince))
+}
+
+// summaryLine is a one-line "N sessions: N blocked · N working · ..."
+// breakdown, colored to match the State column and ordered the same way
+// (most actionable first), skipping any state with a zero count. Empty
+// when there are no entries, since the placeholder row already says so.
+func summaryLine(entries []registry.RegistryEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	counts := map[string]int{}
+	for _, e := range entries {
+		counts[e.State]++
+	}
+
+	parts := make([]string, 0, len(stateOrder))
+	seen := map[string]bool{}
+	for _, s := range stateOrder {
+		if n := counts[s]; n > 0 {
+			parts = append(parts, stateStyle(s).Render(fmt.Sprintf("%d %s", n, s)))
+			seen[s] = true
+		}
+	}
+	// A state outside the known vocabulary shouldn't happen, but this keeps
+	// its count from silently vanishing from the summary if one ever shows
+	// up.
+	for s, n := range counts {
+		if !seen[s] {
+			parts = append(parts, fmt.Sprintf("%d %s", n, s))
+		}
+	}
+
+	label := "sessions"
+	if len(entries) == 1 {
+		label = "session"
+	}
+	return subtleStyle.Render(fmt.Sprintf("%d %s: ", len(entries), label)) +
+		strings.Join(parts, subtleStyle.Render(" · "))
 }
 
 func surfaceLabel(s ancestry.Surface) string {
@@ -266,15 +450,15 @@ func surfaceLabel(s ancestry.Surface) string {
 
 func (m *Model) resizeColumns() {
 	cols := m.table.Columns()
-	if len(cols) != 5 {
+	if len(cols) != 7 {
 		return
 	}
-	fixed := cols[0].Width + cols[1].Width + cols[2].Width + cols[3].Width
-	remaining := m.width - fixed - 10
+	fixed := cols[colCursor].Width + cols[colSurface].Width + cols[colState].Width + cols[colSince].Width + cols[colKind].Width + cols[colPID].Width
+	remaining := m.width - fixed - 14 // 2 chars of padding per cell, 7 cells
 	if remaining < 20 {
 		remaining = 20
 	}
-	cols[4].Width = remaining
+	cols[colLocation].Width = remaining
 	m.table.SetColumns(cols)
 }
 
@@ -284,6 +468,9 @@ func (m Model) View() string {
 		return ""
 	}
 	header := titleStyle.Render("canopy") + subtleStyle.Render(" — agent sessions on this machine")
+	if summary := summaryLine(m.entries); summary != "" {
+		header += "\n" + summary
+	}
 
 	footer := subtleStyle.Render("↑/↓ move · enter jump · r refresh · q quit")
 	if m.notification != "" {
@@ -294,7 +481,8 @@ func (m Model) View() string {
 		footer = style.Render(m.notification)
 	}
 
-	return header + "\n\n" + m.table.View() + "\n\n" + footer + "\n"
+	tableView := colorizeRows(m.table.View(), m.table.Columns(), colState, colSince)
+	return header + "\n\n" + tableView + "\n\n" + footer + "\n"
 }
 
 // Run starts the dashboard program and blocks until the user quits.

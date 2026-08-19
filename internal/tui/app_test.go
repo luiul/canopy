@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -12,6 +14,91 @@ import (
 
 func entry(pid int, surface ancestry.Surface, state string) registry.RegistryEntry {
 	return registry.RegistryEntry{Pid: pid, Kind: "pi", Tty: "s017", Cwd: "/Users/x/dotfiles", Surface: surface, State: state}
+}
+
+func TestSortEntriesRanksBlockedAndDoneAboveWorking(t *testing.T) {
+	entries := []registry.RegistryEntry{
+		entry(1, ancestry.Ghostty, "working"),
+		entry(2, ancestry.Ghostty, "idle"),
+		entry(3, ancestry.Ghostty, "blocked"),
+		entry(4, ancestry.Ghostty, "done"),
+		entry(5, ancestry.Ghostty, "unknown"),
+	}
+
+	sortEntries(entries)
+
+	var got []string
+	for _, e := range entries {
+		got = append(got, e.State)
+	}
+	want := []string{"blocked", "done", "working", "idle", "unknown"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got order %v, want %v", got, want)
+		}
+	}
+}
+
+func TestStateCellTextFlashesOnlyBlockedOrDoneWithinTheFlashWindow(t *testing.T) {
+	now := time.Now()
+
+	blocked := entry(1, ancestry.Ghostty, "blocked")
+	blocked.StateSince = now.Add(-time.Second)
+	if got := stateCellText(blocked, now); got != "blocked"+flashMarker {
+		t.Fatalf("got %q, want a flashing blocked cell", got)
+	}
+
+	staleBlocked := entry(2, ancestry.Ghostty, "blocked")
+	staleBlocked.StateSince = now.Add(-flashDuration - time.Second)
+	if got := stateCellText(staleBlocked, now); got != "blocked" {
+		t.Fatalf("got %q, want a steady (non-flashing) blocked cell once past flashDuration", got)
+	}
+
+	working := entry(3, ancestry.Ghostty, "working")
+	working.StateSince = now.Add(-time.Second)
+	if got := stateCellText(working, now); got != "working" {
+		t.Fatalf("got %q, want working to never flash", got)
+	}
+}
+
+func TestSinceCellTextHumanizesElapsedTimeOrIsEmptyWhenUnknown(t *testing.T) {
+	now := time.Now()
+
+	e := entry(1, ancestry.Ghostty, "idle")
+	e.StateSince = now.Add(-90 * time.Second)
+	if got := sinceCellText(e, now); got != "1m" {
+		t.Fatalf("got %q, want 1m", got)
+	}
+
+	unknown := entry(2, ancestry.Ghostty, "idle") // StateSince left zero
+	if got := sinceCellText(unknown, now); got != "" {
+		t.Fatalf("got %q, want empty when StateSince is unknown", got)
+	}
+}
+
+func TestSummaryLineCountsByStateInPriorityOrder(t *testing.T) {
+	entries := []registry.RegistryEntry{
+		entry(1, ancestry.Ghostty, "working"),
+		entry(2, ancestry.Ghostty, "idle"),
+		entry(3, ancestry.Ghostty, "blocked"),
+	}
+
+	got := summaryLine(entries)
+
+	for _, want := range []string{"3 sessions", "1 blocked", "1 working", "1 idle"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("got %q, want it to contain %q", got, want)
+		}
+	}
+	if strings.Index(got, "blocked") > strings.Index(got, "working") {
+		t.Fatalf("got %q, want blocked listed before working", got)
+	}
+}
+
+func TestSummaryLineIsEmptyWhenThereAreNoEntries(t *testing.T) {
+	if got := summaryLine(nil); got != "" {
+		t.Fatalf("got %q, want empty summary for no entries", got)
+	}
 }
 
 func TestDashboardRendersARowPerEntry(t *testing.T) {
@@ -116,5 +203,59 @@ func TestQuitKeyStopsTheProgram(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("want tea.Quit to be returned")
+	}
+}
+
+func TestShortenHomeReplacesTheHomePrefixWithATilde(t *testing.T) {
+	cases := []struct {
+		path, home, want string
+	}{
+		{"/Users/luis/projects/canopy", "/Users/luis", "~/projects/canopy"},
+		{"/Users/luis", "/Users/luis", "~"},
+		{"/Users/luisandro/projects", "/Users/luis", "/Users/luisandro/projects"}, // no false-positive on a prefix match that isn't a path boundary
+		{"/Users/luis/projects", "", "/Users/luis/projects"},                      // unknown home: leave untouched
+	}
+	for _, c := range cases {
+		if got := shortenHome(c.path, c.home); got != c.want {
+			t.Errorf("shortenHome(%q, %q) = %q, want %q", c.path, c.home, got, c.want)
+		}
+	}
+}
+
+func TestBuildRowsPutsCursorMarkerOnlyOnTheCursorRow(t *testing.T) {
+	entries := []registry.RegistryEntry{
+		entry(1, ancestry.Ghostty, "idle"),
+		entry(2, ancestry.Ghostty, "working"),
+	}
+
+	rows := buildRows(entries, 1, "", time.Now())
+
+	if rows[0][colCursor] != "" {
+		t.Fatalf("got marker %q on row 0, want no marker", rows[0][colCursor])
+	}
+	if rows[1][colCursor] != cursorMarker {
+		t.Fatalf("got marker %q on row 1, want %q", rows[1][colCursor], cursorMarker)
+	}
+}
+
+func TestCursorMarkerFollowsArrowKeysBetweenPolls(t *testing.T) {
+	m := New(999)
+	m.applyEntries([]registry.RegistryEntry{
+		entry(1, ancestry.Ghostty, "idle"),
+		entry(2, ancestry.Ghostty, "idle"),
+	})
+	if got := m.table.Rows()[0][colCursor]; got != cursorMarker {
+		t.Fatalf("got %q, want the marker on row 0 right after applyEntries", got)
+	}
+
+	// Moving down (without a poll in between) must move the marker too, not
+	// just bubbles/table's own internal cursor.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	mm := updated.(Model)
+	if got := mm.table.Rows()[0][colCursor]; got != "" {
+		t.Fatalf("got %q, want row 0's marker cleared after moving down", got)
+	}
+	if got := mm.table.Rows()[1][colCursor]; got != cursorMarker {
+		t.Fatalf("got %q, want row 1 to carry the marker after moving down", got)
 	}
 }

@@ -15,14 +15,27 @@ instant startup.
 
 ```
 canopy — agent sessions on this machine
+3 sessions: 1 blocked · 1 working · 1 idle
 
- Kind        PID       Surface    State      Location
- pi          86872     VS Code    working    /Users/luis/projects/personal/canopy
- pi          9514      VS Code    idle       /Users/luis/worktrees/.../isa-orchestration
- pi          65834     Ghostty    idle       herdr:wG
+   Surface    State      Since   Kind        PID       Location
+>  VS Code    working    12s     pi          86872     ~/projects/personal/canopy
+   VS Code    blocked    3m      pi          9514      ~/worktrees/.../isa-orchestration
+   Ghostty    idle       1h20m   pi          65834     herdr:wG
 
 ↑/↓ move · enter jump · r refresh · q quit
 ```
+
+The currently selected row is marked with a `>` in the leftmost column
+(rather than a full-row highlight, which would hide State's color coding
+on whichever row happens to be selected). Location shortens a leading
+home-directory prefix to `~`, same as your shell prompt.
+
+State is color-coded (red for `blocked`, green for `done`, yellow for
+`working`, dim for `idle`/`unknown`), and a row that just transitioned into
+`blocked` or `done` flashes briefly (a trailing `*` plus a reverse-video
+highlight) so it's hard to miss. Sessions are sorted most-actionable
+first: `blocked`, then `done`, then `working`, then `idle`/`unknown`. Pass
+`--no-color` (or set `NO_COLOR`) to disable all of that and get plain text.
 
 ## Why Go, not Python
 
