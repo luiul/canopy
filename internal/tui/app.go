@@ -31,14 +31,22 @@ const notifyDuration = 4 * time.Second
 // Column indexes, in the order New builds them. Used both for column-width
 // bookkeeping (resizeColumns) and for locating the State/Since columns
 // within an already-rendered line (colorizeRows).
+//
+// Order is deliberately urgency-first: State and Since (what needs you, and
+// for how long) come immediately after the cursor marker so the most
+// action-relevant columns are also the leftmost ones, matching the
+// top-to-bottom state-priority sort. Surface and Location (where a session
+// lives) follow. Kind and PID are last and narrow: useful context, but
+// rarely the thing you're scanning for, so they're the columns that give up
+// width first and truncate hardest on a narrow terminal.
 const (
 	colCursor = iota
-	colSurface
 	colState
 	colSince
+	colSurface
+	colLocation
 	colKind
 	colPID
-	colLocation
 )
 
 var (
@@ -171,12 +179,12 @@ type Model struct {
 func New(interval time.Duration) Model {
 	columns := []table.Column{
 		{Title: "", Width: 1}, // cursorMarker
-		{Title: "Surface", Width: 9},
 		{Title: "State", Width: 9},
 		{Title: "Since", Width: 6},
-		{Title: "Kind", Width: 10},
-		{Title: "PID", Width: 8},
+		{Title: "Surface", Width: 9},
 		{Title: "Location", Width: 40},
+		{Title: "Kind", Width: 7}, // narrow on purpose; truncates long kinds (e.g. "mastracode")
+		{Title: "PID", Width: 6}, // narrow on purpose; truncates rare 6+ digit pids
 	}
 	t := table.New(
 		table.WithColumns(columns),
@@ -348,7 +356,11 @@ func (m *Model) refreshCursorMarker() {
 // highlighted row immediately rather than only once every poll interval.
 func buildRows(entries []registry.RegistryEntry, cursor int, home string, now time.Time) []table.Row {
 	if len(entries) == 0 {
-		return []table.Row{{"", "", "", "", "", "", "no known agent-kind processes found on this machine"}}
+		// Placeholder message goes in Location: the widest column, and the
+		// only one guaranteed to have room for it regardless of terminal width.
+		placeholder := table.Row{"", "", "", "", "", "", ""}
+		placeholder[colLocation] = "no known agent-kind processes found on this machine"
+		return []table.Row{placeholder}
 	}
 	rows := make([]table.Row, len(entries))
 	for i, e := range entries {
@@ -358,12 +370,12 @@ func buildRows(entries []registry.RegistryEntry, cursor int, home string, now ti
 		}
 		rows[i] = table.Row{
 			marker,
-			surfaceLabel(e.Surface),
 			stateCellText(e, now),
 			sinceCellText(e, now),
+			surfaceLabel(e.Surface),
+			location(e, home),
 			e.Kind,
 			fmt.Sprintf("%d", e.Pid),
-			location(e, home),
 		}
 	}
 	return rows
@@ -448,7 +460,7 @@ func (m *Model) resizeColumns() {
 	if len(cols) != 7 {
 		return
 	}
-	fixed := cols[colCursor].Width + cols[colSurface].Width + cols[colState].Width + cols[colSince].Width + cols[colKind].Width + cols[colPID].Width
+	fixed := cols[colCursor].Width + cols[colState].Width + cols[colSince].Width + cols[colSurface].Width + cols[colKind].Width + cols[colPID].Width
 	remaining := m.width - fixed - 14 // 2 chars of padding per cell, 7 cells
 	if remaining < 20 {
 		remaining = 20
