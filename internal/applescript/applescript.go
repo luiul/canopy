@@ -95,8 +95,7 @@ func runOsascript(script string) (string, error) {
 // error) if no open terminal currently matches, e.g. it already closed, or
 // the process has since `cd`-ed elsewhere since canopy last resolved it.
 func GhosttyFocusByCwd(cwd string) (bool, error) {
-	escaped := strings.ReplaceAll(cwd, `\`, `\\`)
-	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+	escaped := escapeForAppleScript(cwd)
 	script := `
     tell application "Ghostty"
         repeat with t in terminals
@@ -113,4 +112,26 @@ func GhosttyFocusByCwd(cwd string) (bool, error) {
 		return false, err
 	}
 	return out == "true", nil
+}
+
+// GhosttyOpenNewWindow opens a brand-new Ghostty window with its initial
+// working directory set to cwd. This is the create-a-new-instance half of
+// canopy's switch-or-create behavior: when GhosttyFocusByCwd finds nothing
+// to focus (e.g. the agent's tab has since been closed), this opens a fresh
+// one at the same location instead of just reporting failure.
+func GhosttyOpenNewWindow(cwd string) error {
+	escaped := escapeForAppleScript(cwd)
+	script := `
+    tell application "Ghostty"
+        new window with configuration {initial working directory:"` + escaped + `"}
+    end tell
+    `
+	_, err := runOsascript(script)
+	return err
+}
+
+func escapeForAppleScript(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return s
 }

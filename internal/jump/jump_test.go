@@ -92,14 +92,34 @@ func TestJumpToGhosttyWithoutACwdFailsClearly(t *testing.T) {
 	}
 }
 
-func TestJumpToGhosttyReportsWhenNoTerminalMatches(t *testing.T) {
+func TestJumpToGhosttyOpensNewWindowWhenNoTerminalMatches(t *testing.T) {
 	d := defaultDeps()
 	d.ghosttyFocusByCwd = func(string) (bool, error) { return false, nil }
+	var gotCwd string
+	d.ghosttyOpenNewWindow = func(cwd string) error { gotCwd = cwd; return nil }
+
+	result := jumpWith(d, entry(ancestry.Ghostty, nil))
+
+	if !result.OK {
+		t.Fatalf("want ok, got %+v", result)
+	}
+	if gotCwd != "/Users/x/dotfiles" {
+		t.Fatalf("got cwd %q", gotCwd)
+	}
+}
+
+func TestJumpToGhosttyFailsClearlyWhenNewWindowFails(t *testing.T) {
+	d := defaultDeps()
+	d.ghosttyFocusByCwd = func(string) (bool, error) { return false, nil }
+	d.ghosttyOpenNewWindow = func(string) error { return errors.New("couldn't open a new window") }
 
 	result := jumpWith(d, entry(ancestry.Ghostty, nil))
 
 	if result.OK {
 		t.Fatalf("want not ok, got %+v", result)
+	}
+	if !contains(result.Message, "couldn't open a new window") {
+		t.Fatalf("got message %q", result.Message)
 	}
 }
 

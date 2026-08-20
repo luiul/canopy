@@ -106,7 +106,9 @@ One Go package per concern:
 - `internal/applescript`: `osascript` wrapper for focusing a Ghostty window
   by working directory, with macOS Automation-permission error detection.
 - `internal/jump`: picks the actual jump mechanism (`code --reuse-window` or
-  Ghostty AppleScript) per row.
+  Ghostty AppleScript) per row, switching to an already-open window when one
+  matches the row's working directory, or opening a brand-new one when none
+  does.
 - `internal/registry`: merges a fresh poll against the previous one so a
   single missed `ps`/poll doesn't flicker a row away.
 - `internal/tui`: the Bubble Tea dashboard (table, polling timer,
@@ -172,7 +174,9 @@ same as today.
 - Idle/working for non-`pi` surfaces (and `pi` itself without the extension
   above installed) is a CPU% heuristic, not a real status.
 - Ghostty jump-to matches by working directory, not tty/pid; ambiguous if
-  two tabs share a cwd.
+  two tabs share a cwd. If no open tab matches anymore (e.g. it was closed),
+  Enter opens a brand-new Ghostty window at that cwd instead, same
+  reuse-or-create behavior as VS Code's `--reuse-window`.
 - VS Code jump-to raises the right window but not necessarily the specific
   integrated-terminal tab within it.
 - Mouse click-to-jump isn't implemented (keyboard only: arrow keys +

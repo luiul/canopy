@@ -1,7 +1,9 @@
 // Package jump brings whichever window is actually running a given agent
 // process to the front: `code --reuse-window` for a VS Code integrated
-// terminal, Ghostty's own AppleScript for a bare Ghostty tab. Nothing to
-// jump to for Surface Unknown, canopy doesn't know what's hosting it.
+// terminal, Ghostty's own AppleScript for a bare Ghostty tab, falling back
+// to opening a brand-new window/instance at the same working directory when
+// nothing open matches the row anymore. Nothing to jump to for Surface
+// Unknown, canopy doesn't know what's hosting it.
 package jump
 
 import (
@@ -24,9 +26,10 @@ type Result struct {
 // each one out (the same "monkeypatch the module boundary" pattern the
 // Python original's tests use), without touching the real OS.
 type deps struct {
-	lookPathCode      func() (string, bool)
-	runCommand        func(args []string) (exitOK bool, stderr string)
-	ghosttyFocusByCwd func(cwd string) (bool, error)
+	lookPathCode         func() (string, bool)
+	runCommand           func(args []string) (exitOK bool, stderr string)
+	ghosttyFocusByCwd    func(cwd string) (bool, error)
+	ghosttyOpenNewWindow func(cwd string) error
 }
 
 func defaultDeps() deps {
@@ -42,7 +45,8 @@ func defaultDeps() deps {
 			err := cmd.Run()
 			return err == nil, strings.TrimSpace(stderr.String())
 		},
-		ghosttyFocusByCwd: applescript.GhosttyFocusByCwd,
+		ghosttyFocusByCwd:    applescript.GhosttyFocusByCwd,
+		ghosttyOpenNewWindow: applescript.GhosttyOpenNewWindow,
 	}
 }
 
@@ -96,5 +100,13 @@ func jumpGhostty(d deps, entry registry.RegistryEntry) Result {
 	if found {
 		return Result{true, "Focused in Ghostty."}
 	}
-	return Result{false, "No open Ghostty terminal matches that working directory anymore."}
+
+	// Nothing open matches this row anymore (e.g. the tab closed since
+	// canopy last resolved it). Rather than dead-ending, create a fresh
+	// instance at the same cwd, mirroring jumpVSCode's reuse-or-create
+	// behavior via `--reuse-window`.
+	if err := d.ghosttyOpenNewWindow(entry.Cwd); err != nil {
+		return Result{false, err.Error()}
+	}
+	return Result{true, "Opened a new Ghostty window for " + entry.Cwd + "."}
 }
