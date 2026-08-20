@@ -24,15 +24,16 @@ var version = "0.1.0-dev"
 const helpText = `canopy: interactive dashboard for every pi/claude/codex/... session on
 this machine: VS Code integrated terminals and bare Ghostty tabs alike.
 
-Arrow keys to move, Enter to jump to a window, q to quit, r to refresh.
+Arrow keys to move, Enter to jump to a window (and mark it as seen), c to
+mark a done row as seen without jumping, q to quit, r to refresh.
 
 Usage:
   canopy [flags]
 
 Flags:
   --interval <seconds>  Poll interval in seconds (default 2).
-  --no-color             Disable color output (also respects NO_COLOR).
-  --no-bell              Disable the terminal bell on new blocked/done rows.
+  --no-color            Disable color output (also respects NO_COLOR).
+  --no-bell             Disable the terminal bell on new blocked/done rows.
   --version             Show the version and exit.
   -h, --help            Show this help and exit.
 `
