@@ -58,7 +58,6 @@ func AncestorChain(pid int, table map[int]scan.ProcessInfo) []AncestorHop {
 // ClassifySurface reports which app is hosting pid by walking its ancestor
 // chain and looking for VS Code or Ghostty process names.
 func ClassifySurface(pid int, table map[int]scan.ProcessInfo) Surface {
-
 	for _, hop := range AncestorChain(pid, table) {
 		comm := hop.Comm
 		if strings.Contains(comm, "Visual Studio Code.app") || strings.Contains(comm, "Visual Studio Code - Insiders.app") {

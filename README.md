@@ -95,8 +95,8 @@ One Go package per concern:
 
 - `internal/scan`: shells out to `ps`/`lsof`, parses their output into
   typed rows.
-- CPU%-based idle/working heuristic for processes not running in VS Code or
-  Ghostty.
+- `internal/state`: CPU%-based idle/working heuristic for processes not
+  running in VS Code or Ghostty.
 - `internal/pistatus`: reads the small status file the optional
   `extensions/canopy-status.ts` companion writes for a running `pi`
   process, so canopy can use pi's own real working/idle/done instead of
@@ -117,7 +117,7 @@ One Go package per concern:
 
 ```bash
 cd canopy
-Go build -o /tmp/canopy-build ./cmd/canopy
+go build -o /tmp/canopy-build ./cmd/canopy
 install -m 0755 /tmp/canopy-build ~/.local/bin/canopy   # or anywhere on PATH
 ```
 

@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/luiul/canopy/internal/ancestry"
-
 	"github.com/luiul/canopy/internal/pistatus"
 	"github.com/luiul/canopy/internal/scan"
 	"github.com/luiul/canopy/internal/state"
@@ -85,23 +84,19 @@ func (e RegistryEntry) Key() string {
 // refineExternalStates corrects that guess with a real poll-to-poll delta
 // for every entry that survives to a second poll.
 func externalEntries(matches []scan.ProcessMatch) []RegistryEntry {
-	var candidates []scan.ProcessMatch
-	for _, m := range matches {
-		candidates = append(candidates, m)
-	}
-	if len(candidates) == 0 {
+	if len(matches) == 0 {
 		return nil
 	}
 
 	table := scan.ScanProcessTable()
-	pids := make([]int, len(candidates))
-	for i, m := range candidates {
+	pids := make([]int, len(matches))
+	for i, m := range matches {
 		pids[i] = m.Pid
 	}
 	cwdByPid := scan.ResolveCwds(pids)
 
-	entries := make([]RegistryEntry, 0, len(candidates))
-	for _, m := range candidates {
+	entries := make([]RegistryEntry, 0, len(matches))
+	for _, m := range matches {
 		surface := ancestry.ClassifySurface(m.Pid, table)
 		var pcpu *float64
 		var cpuTime time.Duration
