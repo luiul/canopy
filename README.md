@@ -11,6 +11,48 @@ forward. An earlier Python/Textual prototype lives at `../canopy-python`
 behavior, ported to a single static binary: no interpreter, no venv,
 instant startup.
 
+canopy's only job is agent sessions; it has no notion of git worktrees at
+all. If you also use git worktrees, see [Ecosystem](#ecosystem) below for
+the sibling tools that cover that.
+
+## Ecosystem
+
+canopy is one of four tools that split "what's running, and where, on
+this machine" into two independent radars over two independent lifecycle
+tools, one pair for agent sessions, one pair for git worktrees:
+
+| Tool | Layer | Job |
+|---|---|---|
+| [`wt`](https://worktrunk.dev) (worktrunk) | engine | creates/removes worktrees, runs lifecycle hooks (`post-start`, `pre-remove`, ...), maintains the shared registry |
+| [coppice](https://github.com/luiul/coppice) | lifecycle CLI | cross-repo `new`/`list`/`remove`/`clean` worktrees, on top of `wt`, from anywhere on disk |
+| [understory](https://github.com/luiul/understory) | worktree radar | live, read-only dashboard of every worktree in the registry; open-or-focus a VS Code window on Enter |
+| **canopy** (this repo) | agent radar | live, read-only dashboard of every agent CLI session on the machine; jump-to-window on Enter |
+
+```mermaid
+flowchart LR
+    wt["wt (worktrunk)<br/>engine + hooks"]
+    coppice["coppice<br/>cross-repo worktree CLI"]
+    registry[("~/.cache/wt/known-repos")]
+    understory["understory<br/>worktree radar"]
+
+    coppice -- new/remove/clean, via --> wt
+    wt -- post-start hook writes --> registry
+    coppice -- also writes, on first touch --> registry
+    registry -- read only --> understory
+```
+
+canopy doesn't appear in that diagram on purpose: it's fully independent
+of `wt`'s registry, and of the other three tools. It discovers agent
+processes directly (`ps`/`lsof`, herdr's own JSON API, AppleScript for
+Ghostty), the same way understory discovers worktrees, just from a
+completely different source. The two dashboards (canopy, understory) are
+designed to run side by side, each a `tab`-free, single-view radar over
+one kind of thing, rather than one tool trying to be both. This split
+happened deliberately: canopy briefly grew a second "Worktrees" view
+(agent-to-worktree matching, jump-to-worktree) before that code was pulled
+out into understory, so canopy's scope could stay exactly "agent
+sessions," nothing else.
+
 ## What it looks like
 
 ```
