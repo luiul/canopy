@@ -1,7 +1,7 @@
 // Command canopy is an interactive dashboard for every agent CLI session
 // (pi, claude, codex, ...) running on this machine, wherever it actually
-// is: a herdr pane, a VS Code integrated terminal, or a bare Ghostty tab,
-// with its live state and jump-to-window on Enter.
+// is: a VS Code integrated terminal, or a bare Ghostty tab, with its live
+// state and jump-to-window on Enter.
 package main
 
 import (
@@ -22,7 +22,7 @@ import (
 var version = "0.1.0-dev"
 
 const helpText = `canopy: interactive dashboard for every pi/claude/codex/... session on
-this machine: herdr panes, VS Code integrated terminals, and bare Ghostty tabs alike.
+this machine: VS Code integrated terminals and bare Ghostty tabs alike.
 
 Arrow keys to move, Enter to jump to a window, q to quit, r to refresh.
 

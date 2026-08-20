@@ -114,11 +114,3 @@ func GhosttyFocusByCwd(cwd string) (bool, error) {
 	}
 	return out == "true", nil
 }
-
-// ActivateGhostty is a best-effort attempt to just raise Ghostty as an app,
-// without picking a specific window. Used as a fallback when there's no
-// reliable way to identify *which* Ghostty window matters.
-func ActivateGhostty() bool {
-	err := exec.Command("open", "-a", "Ghostty").Run()
-	return err == nil
-}

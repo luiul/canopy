@@ -56,7 +56,7 @@
  * added later, have its own tool_call handler write {state: "blocked"}
  * before awaiting ctx.ui.confirm and {state: "working"} after — canopy
  * already renders and sorts "blocked" ahead of everything else for any
- * State string, herdr-tracked or not, so no canopy-side change is needed
+ * State string for any agent kind, so no canopy-side change is needed
  * for that to show up correctly.
  *
  * macOS only (matches canopy's own AppleScript-based jump-to and

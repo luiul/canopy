@@ -70,7 +70,7 @@ type RegistryEntry struct {
 	// moment a sample reads below threshold.
 	WorkingStreak int
 
-	Misses        int
+	Misses int
 }
 
 // Key identifies an entry across polls. pids get reused by the OS; scoping

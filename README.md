@@ -138,7 +138,7 @@ gofmt -l .   # should print nothing
 
 ## Real pi status (optional)
 
-Canopy has no pty for a `pi` process outside herdr, so by default it falls
+Canopy has no pty for a `pi` process running outside a terminal it owns, so by default it falls
 back to the same CPU% heuristic every other agent kind gets. `pi` is the
 one agent kind canopy can ask directly instead of guessing, though:
 `extensions/canopy-status.ts` is a small companion pi extension (see
