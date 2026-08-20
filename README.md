@@ -63,7 +63,7 @@ canopy — agent sessions on this machine
    blocked    3m      VS Code    ~/worktrees/.../isa-orchestration         pi       9514
    idle       1h20m   Ghostty    ~/some/other/project                     pi       65834
 
-↑/↓ move · enter jump · r refresh · q quit
+↑/↓ move · enter jump · c complete · r refresh · q quit
 ```
 
 The currently selected row is marked with a `>` in the leftmost column
@@ -76,12 +76,36 @@ a tight terminal: useful context, but rarely what you're scanning for.
 Location shortens a leading home-directory prefix to `~`, same as your
 shell prompt.
 
-State is color-coded (red for `blocked`, green for `done`, yellow for
-`working`, dim for `idle`/`unknown`), and a row that just transitioned into
-`blocked` or `done` flashes briefly (a trailing `*` plus a reverse-video
-highlight) so it's hard to miss. Sessions are sorted most-actionable
-first: `blocked`, then `done`, then `working`, then `idle`/`unknown`. Pass
-`--no-color` (or set `NO_COLOR`) to disable all of that and get plain text.
+State is color-coded (red (bold) for `blocked`, green (bold) for `done`,
+yellow for `working`, dim for `idle`/`unknown`), and a row that just
+transitioned into `blocked` or `done` flashes briefly (a trailing `*`
+plus a reverse-video highlight) so it's hard to miss. `blocked` and
+`done` are also the two states that ring the terminal bell (ASCII BEL)
+the moment a row newly transitions into either — the one signal here that
+reaches you even if canopy's own pane isn't the one on screen (a dock
+bounce, tab badge, or audible beep, depending on your terminal's own bell
+setting), unlike the color/flash treatment, which only helps once you're
+already looking at it. It only fires on the transition itself, not on
+every poll a row happens to stay blocked/done — including the first poll
+right after canopy starts up, if a session is already sitting blocked or
+done at that point (same as the flash treatment, which also treats "just
+discovered" the same as "just transitioned"). Sessions are sorted
+most-actionable first: `blocked`, then `done`, then `working`, then
+`idle`/`unknown`. Pass `--no-color` (or set `NO_COLOR`) to disable the
+color/flash treatment and get plain text, and `--no-bell` to disable just
+the bell.
+
+A row that's `done` stays `done` (still sorted to the top, still
+colored, still bell-eligible for its own transition) until you actually
+do something about it: press `enter` to jump to it (which also marks it
+seen right away, without waiting on the extension's own frontmost check—
+see "Real pi status" below), or `c` to mark it seen in place without
+jumping at all. Either one immediately displays that row as `idle` and
+drops it back down in the sort order, no poll wait required. It goes
+back to reading `done` — unacknowledged — the next time it actually
+earns that state again (a fresh turn ending while you're not looking),
+not on every subsequent poll where the underlying session happens to
+still be sitting done.
 
 ## Why Go, not Python
 
@@ -167,12 +191,15 @@ It reports `working` while pi is actively running, and `idle` or `done`
 once a turn ends, depending on whether you were already looking at that
 terminal (same frontmost-app check used by desktop-notification setups) —
 `done` then flips to `idle` on its own, the moment you bring that terminal
-to the front, without waiting for you to send another prompt. It does not
-report `blocked`: vanilla pi has no built-in permission-gate pause to
-detect that from (see the comment at the top of the file for how a
-permission-gate extension could feed it one). macOS only; not installing
-it (or running on another OS) just leaves canopy on the CPU heuristic,
-same as today.
+to the front, without waiting for you to send another prompt. canopy
+itself doesn't wait on that check either: pressing `enter` or `c` on a
+`done` row in canopy marks it seen immediately (see "What it looks like"
+above), independent of whether this extension is installed or that
+frontmost check ever fires. It does not report `blocked`: vanilla pi has
+no built-in permission-gate pause to detect that from (see the comment at
+the top of the file for how a permission-gate extension could feed it
+one). macOS only; not installing it (or running on another OS) just
+leaves canopy on the CPU heuristic, same as today.
 
 ## Limitations
 
@@ -188,6 +215,6 @@ same as today.
   that happen to share a leaf folder name are indistinguishable by title
   alone. Raises the right window but not necessarily the specific
   integrated-terminal tab within it.
-- Mouse click-to-jump isn't implemented (keyboard only: arrow keys +
-  Enter); Bubble Tea's table widget doesn't ship row-click handling out of
-  the box the way Textual's `DataTable` does.
+- Mouse click-to-jump/acknowledge isn't implemented (keyboard only: arrow
+  keys, Enter, c); Bubble Tea's table widget doesn't ship row-click
+  handling out of the box the way Textual's `DataTable` does.

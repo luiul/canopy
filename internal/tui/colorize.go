@@ -26,7 +26,7 @@ const flashMarker = "*"
 
 var stateStyles = map[string]lipgloss.Style{
 	"blocked": lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")),    // needs you now
-	"done":    lipgloss.NewStyle().Foreground(lipgloss.Color("10")),              // finished, ready to check
+	"done":    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")),   // finished, ready to check
 	"working": lipgloss.NewStyle().Foreground(lipgloss.Color("11")),              // busy, nothing for you to do yet
 	"idle":    lipgloss.NewStyle().Foreground(lipgloss.Color("240")),             // waiting on a prompt
 	"unknown": lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("238")), // heuristic couldn't tell

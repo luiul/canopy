@@ -25,7 +25,7 @@ func TestSortEntriesRanksBlockedAndDoneAboveWorking(t *testing.T) {
 		entry(5, ancestry.Ghostty, "unknown"),
 	}
 
-	sortEntries(entries)
+	sortEntries(entries, nil)
 
 	var got []string
 	for _, e := range entries {
@@ -44,19 +44,19 @@ func TestStateCellTextFlashesOnlyBlockedOrDoneWithinTheFlashWindow(t *testing.T)
 
 	blocked := entry(1, ancestry.Ghostty, "blocked")
 	blocked.StateSince = now.Add(-time.Second)
-	if got := stateCellText(blocked, now); got != "blocked"+flashMarker {
+	if got := stateCellText(blocked, now, nil); got != "blocked"+flashMarker {
 		t.Fatalf("got %q, want a flashing blocked cell", got)
 	}
 
 	staleBlocked := entry(2, ancestry.Ghostty, "blocked")
 	staleBlocked.StateSince = now.Add(-flashDuration - time.Second)
-	if got := stateCellText(staleBlocked, now); got != "blocked" {
+	if got := stateCellText(staleBlocked, now, nil); got != "blocked" {
 		t.Fatalf("got %q, want a steady (non-flashing) blocked cell once past flashDuration", got)
 	}
 
 	working := entry(3, ancestry.Ghostty, "working")
 	working.StateSince = now.Add(-time.Second)
-	if got := stateCellText(working, now); got != "working" {
+	if got := stateCellText(working, now, nil); got != "working" {
 		t.Fatalf("got %q, want working to never flash", got)
 	}
 }
@@ -66,12 +66,12 @@ func TestSinceCellTextHumanizesElapsedTimeOrIsEmptyWhenUnknown(t *testing.T) {
 
 	e := entry(1, ancestry.Ghostty, "idle")
 	e.StateSince = now.Add(-90 * time.Second)
-	if got := sinceCellText(e, now); got != "1m" {
+	if got := sinceCellText(e, now, nil); got != "1m" {
 		t.Fatalf("got %q, want 1m", got)
 	}
 
 	unknown := entry(2, ancestry.Ghostty, "idle") // StateSince left zero
-	if got := sinceCellText(unknown, now); got != "" {
+	if got := sinceCellText(unknown, now, nil); got != "" {
 		t.Fatalf("got %q, want empty when StateSince is unknown", got)
 	}
 }
@@ -83,7 +83,7 @@ func TestSummaryLineCountsByStateInPriorityOrder(t *testing.T) {
 		entry(3, ancestry.Ghostty, "blocked"),
 	}
 
-	got := summaryLine(entries)
+	got := summaryLine(entries, nil)
 
 	for _, want := range []string{"3 sessions", "1 blocked", "1 working", "1 idle"} {
 		if !strings.Contains(got, want) {
@@ -96,7 +96,7 @@ func TestSummaryLineCountsByStateInPriorityOrder(t *testing.T) {
 }
 
 func TestSummaryLineIsEmptyWhenThereAreNoEntries(t *testing.T) {
-	if got := summaryLine(nil); got != "" {
+	if got := summaryLine(nil, nil); got != "" {
 		t.Fatalf("got %q, want empty summary for no entries", got)
 	}
 }
@@ -228,7 +228,7 @@ func TestBuildRowsPutsCursorMarkerOnlyOnTheCursorRow(t *testing.T) {
 		entry(2, ancestry.Ghostty, "working"),
 	}
 
-	rows := buildRows(entries, 1, "", time.Now())
+	rows := buildRows(entries, 1, "", time.Now(), nil)
 
 	if rows[0][colCursor] != "" {
 		t.Fatalf("got marker %q on row 0, want no marker", rows[0][colCursor])
@@ -257,5 +257,203 @@ func TestCursorMarkerFollowsArrowKeysBetweenPolls(t *testing.T) {
 	}
 	if got := mm.table.Rows()[1][colCursor]; got != cursorMarker {
 		t.Fatalf("got %q, want row 1 to carry the marker after moving down", got)
+	}
+}
+
+func TestNeedsBellFiresOnlyOnATransitionIntoBlockedOrDone(t *testing.T) {
+	cases := []struct {
+		name     string
+		previous []registry.RegistryEntry
+		fresh    []registry.RegistryEntry
+		want     bool
+	}{
+		{
+			name:     "brand new entry already blocked rings the bell",
+			previous: nil,
+			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "blocked")},
+			want:     true,
+		},
+		{
+			name:     "brand new entry already done rings the bell",
+			previous: nil,
+			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")},
+			want:     true,
+		},
+		{
+			name:     "working flipping to done rings the bell",
+			previous: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")},
+			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")},
+			want:     true,
+		},
+		{
+			name:     "idle flipping to blocked rings the bell",
+			previous: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "idle")},
+			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "blocked")},
+			want:     true,
+		},
+		{
+			name:     "staying blocked across polls does not re-ring",
+			previous: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "blocked")},
+			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "blocked")},
+			want:     false,
+		},
+		{
+			name:     "done flipping to idle does not ring",
+			previous: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")},
+			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "idle")},
+			want:     false,
+		},
+		{
+			name:     "a plain working/idle churn never rings",
+			previous: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "idle")},
+			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")},
+			want:     false,
+		},
+		{
+			name:     "no entries at all never rings",
+			previous: nil,
+			fresh:    nil,
+			want:     false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := needsBell(c.previous, c.fresh); got != c.want {
+				t.Fatalf("needsBell() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestApplyEntriesReportsBellOnlyOnANewAttentionTransition(t *testing.T) {
+	m := New(999)
+	if bell := m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")}); bell {
+		t.Fatal("want no bell on the first poll landing on working")
+	}
+
+	if bell := m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}); !bell {
+		t.Fatal("want a bell the poll working flips to done")
+	}
+
+	// Still done on the next poll: already rang for this transition.
+	if bell := m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}); bell {
+		t.Fatal("want no repeat bell while an entry stays done across polls")
+	}
+}
+
+func TestPollResultMsgReturnsBellCmdOnlyWhenBellIsEnabledAndNeeded(t *testing.T) {
+	m := New(999)
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
+
+	// bellEnabled defaults to true (see New): a fresh done row must produce a
+	// non-nil command.
+	updated, cmd := m.Update(pollResultMsg{entries: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("want a bell command when bellEnabled and a row just went done")
+	}
+
+	// Reset back to a neutral state, then disable the bell and repeat the
+	// same transition: no command this time.
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
+	m = m.WithBell(false)
+	updated, cmd = m.Update(pollResultMsg{entries: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}})
+	if cmd != nil {
+		t.Fatal("want no bell command once WithBell(false) disables it, even on a real transition")
+	}
+	_ = updated
+}
+
+func TestCKeyAcknowledgesADoneRowWithoutJumping(t *testing.T) {
+	m := New(999)
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")})
+
+	if got := m.table.Rows()[0][colState]; got != "done" {
+		t.Fatalf("got %q before acknowledging, want a done cell", got)
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	if cmd != nil {
+		t.Fatal("want no jump command from the c keybind")
+	}
+	mm := updated.(Model)
+
+	if got := mm.table.Rows()[0][colState]; got != "idle" {
+		t.Fatalf("got %q, want the row to display idle immediately after pressing c", got)
+	}
+	// The raw entry itself must stay done: needsBell/registry rely on it.
+	if got, ok := mm.selectedEntry(); !ok || got.State != "done" {
+		t.Fatalf("got %+v, want the underlying entry's raw State to remain done", got)
+	}
+}
+
+func TestEnterAcknowledgesADoneRowAndStillJumps(t *testing.T) {
+	m := New(999)
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")})
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("want enter to still return a jump command for a done row")
+	}
+	mm := updated.(Model)
+
+	if got := mm.table.Rows()[0][colState]; got != "idle" {
+		t.Fatalf("got %q, want the row to display idle immediately after pressing enter on it", got)
+	}
+}
+
+func TestAcknowledgingANonDoneRowIsANoOp(t *testing.T) {
+	m := New(999)
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	mm := updated.(Model)
+
+	if got := mm.table.Rows()[0][colState]; got != "working" {
+		t.Fatalf("got %q, want c on a working row to change nothing", got)
+	}
+}
+
+func TestAcknowledgedDoneStaysAcknowledgedAcrossPollsUntilTheRawStateMovesOn(t *testing.T) {
+	m := New(999)
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+
+	// Still reported done by the source on the next poll (e.g. "c" never
+	// brought the terminal to the front, so canopy-status.ts's own frontmost
+	// poll never noticed): stays displayed as idle.
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")})
+	if got := m.table.Rows()[0][colState]; got != "idle" {
+		t.Fatalf("got %q, want an acknowledged done row to keep displaying idle across polls", got)
+	}
+
+	// A fresh working turn starts: the acknowledgment is spent.
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
+	if got := m.table.Rows()[0][colState]; got != "working" {
+		t.Fatalf("got %q, want working once the source itself moves on", got)
+	}
+
+	// It goes done again later: a brand new, unacknowledged episode.
+	if bell := m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}); !bell {
+		t.Fatal("want a fresh bell for a new done episode after an earlier one was acknowledged")
+	}
+	if got := m.table.Rows()[0][colState]; got != "done" {
+		t.Fatalf("got %q, want the new done episode to display as done again, unacknowledged", got)
+	}
+}
+
+func TestDisplayStateFoldsAckedDoneIntoIdleWithoutTouchingRawState(t *testing.T) {
+	e := entry(1, ancestry.Ghostty, "done")
+	acked := map[string]time.Time{e.Key(): time.Now()}
+
+	if got := displayState(e, acked); got != "idle" {
+		t.Fatalf("got %q, want idle for an acked done entry", got)
+	}
+	if e.State != "done" {
+		t.Fatalf("got %q, want displayState to leave the raw State field alone", e.State)
+	}
+	if got := displayState(e, nil); got != "done" {
+		t.Fatalf("got %q, want done with no acknowledgment recorded", got)
 	}
 }
