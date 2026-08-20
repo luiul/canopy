@@ -104,7 +104,8 @@ One Go package per concern:
 - `internal/ancestry`: walks a process's parent chain to classify which app
   (VS Code / Ghostty) is hosting it.
 - `internal/applescript`: `osascript` wrapper for focusing a Ghostty window
-  by working directory, with macOS Automation-permission error detection.
+  by working directory and a VS Code window by title, with macOS
+  Automation-permission error detection.
 - `internal/jump`: picks the actual jump mechanism (`code --reuse-window` or
   Ghostty AppleScript) per row, switching to an already-open window when one
   matches the row's working directory, or opening a brand-new one when none
@@ -176,8 +177,11 @@ same as today.
 - Ghostty jump-to matches by working directory, not tty/pid; ambiguous if
   two tabs share a cwd. If no open tab matches anymore (e.g. it was closed),
   Enter opens a brand-new Ghostty window at that cwd instead, same
-  reuse-or-create behavior as VS Code's `--reuse-window`.
-- VS Code jump-to raises the right window but not necessarily the specific
+  reuse-or-create behavior as VS Code's own title-based window match.
+- VS Code jump-to matches by window title (folder basename), the same weak
+  key as Ghostty's cwd match: two open windows on differently-located repos
+  that happen to share a leaf folder name are indistinguishable by title
+  alone. Raises the right window but not necessarily the specific
   integrated-terminal tab within it.
 - Mouse click-to-jump isn't implemented (keyboard only: arrow keys +
   Enter); Bubble Tea's table widget doesn't ship row-click handling out of

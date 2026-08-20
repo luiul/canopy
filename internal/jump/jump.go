@@ -1,9 +1,10 @@
 // Package jump brings whichever window is actually running a given agent
 // process to the front: `code --reuse-window` for a VS Code integrated
-// terminal, Ghostty's own AppleScript for a bare Ghostty tab, falling back
-// to opening a brand-new window/instance at the same working directory when
-// nothing open matches the row anymore. Nothing to jump to for Surface
-// Unknown, canopy doesn't know what's hosting it.
+// terminal (with osascript detection for actual window focus), Ghostty's own
+// AppleScript for a bare Ghostty tab, falling back to opening a brand-new
+// window/instance at the same working directory when nothing open matches the
+// row anymore. Nothing to jump to for Surface Unknown, canopy doesn't know
+// what's hosting it.
 package jump
 
 import (
@@ -28,6 +29,9 @@ type Result struct {
 type deps struct {
 	lookPathCode         func() (string, bool)
 	runCommand           func(args []string) (exitOK bool, stderr string)
+	windowTitles         func() ([]string, error)
+	matchWindowTitle     func(titles []string, path string) (string, bool)
+	raiseWindow          func(title string) (bool, error)
 	ghosttyFocusByCwd    func(cwd string) (bool, error)
 	ghosttyOpenNewWindow func(cwd string) error
 }
@@ -45,6 +49,9 @@ func defaultDeps() deps {
 			err := cmd.Run()
 			return err == nil, strings.TrimSpace(stderr.String())
 		},
+		windowTitles:         applescript.VSCodeWindowTitles,
+		matchWindowTitle:     applescript.VSCodeMatchWindowTitle,
+		raiseWindow:          applescript.VSCodeRaiseWindow,
 		ghosttyFocusByCwd:    applescript.GhosttyFocusByCwd,
 		ghosttyOpenNewWindow: applescript.GhosttyOpenNewWindow,
 	}
@@ -71,9 +78,31 @@ func jumpVSCode(d deps, entry registry.RegistryEntry) Result {
 		return Result{false, "No known working directory to open."}
 	}
 
+	// First, check whether a window is already open on this path and, if
+	// so, raise it directly: `code --reuse-window` alone isn't enough to
+	// get real switch-or-create behavior (see applescript.VSCodeWindowTitles
+	// for why), so this never even hands the CLI a chance to guess wrong
+	// about which window to reuse.
+	if titles, err := d.windowTitles(); err == nil {
+		if title, found := d.matchWindowTitle(titles, entry.Cwd); found {
+			if raised, err := d.raiseWindow(title); err == nil && raised {
+				return Result{true, "Focused VS Code window for " + entry.Cwd + "."}
+			}
+			// Window vanished between the check and the raise, or raising
+			// it failed outright: fall through to the CLI below, same as
+			// if it had never matched at all.
+		}
+		// An error here (most likely: the Automation permission for
+		// scripting VS Code hasn't been granted yet) just means the
+		// already-open check couldn't run; fall through to the CLI's own
+		// best-effort --reuse-window below rather than failing outright.
+	}
+
+	// Nothing already open matches this path (or the check above couldn't
+	// run): fall back to the CLI's own --reuse-window, best-effort.
 	if codeBin, ok := d.lookPathCode(); ok {
 		if exitOK, _ := d.runCommand([]string{codeBin, "--reuse-window", entry.Cwd}); exitOK {
-			return Result{true, "Focused VS Code window for " + entry.Cwd + "."}
+			return Result{true, "Opened " + entry.Cwd + " in VS Code."}
 		}
 	}
 
