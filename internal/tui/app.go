@@ -163,6 +163,12 @@ type Model struct {
 	notifyIsError bool
 	notifyToken   int
 
+	// bellEnabled gates the terminal-bell side effect in applyEntries/Update
+	// (see needsBell): on by default (set in New), off via --no-bell (see
+	// cmd/canopy) for anyone who finds an audible alert intrusive. Coloring
+	// and flashing in colorize.go happen regardless of this flag.
+	bellEnabled bool
+
 	width, height int
 	quitting      bool
 }
@@ -191,11 +197,22 @@ func New(interval time.Duration) Model {
 	t.SetStyles(styles)
 
 	return Model{
-		interval: interval,
-		user:     currentUser(),
-		home:     homeDir(),
-		table:    t,
+		interval:    interval,
+		user:        currentUser(),
+		home:        homeDir(),
+		table:       t,
+		bellEnabled: true,
 	}
+}
+
+// WithBell sets whether canopy rings the terminal bell (see bellCmd) the
+// moment any row newly needs attention. Chainable off New, e.g.
+// New(interval).WithBell(false), so Run can wire --no-bell through without
+// changing New's signature (and breaking every existing New(999) call in
+// this package's tests).
+func (m Model) WithBell(enabled bool) Model {
+	m.bellEnabled = enabled
+	return m
 }
 
 // Init kicks off the first poll and the recurring timer.
@@ -257,7 +274,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(pollCmd(m.user, m.entries), tickCmd(m.interval))
 
 	case pollResultMsg:
-		m.applyEntries(msg.entries)
+		bell := m.applyEntries(msg.entries)
+		if bell && m.bellEnabled {
+			return m, bellCmd()
+		}
 		return m, nil
 
 	case jumpResultMsg:
@@ -301,12 +321,17 @@ func (m Model) selectedEntry() (registry.RegistryEntry, bool) {
 
 // applyEntries sorts fresh entries, rebuilds the table's rows, and restores
 // the cursor to whichever entry was selected before the refresh (by key),
-// the same key-based cursor-preservation canopy's Python original does.
-func (m *Model) applyEntries(fresh []registry.RegistryEntry) {
+// the same key-based cursor-preservation canopy's Python original does. It
+// returns whether this refresh introduced a row that newly needs attention
+// (see needsBell), computed against the entries from before this call, so
+// Update can ring the bell on exactly the poll where that happened.
+func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 	var previousKey string
 	if entry, ok := m.selectedEntry(); ok {
 		previousKey = entry.Key()
 	}
+
+	bell := needsBell(m.entries, fresh)
 
 	sortEntries(fresh)
 	m.entries = fresh
@@ -328,6 +353,57 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) {
 
 	m.table.SetRows(buildRows(fresh, cursor, m.home, time.Now()))
 	m.table.SetCursor(cursor)
+	return bell
+}
+
+// needsAttention is the two states worth ringing the bell for: the same
+// pair colorize.go flashes and sortEntries ranks above working/idle/
+// unknown (see statePriority) — blocked (needs you right now) and done
+// (finished, ready to check).
+func needsAttention(state string) bool {
+	return state == "blocked" || state == "done"
+}
+
+// needsBell reports whether any entry in fresh newly needs attention
+// compared to previous: either a brand new entry that's already blocked or
+// done the first time canopy sees it, or an existing one whose State just
+// flipped into one of those from something else. An entry that was already
+// blocked/done last poll and still is doesn't re-trigger it — otherwise a
+// session sitting blocked for an hour would ring the bell on every single
+// poll for that whole hour, drowning out the one moment that actually
+// mattered: the transition itself.
+func needsBell(previous, fresh []registry.RegistryEntry) bool {
+	prevState := make(map[string]string, len(previous))
+	for _, p := range previous {
+		prevState[p.Key()] = p.State
+	}
+	for _, f := range fresh {
+		if !needsAttention(f.State) {
+			continue
+		}
+		if was, ok := prevState[f.Key()]; ok && needsAttention(was) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// bellCmd rings the terminal bell (ASCII BEL, \a) via stderr rather than
+// stdout: bubbletea's renderer owns stdout (alt-screen frames get written
+// there on its own schedule), so writing there too risks an interleaved
+// write landing mid-escape-sequence on unlucky timing. stderr is a separate
+// file descriptor pointed at the same tty, so the terminal still receives
+// and acts on the byte — a dock bounce, a tab badge, an audible beep,
+// whatever that terminal's own bell preference is set to — without
+// touching the renderer's channel. This is the one signal in canopy that
+// reaches you even if canopy's own pane isn't the one you're looking at,
+// which a color change or flash (colorize.go) by definition cannot.
+func bellCmd() tea.Cmd {
+	return func() tea.Msg {
+		fmt.Fprint(os.Stderr, "\a")
+		return nil
+	}
 }
 
 // refreshCursorMarker rebuilds the table's rows so the leftmost
@@ -481,8 +557,8 @@ func (m Model) View() string {
 }
 
 // Run starts the dashboard program and blocks until the user quits.
-func Run(interval time.Duration) error {
-	p := tea.NewProgram(New(interval), tea.WithAltScreen())
+func Run(interval time.Duration, bellEnabled bool) error {
+	p := tea.NewProgram(New(interval).WithBell(bellEnabled), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }

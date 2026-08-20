@@ -259,3 +259,107 @@ func TestCursorMarkerFollowsArrowKeysBetweenPolls(t *testing.T) {
 		t.Fatalf("got %q, want row 1 to carry the marker after moving down", got)
 	}
 }
+
+func TestNeedsBellFiresOnlyOnATransitionIntoBlockedOrDone(t *testing.T) {
+	cases := []struct {
+		name     string
+		previous []registry.RegistryEntry
+		fresh    []registry.RegistryEntry
+		want     bool
+	}{
+		{
+			name:     "brand new entry already blocked rings the bell",
+			previous: nil,
+			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "blocked")},
+			want:     true,
+		},
+		{
+			name:     "brand new entry already done rings the bell",
+			previous: nil,
+			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")},
+			want:     true,
+		},
+		{
+			name:     "working flipping to done rings the bell",
+			previous: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")},
+			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")},
+			want:     true,
+		},
+		{
+			name:     "idle flipping to blocked rings the bell",
+			previous: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "idle")},
+			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "blocked")},
+			want:     true,
+		},
+		{
+			name:     "staying blocked across polls does not re-ring",
+			previous: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "blocked")},
+			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "blocked")},
+			want:     false,
+		},
+		{
+			name:     "done flipping to idle does not ring",
+			previous: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")},
+			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "idle")},
+			want:     false,
+		},
+		{
+			name:     "a plain working/idle churn never rings",
+			previous: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "idle")},
+			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")},
+			want:     false,
+		},
+		{
+			name:     "no entries at all never rings",
+			previous: nil,
+			fresh:    nil,
+			want:     false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := needsBell(c.previous, c.fresh); got != c.want {
+				t.Fatalf("needsBell() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestApplyEntriesReportsBellOnlyOnANewAttentionTransition(t *testing.T) {
+	m := New(999)
+	if bell := m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")}); bell {
+		t.Fatal("want no bell on the first poll landing on working")
+	}
+
+	if bell := m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}); !bell {
+		t.Fatal("want a bell the poll working flips to done")
+	}
+
+	// Still done on the next poll: already rang for this transition.
+	if bell := m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}); bell {
+		t.Fatal("want no repeat bell while an entry stays done across polls")
+	}
+}
+
+func TestPollResultMsgReturnsBellCmdOnlyWhenBellIsEnabledAndNeeded(t *testing.T) {
+	m := New(999)
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
+
+	// bellEnabled defaults to true (see New): a fresh done row must produce a
+	// non-nil command.
+	updated, cmd := m.Update(pollResultMsg{entries: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("want a bell command when bellEnabled and a row just went done")
+	}
+
+	// Reset back to a neutral state, then disable the bell and repeat the
+	// same transition: no command this time.
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
+	m = m.WithBell(false)
+	updated, cmd = m.Update(pollResultMsg{entries: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}})
+	if cmd != nil {
+		t.Fatal("want no bell command once WithBell(false) disables it, even on a real transition")
+	}
+	_ = updated
+}

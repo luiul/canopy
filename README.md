@@ -71,12 +71,24 @@ The currently selected row is marked with a `>` in the leftmost column
 on whichever row happens to be selected). Location shortens a leading
 home-directory prefix to `~`, same as your shell prompt.
 
-State is color-coded (red for `blocked`, green for `done`, yellow for
+State is color-coded (red for `blocked`, green (bold) for `done`, yellow for
 `working`, dim for `idle`/`unknown`), and a row that just transitioned into
 `blocked` or `done` flashes briefly (a trailing `*` plus a reverse-video
-highlight) so it's hard to miss. Sessions are sorted most-actionable
-first: `blocked`, then `done`, then `working`, then `idle`/`unknown`. Pass
-`--no-color` (or set `NO_COLOR`) to disable all of that and get plain text.
+highlight) so it's hard to miss. `blocked` and `done` are also the two
+states that ring the terminal bell (ASCII BEL) the moment a row newly
+transitions into either — the one signal here that reaches you even if
+canopy's own pane isn't the one on screen (a dock bounce, tab badge, or
+audible beep, depending on your terminal's own bell setting), unlike the
+color/flash treatment, which only helps once you're already looking at
+it. It only fires on the transition itself, not on every poll a row happens
+to stay blocked/done — including the first poll right after canopy
+starts up, if a session is already sitting blocked or done at that point
+(same as the flash treatment, which also treats "just discovered" the
+same as "just transitioned"). Sessions are
+sorted most-actionable first: `blocked`, then `done`, then `working`, then
+`idle`/`unknown`. Pass `--no-color` (or set `NO_COLOR`) to disable the
+color/flash treatment and get plain text, and `--no-bell` to disable just
+the bell.
 
 ## Why Go, not Python
 
