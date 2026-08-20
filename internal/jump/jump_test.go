@@ -16,65 +16,6 @@ func entry(surface ancestry.Surface, mutate func(*registry.RegistryEntry)) regis
 	return e
 }
 
-func herdrEntry() registry.RegistryEntry {
-	return entry(ancestry.Herdr, func(e *registry.RegistryEntry) {
-		e.WorkspaceID, e.TabID, e.PaneID = "wG", "wG:t1", "wG:p1"
-	})
-}
-
-func TestJumpToHerdrFocusesWorkspaceTabAndPane(t *testing.T) {
-	type call struct{ kind, id string }
-	var calls []call
-	d := defaultDeps()
-	d.focusWorkspace = func(id string) bool { calls = append(calls, call{"workspace", id}); return true }
-	d.focusTab = func(id string) bool { calls = append(calls, call{"tab", id}); return true }
-	d.focusPane = func(id string) bool { calls = append(calls, call{"pane", id}); return true }
-	d.activateGhostty = func() bool { return true }
-
-	result := jumpWith(d, herdrEntry())
-
-	if !result.OK {
-		t.Fatalf("want ok, got %+v", result)
-	}
-	want := []call{{"workspace", "wG"}, {"tab", "wG:t1"}, {"pane", "wG:p1"}}
-	if len(calls) != len(want) {
-		t.Fatalf("got %+v, want %+v", calls, want)
-	}
-	for i := range want {
-		if calls[i] != want[i] {
-			t.Fatalf("got %+v, want %+v", calls, want)
-		}
-	}
-}
-
-func TestJumpToHerdrReportsFailureWhenHerdrRejectsEveryFocusCall(t *testing.T) {
-	d := defaultDeps()
-	d.focusWorkspace = func(string) bool { return false }
-	d.focusTab = func(string) bool { return false }
-	d.focusPane = func(string) bool { return false }
-
-	result := jumpWith(d, herdrEntry())
-
-	if result.OK {
-		t.Fatalf("want not ok, got %+v", result)
-	}
-}
-
-func TestJumpToHerdrRaisesGhosttyAsAFallback(t *testing.T) {
-	d := defaultDeps()
-	d.focusWorkspace = func(string) bool { return true }
-	d.focusTab = func(string) bool { return true }
-	d.focusPane = func(string) bool { return true }
-	activated := false
-	d.activateGhostty = func() bool { activated = true; return true }
-
-	jumpWith(d, herdrEntry())
-
-	if !activated {
-		t.Fatal("want activateGhostty to be called")
-	}
-}
-
 func TestJumpToVSCodeUsesTheCodeCLIWhenAvailable(t *testing.T) {
 	var gotArgs []string
 	d := defaultDeps()

@@ -23,8 +23,7 @@ import (
 // DefaultInterval is the poll interval used when none is given. Also sets
 // the resolution of refineExternalStates' CPU-time delta: a shorter
 // interval means a tighter, more responsive "has this actually done
-// anything recently" window, at the cost of polling ps/lsof/herdr more
-// often.
+// anything recently" window, at the cost of polling ps/lsof more often.
 const DefaultInterval = 2 * time.Second
 
 const notifyDuration = 4 * time.Second
@@ -44,7 +43,6 @@ const (
 
 var (
 	surfaceLabels = map[ancestry.Surface]string{
-		ancestry.Herdr:   "herdr",
 		ancestry.VSCode:  "VS Code",
 		ancestry.Ghostty: "Ghostty",
 		ancestry.Unknown: "unknown",
@@ -84,9 +82,6 @@ func homeDir() string {
 }
 
 func location(e registry.RegistryEntry, home string) string {
-	if e.Surface == ancestry.Herdr && e.WorkspaceID != "" {
-		return "herdr:" + e.WorkspaceID
-	}
 	if e.Cwd == "" {
 		return "?"
 	}

@@ -1,8 +1,7 @@
 // Package jump brings whichever window is actually running a given agent
-// process to the front: herdr's own socket focus for a pane it tracks,
-// `code --reuse-window` for a VS Code integrated terminal, Ghostty's own
-// AppleScript for a bare Ghostty tab. Nothing to jump to for Surface
-// Unknown, canopy doesn't know what's hosting it.
+// process to the front: `code --reuse-window` for a VS Code integrated
+// terminal, Ghostty's own AppleScript for a bare Ghostty tab. Nothing to
+// jump to for Surface Unknown, canopy doesn't know what's hosting it.
 package jump
 
 import (
@@ -11,7 +10,6 @@ import (
 
 	"github.com/luiul/canopy/internal/ancestry"
 	"github.com/luiul/canopy/internal/applescript"
-	"github.com/luiul/canopy/internal/herdrclient"
 	"github.com/luiul/canopy/internal/registry"
 )
 
@@ -26,10 +24,6 @@ type Result struct {
 // each one out (the same "monkeypatch the module boundary" pattern the
 // Python original's tests use), without touching the real OS.
 type deps struct {
-	focusWorkspace    func(string) bool
-	focusTab          func(string) bool
-	focusPane         func(string) bool
-	activateGhostty   func() bool
 	lookPathCode      func() (string, bool)
 	runCommand        func(args []string) (exitOK bool, stderr string)
 	ghosttyFocusByCwd func(cwd string) (bool, error)
@@ -37,10 +31,6 @@ type deps struct {
 
 func defaultDeps() deps {
 	return deps{
-		focusWorkspace:  herdrclient.FocusWorkspace,
-		focusTab:        herdrclient.FocusTab,
-		focusPane:       herdrclient.FocusPane,
-		activateGhostty: applescript.ActivateGhostty,
 		lookPathCode: func() (string, bool) {
 			p, err := exec.LookPath("code")
 			return p, err == nil
@@ -63,8 +53,6 @@ func To(entry registry.RegistryEntry) Result {
 
 func jumpWith(d deps, entry registry.RegistryEntry) Result {
 	switch entry.Surface {
-	case ancestry.Herdr:
-		return jumpHerdr(d, entry)
 	case ancestry.VSCode:
 		return jumpVSCode(d, entry)
 	case ancestry.Ghostty:
@@ -72,32 +60,6 @@ func jumpWith(d deps, entry registry.RegistryEntry) Result {
 	default:
 		return Result{false, "Don't know how to jump to this process's window yet."}
 	}
-}
-
-func jumpHerdr(d deps, entry registry.RegistryEntry) Result {
-	focusedAny := false
-	if entry.WorkspaceID != "" {
-		focusedAny = d.focusWorkspace(entry.WorkspaceID) || focusedAny
-	}
-	if entry.TabID != "" {
-		focusedAny = d.focusTab(entry.TabID) || focusedAny
-	}
-	if entry.PaneID != "" {
-		focusedAny = d.focusPane(entry.PaneID) || focusedAny
-	}
-	if !focusedAny {
-		return Result{false, "herdr didn't accept the focus request (pane may be gone)."}
-	}
-
-	// herdr is a client/server pair: focusing above only changes what an
-	// *already attached* herdr client renders. There's no reliable way
-	// from out here to tell which of possibly several open Ghostty windows
-	// is currently showing that client, so this can only raise Ghostty in
-	// general, not the specific window. (Its own return value carries no
-	// separate error path worth surfacing here, same as the Python
-	// original.)
-	d.activateGhostty()
-	return Result{true, "Focused in herdr and raised Ghostty (switch tabs/windows there if needed)."}
 }
 
 func jumpVSCode(d deps, entry registry.RegistryEntry) Result {

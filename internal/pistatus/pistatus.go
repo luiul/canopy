@@ -7,7 +7,7 @@
 // for every agent kind canopy has no pty for.
 //
 // This is the one gap README.md's Limitations section calls out ("Idle/
-// working for non-herdr surfaces is a CPU% heuristic, not a real status"):
+// working for non-`pi` surfaces is a CPU% heuristic, not a real status"):
 // true for every kind except `pi`, once this extension is installed, since
 // `pi` is the one agent canopy can actually ask directly instead of
 // guessing from the outside. Without the extension installed, Read simply

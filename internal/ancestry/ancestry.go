@@ -2,14 +2,11 @@
 // process, by walking its parent chain through a whole-machine `ps`
 // snapshot.
 //
-// This is what makes "jump to the window that has it open" possible without
-// needing anything from herdr: a bare Ghostty tab's shell is a child of
-// `ghostty` itself, herdr routes its panes' shells through the headless
-// `herdr server` process (not through whatever terminal a herdr client
-// happens to be attached from), and a VS Code integrated terminal's shell is
-// a child of one of VS Code's `Code Helper` processes. canopy's jump package
-// picks the actual jump mechanism (AppleScript, `code -r`, herdr's own
-// socket focus) from this.
+// A bare Ghostty tab's shell is a child of `ghostty` itself, and a VS Code
+// integrated terminal's shell is a child of one of VS Code's `Code Helper`
+// processes. canopy's jump package picks the actual jump mechanism
+// (AppleScript for Ghostty, `code --reuse-window` for VS Code) from this
+// classification.
 package ancestry
 
 import (
@@ -26,7 +23,6 @@ const MaxAncestorHops = 12
 type Surface string
 
 const (
-	Herdr   Surface = "herdr"
 	VSCode  Surface = "vscode"
 	Ghostty Surface = "ghostty"
 	Unknown Surface = "unknown"
@@ -59,16 +55,9 @@ func AncestorChain(pid int, table map[int]scan.ProcessInfo) []AncestorHop {
 	return chain
 }
 
-// ClassifySurface reports which app is hosting pid. herdrTracked
-// short-circuits the walk: herdr already told us this pid is inside one of
-// its own panes (via `herdr pane process-info`), which is authoritative and
-// cheaper to trust than re-deriving it from comm paths, since herdr's own
-// client/server split means a herdr pane's ancestor chain does not lead to
-// whatever terminal a herdr client happens to be attached from.
-func ClassifySurface(pid int, table map[int]scan.ProcessInfo, herdrTracked bool) Surface {
-	if herdrTracked {
-		return Herdr
-	}
+// ClassifySurface reports which app is hosting pid by walking its ancestor
+// chain and looking for VS Code or Ghostty process names.
+func ClassifySurface(pid int, table map[int]scan.ProcessInfo) Surface {
 
 	for _, hop := range AncestorChain(pid, table) {
 		comm := hop.Comm

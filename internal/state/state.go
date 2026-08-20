@@ -1,9 +1,7 @@
 // Package state provides best-effort idle/working classification for agent
-// processes herdr does not track (so herdr's own, presumably
-// shell-integration-based, agent_status isn't available for them).
+// processes canopy has no pty for, and so no real status to read.
 //
-// There's no pty herdr doesn't already own for canopy to read output from;
-// per-process CPU usage is the only signal available from outside the
+// Per-process CPU usage is the only signal available from outside the
 // terminal. macOS's own `ps` %cpu is a decaying average over up to a
 // minute of real time (see `man ps`), so a single sample lags well behind a
 // process actually going idle after a burst of work; ClassifyStateFromRate
@@ -11,9 +9,9 @@
 // poll samples instead, bounded by canopy's own poll interval rather than
 // that ~60s window. ClassifyState (a single raw sample) is only the
 // fallback for a process's first poll, when there's no previous sample yet
-// to diff against. Both are coarser than herdr's own status either way (
-// neither can distinguish "idle" from "blocked on user input", both look
-// like ~0% CPU), so both collapse to AgentState Idle here.
+// to diff against. Both are coarse either way (neither can distinguish
+// "idle" from "blocked on user input", both look like ~0% CPU), so both
+// collapse to AgentState Idle here.
 package state
 
 // DefaultThreshold: a process actively doing agent work (tool calls,

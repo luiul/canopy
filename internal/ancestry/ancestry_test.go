@@ -19,17 +19,6 @@ func table(rows ...row) map[int]scan.ProcessInfo {
 	return t
 }
 
-func TestClassifySurfaceTrustsHerdrTrackedWithoutWalkingTheTable(t *testing.T) {
-	// herdr routes a pane's shell through its own headless server process,
-	// not through whatever terminal a herdr *client* happens to be attached
-	// from, so the ancestor chain wouldn't show anything herdr-related
-	// anyway; herdrTracked=true must short-circuit the walk.
-	tbl := table(row{1, 0, "/sbin/launchd"})
-	if got := ClassifySurface(999, tbl, true); got != Herdr {
-		t.Fatalf("got %v, want Herdr", got)
-	}
-}
-
 func TestClassifySurfaceDetectsVSCodeAFewHopsUp(t *testing.T) {
 	tbl := table(
 		row{56621, 53610, "/Users/luis.aceituno/.local/bin/pi"},
@@ -37,7 +26,7 @@ func TestClassifySurfaceDetectsVSCodeAFewHopsUp(t *testing.T) {
 		row{1350, 797, "/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper"},
 		row{797, 1, "/Applications/Visual Studio Code.app/Contents/MacOS/Code"},
 	)
-	if got := ClassifySurface(56621, tbl, false); got != VSCode {
+	if got := ClassifySurface(56621, tbl); got != VSCode {
 		t.Fatalf("got %v, want VSCode", got)
 	}
 }
@@ -48,7 +37,7 @@ func TestClassifySurfaceDetectsVSCodeInsiders(t *testing.T) {
 		row{5, 2, "/bin/zsh"},
 		row{2, 1, "/Applications/Visual Studio Code - Insiders.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper"},
 	)
-	if got := ClassifySurface(10, tbl, false); got != VSCode {
+	if got := ClassifySurface(10, tbl); got != VSCode {
 		t.Fatalf("got %v, want VSCode", got)
 	}
 }
@@ -59,7 +48,7 @@ func TestClassifySurfaceDetectsBareGhosttyTab(t *testing.T) {
 		row{78245, 8028, "-/bin/zsh"},
 		row{8028, 1, "/Applications/Ghostty.app/Contents/MacOS/ghostty"},
 	)
-	if got := ClassifySurface(78424, tbl, false); got != Ghostty {
+	if got := ClassifySurface(78424, tbl); got != Ghostty {
 		t.Fatalf("got %v, want Ghostty", got)
 	}
 }
@@ -69,13 +58,13 @@ func TestClassifySurfaceUnknownWhenNoRecognizedAncestor(t *testing.T) {
 		row{10, 5, "/usr/local/bin/claude"},
 		row{5, 1, "/sbin/launchd"},
 	)
-	if got := ClassifySurface(10, tbl, false); got != Unknown {
+	if got := ClassifySurface(10, tbl); got != Unknown {
 		t.Fatalf("got %v, want Unknown", got)
 	}
 }
 
 func TestClassifySurfaceUnknownWhenPidMissingFromTable(t *testing.T) {
-	if got := ClassifySurface(999999, map[int]scan.ProcessInfo{}, false); got != Unknown {
+	if got := ClassifySurface(999999, map[int]scan.ProcessInfo{}); got != Unknown {
 		t.Fatalf("got %v, want Unknown", got)
 	}
 }
@@ -87,7 +76,7 @@ func TestClassifySurfaceDoesNotLoopForeverOnACycle(t *testing.T) {
 		1: {Pid: 1, Ppid: 2, Pcpu: 0.0, Tty: "s000", Comm: "a"},
 		2: {Pid: 2, Ppid: 1, Pcpu: 0.0, Tty: "s000", Comm: "b"},
 	}
-	if got := ClassifySurface(1, tbl, false); got != Unknown {
+	if got := ClassifySurface(1, tbl); got != Unknown {
 		t.Fatalf("got %v, want Unknown", got)
 	}
 }

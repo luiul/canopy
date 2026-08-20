@@ -1,9 +1,5 @@
-// Package scan finds the current user's processes that match herdr's known
-// agent kinds.
-//
-// herdr recognizes a fixed set of agent CLIs (`herdr agent start --help`
-// lists them). canopy uses the same list: an agent process herdr doesn't
-// know how to detect anyway isn't in scope for "an agent herdr can't see".
+// Package scan finds the current user's processes that match known agent
+// CLI kinds: pi, claude, codex, etc.
 package scan
 
 import (
@@ -15,8 +11,7 @@ import (
 	"time"
 )
 
-// KnownKinds is kept in sync with `herdr agent start --help`'s `--kind`
-// values.
+// KnownKinds is the set of recognized agent CLI kinds that canopy tracks.
 var KnownKinds = map[string]bool{
 	"pi": true, "claude": true, "codex": true, "gemini": true, "cursor": true,
 	"devin": true, "agy": true, "cline": true, "omp": true, "mastracode": true,
@@ -141,9 +136,7 @@ func ResolveCwds(pids []int) map[int]string {
 // compute a poll-to-poll CPU delta (CPUTime) for everything else, since
 // Pcpu itself is a decaying average macOS computes over up to a minute of
 // real time and lags well behind a process actually going idle (see
-// registry.refineExternalStates). Tty is only needed to find which OS
-// terminal window is currently running an attached `herdr` client, for
-// canopy's jump package's herdr case.
+// registry.refineExternalStates).
 type ProcessInfo struct {
 	Pid     int
 	Ppid    int

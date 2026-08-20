@@ -117,8 +117,7 @@ func GhosttyFocusByCwd(cwd string) (bool, error) {
 
 // ActivateGhostty is a best-effort attempt to just raise Ghostty as an app,
 // without picking a specific window. Used as a fallback when there's no
-// reliable way to identify *which* Ghostty window matters (e.g. finding the
-// window showing a live herdr session).
+// reliable way to identify *which* Ghostty window matters.
 func ActivateGhostty() bool {
 	err := exec.Command("open", "-a", "Ghostty").Run()
 	return err == nil

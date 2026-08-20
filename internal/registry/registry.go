@@ -1,16 +1,15 @@
 // Package registry holds the in-memory model of every known-kind agent
 // process on the machine right now: which app surface is actually hosting
-// it (herdr / VS Code / a bare Ghostty tab / unknown), and its state
-// (herdr's own idle/working/blocked/done/unknown for a pane it tracks;
-// canopy-status.ts's real working/idle/done, straight from pi's own
-// agent-lifecycle events, for a `pi` process outside herdr that has it
-// installed, see internal/pistatus; a poll-to-poll CPU-delta idle/working
-// heuristic for anything else).
+// it (VS Code / a bare Ghostty tab / unknown), and its state
+// (canopy-status.ts's real working/idle/done, straight from pi's own
+// agent-lifecycle events, for a `pi` process that has it installed, see
+// internal/pistatus; a poll-to-poll CPU-delta idle/working heuristic for
+// any other agent kind).
 //
 // No file is written here, canopy holds this only for as long as its own
 // process (the TUI) is running; there is no background daemon, no
-// LaunchAgent, and nothing is reported back into herdr. PollOnce is meant
-// to be called on a timer from canopy's tui package.
+// LaunchAgent. PollOnce is meant to be called on a timer from canopy's tui
+// package.
 package registry
 
 import (
@@ -18,15 +17,15 @@ import (
 	"time"
 
 	"github.com/luiul/canopy/internal/ancestry"
-	"github.com/luiul/canopy/internal/herdrclient"
+
 	"github.com/luiul/canopy/internal/pistatus"
 	"github.com/luiul/canopy/internal/scan"
 	"github.com/luiul/canopy/internal/state"
 )
 
 // MissLimit is how many consecutive missed polls a row survives before
-// being dropped. Smooths over a single transient ps/herdr hiccup instead of
-// a row flickering away and back while someone is about to press Enter on
+// being dropped. Smooths over a single transient ps/pistatus hiccup instead
+// of a row flickering away and back while someone is about to press Enter on
 // it.
 const MissLimit = 1
 
@@ -45,23 +44,20 @@ type RegistryEntry struct {
 	// a row that just became blocked or done.
 	StateSince time.Time
 	// CPUTime and CPUSampledAt back refineExternalStates' delta-based
-	// idle/working correction for entries herdr doesn't track: macOS's own
-	// `ps` %cpu is a decaying average over up to a minute of real time (see
-	// `man ps`), so a process that was genuinely busy a while ago can still
-	// read as "working" for up to a minute after it's actually gone idle.
-	// Comparing this process's cumulative CPU time against the previous
-	// poll's sample, over the actual wall-clock gap between those two
-	// polls, gives a rate bounded by canopy's own poll interval instead.
-	// Left zero for herdr-tracked entries, whose State comes straight from
-	// herdr.
+	// idle/working correction: macOS's own `ps` %cpu is a decaying average
+	// over up to a minute of real time (see `man ps`), so a process that was
+	// genuinely busy a while ago can still read as "working" for up to a
+	// minute after it's actually gone idle. Comparing this process's
+	// cumulative CPU time against the previous poll's sample, over the actual
+	// wall-clock gap between those two polls, gives a rate bounded by
+	// canopy's own poll interval instead.
 	CPUTime      time.Duration
 	CPUSampledAt time.Time
 	// RealState is true when State this poll came from canopy-status.ts (see
 	// internal/pistatus) rather than the CPU heuristic: pi self-reporting its
-	// own working/idle/done straight from its agent-lifecycle events, for a
-	// `pi` process canopy found outside herdr. refineExternalStates leaves
-	// State alone for any entry with RealState set, rather than
-	// second-guessing it with a CPU-time delta.
+	// own working/idle/done straight from its agent-lifecycle events.
+	// refineExternalStates leaves State alone for any entry with RealState
+	// set, rather than second-guessing it with a CPU-time delta.
 	RealState bool
 	// WorkingStreak counts consecutive poll-to-poll samples that read at or
 	// above state.DefaultThreshold. refineExternalStates only reports
@@ -73,9 +69,7 @@ type RegistryEntry struct {
 	// Idle needs no such debounce: it resets to 0 (and State to Idle) the
 	// moment a sample reads below threshold.
 	WorkingStreak int
-	WorkspaceID   string
-	TabID         string
-	PaneID        string
+
 	Misses        int
 }
 
@@ -86,56 +80,14 @@ func (e RegistryEntry) Key() string {
 	return fmt.Sprintf("%d:%s", e.Pid, e.Kind)
 }
 
-// herdrEntries builds rows straight from herdr's own data (its
-// agent_status is authoritative there) for panes herdr already tracks, and
-// the pids to exclude from the plain ps scan, so nothing is listed twice.
-func herdrEntries() (trackedPids map[int]bool, entries []RegistryEntry) {
-	trackedPids = map[int]bool{}
-	for _, pane := range herdrclient.PaneList() {
-		if pane.Agent == "" || pane.PaneID == "" {
-			continue
-		}
-		info := herdrclient.PaneProcessInfo(pane.PaneID)
-		if info == nil || info.ForegroundProcessGroupID == nil {
-			continue
-		}
-		fgPid := int(*info.ForegroundProcessGroupID)
-		trackedPids[fgPid] = true
-		entries = append(entries, RegistryEntry{
-			Pid:         fgPid,
-			Kind:        pane.Agent,
-			Tty:         "",
-			Cwd:         pane.Cwd,
-			Surface:     ancestry.Herdr,
-			State:       orDefault(pane.AgentStatus, "unknown"),
-			WorkspaceID: pane.WorkspaceID,
-			TabID:       pane.TabID,
-			PaneID:      pane.PaneID,
-		})
-	}
-	return trackedPids, entries
-}
-
-func orDefault(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
-}
-
 // externalEntries classifies which app surface hosts every scanned agent
-// process herdr doesn't already track, and guesses idle/working from a
-// single macOS `ps` %cpu sample, since there's no pty here for canopy to
-// read a real status from and no previous poll's CPU-time sample to diff
-// against yet at this point. refineExternalStates corrects that guess with
-// a real poll-to-poll delta for every entry that survives to a second
-// poll.
-func externalEntries(matches []scan.ProcessMatch, excludePids map[int]bool) []RegistryEntry {
+// process, and guesses idle/working from a single macOS `ps` %cpu sample.
+// refineExternalStates corrects that guess with a real poll-to-poll delta
+// for every entry that survives to a second poll.
+func externalEntries(matches []scan.ProcessMatch) []RegistryEntry {
 	var candidates []scan.ProcessMatch
 	for _, m := range matches {
-		if !excludePids[m.Pid] {
-			candidates = append(candidates, m)
-		}
+		candidates = append(candidates, m)
 	}
 	if len(candidates) == 0 {
 		return nil
@@ -150,7 +102,7 @@ func externalEntries(matches []scan.ProcessMatch, excludePids map[int]bool) []Re
 
 	entries := make([]RegistryEntry, 0, len(candidates))
 	for _, m := range candidates {
-		surface := ancestry.ClassifySurface(m.Pid, table, false)
+		surface := ancestry.ClassifySurface(m.Pid, table)
 		var pcpu *float64
 		var cpuTime time.Duration
 		if info, ok := table[m.Pid]; ok {
@@ -299,16 +251,14 @@ func MergeRegistry(previous, fresh []RegistryEntry) []RegistryEntry {
 	return merged
 }
 
-// PollOnce takes one full snapshot: herdr-tracked panes plus every other
-// known-kind agent process, merged against the previous snapshot so a
-// single transient miss doesn't flicker a row away.
+// PollOnce takes one full snapshot of every known-kind agent process,
+// merged against the previous snapshot so a single transient miss doesn't
+// flicker a row away.
 func PollOnce(user string, previous []RegistryEntry) []RegistryEntry {
 	now := time.Now()
-	trackedPids, herdrRows := herdrEntries()
 	matches := scan.ScanAgentProcesses(user)
-	externalRows := externalEntries(matches, trackedPids)
-	externalRows = refineExternalStates(previous, externalRows, now)
-	fresh := append(herdrRows, externalRows...)
-	fresh = stampStateSince(previous, fresh, now)
-	return MergeRegistry(previous, fresh)
+	rows := externalEntries(matches)
+	rows = refineExternalStates(previous, rows, now)
+	rows = stampStateSince(previous, rows, now)
+	return MergeRegistry(previous, rows)
 }
