@@ -58,6 +58,20 @@ type RegistryEntry struct {
 	// refineExternalStates leaves State alone for any entry with RealState
 	// set, rather than second-guessing it with a CPU-time delta.
 	RealState bool
+	// RealStateReportedAt is pistatus.Status.UpdatedAt for a RealState entry:
+	// the moment canopy-status.ts itself wrote this State, not the moment
+	// canopy polled it. Zero for anything else (CPU-heuristic entries have no
+	// such source timestamp). This is the one piece of information that can
+	// tell a genuinely new "done" write apart from the same still-fresh one
+	// repeating across polls when the State string alone can't: pistatus.Read
+	// keeps returning the literal string "done" for up to pistatus.MaxAge
+	// after a turn settles, and if a second turn starts and settles again
+	// within that same window without canopy ever sampling a "working" poll
+	// in between, State reads "done" on both sides with nothing to tell them
+	// apart — except this timestamp, which advances on the second write even
+	// though the string doesn't. internal/tui's updateDoneTracking/needsBell
+	// use it for exactly that.
+	RealStateReportedAt time.Time
 	// WorkingStreak counts consecutive poll-to-poll samples that read at or
 	// above state.DefaultThreshold. refineExternalStates only reports
 	// Working once this reaches workingConfirmPolls: a single qualifying
@@ -124,6 +138,7 @@ func externalEntries(matches []scan.ProcessMatch) []RegistryEntry {
 			if st, ok := pistatus.Read(m.Pid); ok {
 				entry.State = st.State
 				entry.RealState = true
+				entry.RealStateReportedAt = st.UpdatedAt
 				if entry.Cwd == "" {
 					entry.Cwd = st.Cwd
 				}
