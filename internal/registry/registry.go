@@ -39,8 +39,8 @@ type RegistryEntry struct {
 	// StateSince is when State last changed, not when this entry was last
 	// seen. Stamped by stampStateSince on every poll: carried over unchanged
 	// while State stays the same, reset to the poll time the moment it
-	// flips. Used by the TUI to show "how long in this state" and to flash
-	// a row that just became blocked or done.
+	// flips. Used by the TUI to show "how long in this state" and to blink
+	// a row that just became done.
 	StateSince time.Time
 	// CPUTime and CPUSampledAt back refineExternalStates' delta-based
 	// idle/working correction: macOS's own `ps` %cpu is a decaying average

@@ -41,12 +41,12 @@ func TestColorizeRowsAppliesTheStateStyleToAnUnselectedRow(t *testing.T) {
 		{Title: "State", Width: 9},
 	}
 	tbl := table.New(table.WithColumns(cols), table.WithHeight(3))
-	tbl.SetRows([]table.Row{{"pi", "working"}, {"pi", "blocked"}})
+	tbl.SetRows([]table.Row{{"pi", "working"}, {"pi", "done"}})
 	tbl.SetCursor(0) // row 0 selected; row 1 (the one we check) is not
 
 	got := colorizeRows(tbl.View(), tbl.Columns(), 1, -1)
 
-	want := stateStyle("blocked").Render("blocked")
+	want := stateStyle("done").Render("done")
 	if !strings.Contains(got, want) {
 		t.Fatalf("got %q, want it to contain the styled word %q", got, want)
 	}
@@ -59,7 +59,7 @@ func TestColorizeRowsSkipsTheCurrentlySelectedRow(t *testing.T) {
 		{Title: "State", Width: 9},
 	}
 	tbl := table.New(table.WithColumns(cols), table.WithHeight(3))
-	tbl.SetRows([]table.Row{{"pi", "blocked"}})
+	tbl.SetRows([]table.Row{{"pi", "done"}})
 	tbl.SetCursor(0)
 
 	rendered := tbl.View()
@@ -81,12 +81,12 @@ func TestColorizeRowsFlashesAJustTransitionedRowInReverseVideo(t *testing.T) {
 		{Title: "State", Width: 9},
 	}
 	tbl := table.New(table.WithColumns(cols), table.WithHeight(3))
-	tbl.SetRows([]table.Row{{"pi", "working"}, {"pi", "blocked" + flashMarker}})
+	tbl.SetRows([]table.Row{{"pi", "working"}, {"pi", "done" + flashMarker}})
 	tbl.SetCursor(0) // row 0 selected; row 1 (the flashing one) is not
 
 	got := colorizeRows(tbl.View(), tbl.Columns(), 1, -1)
 
-	want := stateStyle("blocked").Reverse(true).Render("blocked" + flashMarker)
+	want := stateStyle("done").Reverse(true).Render("done" + flashMarker)
 	if !strings.Contains(got, want) {
 		t.Fatalf("got %q, want it to contain the reverse-video flash %q", got, want)
 	}

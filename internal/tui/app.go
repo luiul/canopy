@@ -112,21 +112,22 @@ func shortenHome(path, home string) string {
 	return path
 }
 
-// statePriority ranks states by how much attention they need: blocked
-// (waiting on you right now) and done (finished, ready to check) rank
-// highest, then working (busy, nothing for you to do), then idle, then
-// unknown (heuristic couldn't tell).
+// statePriority ranks states by how much attention they need: done
+// (finished, ready to check) ranks highest, then working (busy, nothing
+// for you to do), then idle, then unknown (heuristic couldn't tell). There
+// is deliberately no "blocked" entry: nothing in canopy ever produces that
+// state (see docs/agent-state-machine.md), so it isn't part of the
+// vocabulary here either.
 var statePriority = map[string]int{
-	"blocked": 0,
-	"done":    1,
-	"working": 2,
-	"idle":    3,
-	"unknown": 4,
+	"done":    0,
+	"working": 1,
+	"idle":    2,
+	"unknown": 3,
 }
 
 // stateOrder is statePriority's states in display order, used for the
 // header's per-state summary counts too.
-var stateOrder = []string{"blocked", "done", "working", "idle", "unknown"}
+var stateOrder = []string{"done", "working", "idle", "unknown"}
 
 func statePriorityOf(state string) int {
 	if p, ok := statePriority[state]; ok {
@@ -159,10 +160,25 @@ func sortEntries(entries []registry.RegistryEntry, done map[string]doneEpisode) 
 // (see Model.done). Since is when updateDoneTracking first saw this
 // episode's raw State read "done"; Acked is zero while the episode is
 // still open (unacknowledged) and set to the moment enter or c actually
-// fired for it (see acknowledge).
+// fired for it (see acknowledge). NextBlinkAt/BurstStart drive the blink
+// animation (see advanceBlinks/blinkActive/blinkOn) — the thing that makes
+// an open episode hard to miss, both the moment it opens and again every
+// blinkReminderInterval for as long as it stays open.
 type doneEpisode struct {
 	Since time.Time
 	Acked time.Time
+
+	// NextBlinkAt is when this episode's next blink burst should start:
+	// seeded to the moment the episode opens (see updateDoneTracking), so
+	// the very first burst fires immediately, then pushed forward by
+	// blinkReminderInterval each time advanceBlinks actually starts one.
+	NextBlinkAt time.Time
+
+	// BurstStart is when the current (or most recently started) blink burst
+	// began. blinkActive/blinkOn derive everything about "is this row
+	// blinking, and which half of the on/off toggle is it in" from just
+	// this and now — no separate on/off flag to keep in sync.
+	BurstStart time.Time
 }
 
 // displayState is the state actually shown for e. Three cases, checked in
@@ -203,6 +219,12 @@ type pollResultMsg struct{ entries []registry.RegistryEntry }
 type jumpResultMsg struct{ result jump.Result }
 type clearNotifyMsg struct{ token int }
 
+// blinkTickMsg is the animation frame for an in-progress done blink burst
+// (see tickBlinks/blinkTickCmd): fired every blinkTickInterval, much
+// faster than the dashboard's own poll tick, for exactly as long as some
+// entry is still mid-burst.
+type blinkTickMsg struct{}
+
 // Model is the bubbletea model backing the dashboard.
 type Model struct {
 	interval time.Duration
@@ -236,8 +258,9 @@ type Model struct {
 
 	// bellEnabled gates the terminal-bell side effect in applyEntries/Update
 	// (see needsBell): on by default (set in New), off via --no-bell (see
-	// cmd/canopy) for anyone who finds an audible alert intrusive. Coloring
-	// and flashing in colorize.go happen regardless of this flag.
+	// cmd/canopy) for anyone who finds an audible alert intrusive. Coloring,
+	// flashing, and done's blinking (colorize.go, stateCellText) happen
+	// regardless of this flag.
 	bellEnabled bool
 
 	width, height int
@@ -253,7 +276,7 @@ func New(interval time.Duration) Model {
 		{Title: "Surface", Width: 9},
 		{Title: "Location", Width: 40},
 		{Title: "Kind", Width: 7}, // narrow on purpose; truncates long kinds (e.g. "mastracode")
-		{Title: "PID", Width: 6}, // narrow on purpose; truncates rare 6+ digit pids
+		{Title: "PID", Width: 6},  // narrow on purpose; truncates rare 6+ digit pids
 	}
 	t := table.New(
 		table.WithColumns(columns),
@@ -365,10 +388,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case pollResultMsg:
 		bell := m.applyEntries(msg.entries)
+		// tickBlinks is unconditional, unlike the bell: blinking is a visual
+		// treatment (like coloring/flashing), not an audible one, so --no-bell
+		// doesn't touch it. It starts a fresh burst for any episode newly due
+		// (just opened, or blinkReminderInterval since its last one) and
+		// returns a follow-up command only while a burst is still running.
+		blink := m.tickBlinks(time.Now())
 		if bell && m.bellEnabled {
-			return m, bellCmd()
+			return m, tea.Batch(bellCmd(), blink)
 		}
-		return m, nil
+		return m, blink
+
+	case blinkTickMsg:
+		// Purely an animation frame: no entries changed, just possibly which
+		// half of an in-progress burst's on/off toggle is showing.
+		return m, m.tickBlinks(time.Now())
 
 	case jumpResultMsg:
 		m.notification = msg.result.Message
@@ -473,6 +507,7 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 //     fresh at all. An *open* (unacknowledged) episode is never closed
 //     here just because raw moved off "done" — see point 1.
 func (m *Model) updateDoneTracking(fresh []registry.RegistryEntry) {
+	now := time.Now()
 	byKey := make(map[string]registry.RegistryEntry, len(fresh))
 	for _, e := range fresh {
 		byKey[e.Key()] = e
@@ -489,7 +524,11 @@ func (m *Model) updateDoneTracking(fresh []registry.RegistryEntry) {
 		if m.done == nil {
 			m.done = map[string]doneEpisode{}
 		}
-		m.done[key] = doneEpisode{Since: time.Now()}
+		// NextBlinkAt seeded to now, not left zero: advanceBlinks treats a
+		// zero NextBlinkAt as "nothing scheduled", and the whole point of a
+		// freshly opened episode is that its first blink burst fires right
+		// away, on this same poll.
+		m.done[key] = doneEpisode{Since: now, NextBlinkAt: now}
 	}
 
 	for key, ep := range m.done {
@@ -504,32 +543,105 @@ func (m *Model) updateDoneTracking(fresh []registry.RegistryEntry) {
 	}
 }
 
-// needsAttention is the two states worth ringing the bell for: the same
-// pair colorize.go flashes and sortEntries ranks above working/idle/
-// unknown (see statePriority) — blocked (needs you right now) and done
-// (finished, ready to check).
-func needsAttention(state string) bool {
-	return state == "blocked" || state == "done"
+// advanceBlinks starts a fresh blink burst — from scratch, right now — for
+// every open (unacknowledged) done episode whose NextBlinkAt has arrived:
+// immediately the first time (updateDoneTracking seeds NextBlinkAt to the
+// instant the episode opens), then every blinkReminderInterval after that
+// for as long as it stays unacknowledged. Acknowledged episodes are
+// skipped outright — acknowledge() doesn't need to touch NextBlinkAt/
+// BurstStart itself, since displayState never reports "done" for an acked
+// episode again anyway (see its own doc comment), so this can never
+// restart one after the fact.
+func (m *Model) advanceBlinks(now time.Time) {
+	for key, ep := range m.done {
+		if !ep.Acked.IsZero() || ep.NextBlinkAt.IsZero() || now.Before(ep.NextBlinkAt) {
+			continue
+		}
+		ep.BurstStart = now
+		ep.NextBlinkAt = now.Add(blinkReminderInterval)
+		m.done[key] = ep
+	}
+}
+
+// blinkActive reports whether ep is mid-burst at now: unacknowledged, and
+// still within blinkBurstDuration of its most recent BurstStart. Checking
+// Acked here (not just at advanceBlinks) means a burst stops the instant
+// the user acknowledges it mid-blink, rather than running out its full
+// duration first.
+func blinkActive(ep doneEpisode, now time.Time) bool {
+	return ep.Acked.IsZero() && !ep.BurstStart.IsZero() && now.Sub(ep.BurstStart) < blinkBurstDuration
+}
+
+// blinkOn reports which half of the current on/off toggle a still-active
+// burst is in at now: true for the visible ("on") half, alternating every
+// blinkToggleInterval since BurstStart. Only meaningful once blinkActive
+// has already reported true for the same ep/now — callers check that
+// first.
+func blinkOn(ep doneEpisode, now time.Time) bool {
+	return (now.Sub(ep.BurstStart)/blinkToggleInterval)%2 == 0
+}
+
+// anyBlinkActive reports whether at least one entry in m.done is mid-burst
+// right now — what tickBlinks uses to decide whether the animation needs
+// another frame. Once every open episode's burst has settled, there's
+// nothing left to redraw until the next one's NextBlinkAt arrives, which
+// the regular poll tick notices on its own (see Update's pollResultMsg
+// case) without any dedicated long-duration timer for it.
+func (m Model) anyBlinkActive(now time.Time) bool {
+	for _, ep := range m.done {
+		if blinkActive(ep, now) {
+			return true
+		}
+	}
+	return false
+}
+
+// tickBlinks advances every open done episode's blink schedule against
+// now (see advanceBlinks), rebuilds the table's rows so any resulting
+// on/off change actually renders, and returns a command to redraw again
+// shortly if a burst is still running — nil once every burst has settled,
+// leaving the next reminder to start a new one on some later poll instead
+// of ticking indefinitely. Called from both the poll path (pollResultMsg,
+// where a burst can newly start) and the animation path (blinkTickMsg,
+// which exists purely to keep an already-running burst visibly toggling).
+func (m *Model) tickBlinks(now time.Time) tea.Cmd {
+	m.advanceBlinks(now)
+	m.refreshCursorMarker()
+	if m.anyBlinkActive(now) {
+		return blinkTickCmd()
+	}
+	return nil
+}
+
+// blinkTickCmd schedules the next animation frame for an in-progress
+// blink burst. blinkTickInterval is deliberately shorter than
+// blinkToggleInterval (a few samples per toggle, not one) so no on/off
+// transition is ever skipped over between two redraws purely by unlucky
+// sampling phase.
+func blinkTickCmd() tea.Cmd {
+	return tea.Tick(blinkTickInterval, func(time.Time) tea.Msg { return blinkTickMsg{} })
 }
 
 // needsBell reports whether any entry in fresh newly needs attention
-// compared to previous: either a brand new entry that's already blocked or
-// done the first time canopy sees it, or an existing one whose State just
-// flipped into one of those from something else. An entry that was already
-// blocked/done last poll and still is doesn't re-trigger it — otherwise a
-// session sitting blocked for an hour would ring the bell on every single
-// poll for that whole hour, drowning out the one moment that actually
-// mattered: the transition itself.
+// compared to previous: either a brand new entry that's already done the
+// first time canopy sees it, or an existing one whose State just flipped
+// into done from something else. An entry that was already done last poll
+// and still is doesn't re-trigger it — otherwise a session sitting done
+// for an hour would ring the bell on every single poll for that whole
+// hour, drowning out the one moment that actually mattered: the
+// transition itself. done is the only state this checks: there is no
+// "blocked" in canopy's vocabulary (see docs/agent-state-machine.md), and
+// working/idle/unknown are never worth ringing a bell over.
 func needsBell(previous, fresh []registry.RegistryEntry) bool {
 	prevState := make(map[string]string, len(previous))
 	for _, p := range previous {
 		prevState[p.Key()] = p.State
 	}
 	for _, f := range fresh {
-		if !needsAttention(f.State) {
+		if f.State != "done" {
 			continue
 		}
-		if was, ok := prevState[f.Key()]; ok && needsAttention(was) {
+		if was, ok := prevState[f.Key()]; ok && was == "done" {
 			continue
 		}
 		return true
@@ -637,21 +749,45 @@ func buildRows(entries []registry.RegistryEntry, cursor int, home string, now ti
 	return rows
 }
 
-// flashDuration is how long a row that just transitioned into blocked or
-// done carries flashMarker and its reverse-video highlight, independent of
-// the poll interval so it stays legible whether polling every second or
-// every ten.
-const flashDuration = 8 * time.Second
+// blinkToggleInterval is how long each on/off phase of a done blink lasts:
+// short enough to read as genuinely blinking rather than one long flash,
+// long enough to still be legible.
+const blinkToggleInterval = 300 * time.Millisecond
+
+// blinkPhases is how many on/off phases make up one blink burst (3 full
+// on-off blinks) — unmistakable that a row just went done, without
+// blinking so long it turns into noise.
+const blinkPhases = 6
+
+// blinkBurstDuration is how long a single blink burst runs before
+// settling back to a steady (still colored, just no longer toggling) done
+// cell.
+const blinkBurstDuration = blinkPhases * blinkToggleInterval
+
+// blinkReminderInterval is how long an unacknowledged done row goes quiet
+// between blink bursts. If enter or c still hasn't happened by then, it
+// blinks again — a repeating nudge for as long as a row stays done, not a
+// one-shot animation you could miss once and then forget about.
+const blinkReminderInterval = 5 * time.Minute
+
+// blinkTickInterval drives the animation's own redraw cadence while a
+// burst is active: a few samples per blinkToggleInterval, so no on/off
+// transition is ever skipped over between two redraws purely by unlucky
+// sampling phase. Independent of, and much shorter than, the dashboard's
+// own poll interval.
+const blinkTickInterval = blinkToggleInterval / 3
 
 // stateCellText is the State column's plain-text cell value: displayState's
 // word (see displayState — "idle" rather than "done" once acknowledged),
-// with a trailing flashMarker if it just transitioned into blocked or done
-// (the two states worth calling out) within flashDuration and hasn't been
-// acknowledged since. Actual coloring happens later, in View, by
-// post-processing the rendered table (see colorize.go).
+// with a trailing flashMarker whenever it's a "done" row currently
+// mid-blink-burst and in its visible ("on") half (see blinkActive/blinkOn
+// — toggles on and off as the burst runs). done is the only state with any
+// attention-getting treatment at all; every other word (including
+// "unknown") renders as-is. Actual coloring/reverse-video happens later,
+// in View, by post-processing the rendered table (see colorize.go).
 func stateCellText(e registry.RegistryEntry, now time.Time, done map[string]doneEpisode) string {
 	word := displayState(e, done)
-	if (word == "blocked" || word == "done") && !e.StateSince.IsZero() && now.Sub(e.StateSince) < flashDuration {
+	if ep, ok := done[e.Key()]; word == "done" && ok && blinkActive(ep, now) && blinkOn(ep, now) {
 		return word + flashMarker
 	}
 	return word
@@ -686,7 +822,7 @@ func sinceCellText(e registry.RegistryEntry, now time.Time, done map[string]done
 	return humanizeSince(now.Sub(e.StateSince))
 }
 
-// summaryLine is a one-line "N sessions: N blocked · N working · ..."
+// summaryLine is a one-line "N sessions: N done · N working · ..."
 // breakdown, colored to match the State column and ordered the same way
 // (most actionable first), skipping any state with a zero count. Empty
 // when there are no entries, since the placeholder row already says so.

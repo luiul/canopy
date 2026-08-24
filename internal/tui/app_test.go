@@ -16,13 +16,12 @@ func entry(pid int, surface ancestry.Surface, state string) registry.RegistryEnt
 	return registry.RegistryEntry{Pid: pid, Kind: "pi", Tty: "s017", Cwd: "/Users/x/dotfiles", Surface: surface, State: state}
 }
 
-func TestSortEntriesRanksBlockedAndDoneAboveWorking(t *testing.T) {
+func TestSortEntriesRanksDoneAboveWorking(t *testing.T) {
 	entries := []registry.RegistryEntry{
 		entry(1, ancestry.Ghostty, "working"),
 		entry(2, ancestry.Ghostty, "idle"),
-		entry(3, ancestry.Ghostty, "blocked"),
-		entry(4, ancestry.Ghostty, "done"),
-		entry(5, ancestry.Ghostty, "unknown"),
+		entry(3, ancestry.Ghostty, "done"),
+		entry(4, ancestry.Ghostty, "unknown"),
 	}
 
 	sortEntries(entries, nil)
@@ -31,7 +30,7 @@ func TestSortEntriesRanksBlockedAndDoneAboveWorking(t *testing.T) {
 	for _, e := range entries {
 		got = append(got, e.State)
 	}
-	want := []string{"blocked", "done", "working", "idle", "unknown"}
+	want := []string{"done", "working", "idle", "unknown"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("got order %v, want %v", got, want)
@@ -39,25 +38,143 @@ func TestSortEntriesRanksBlockedAndDoneAboveWorking(t *testing.T) {
 	}
 }
 
-func TestStateCellTextFlashesOnlyBlockedOrDoneWithinTheFlashWindow(t *testing.T) {
+// done's own attention treatment isn't a static flash: it's a real on/off
+// blink for blinkPhases phases, then steady until the next reminder. This
+// exercises that directly against stateCellText, without going through a
+// poll. There is no "blocked" state to test here at all — see
+// docs/agent-state-machine.md: nothing in canopy has ever produced one.
+func TestStateCellTextBlinksDoneOnAndOffDuringABurst(t *testing.T) {
 	now := time.Now()
+	e := entry(1, ancestry.Ghostty, "done")
 
-	blocked := entry(1, ancestry.Ghostty, "blocked")
-	blocked.StateSince = now.Add(-time.Second)
-	if got := stateCellText(blocked, now, nil); got != "blocked"+flashMarker {
-		t.Fatalf("got %q, want a flashing blocked cell", got)
+	onBurst := now.Add(-blinkToggleInterval / 2) // first ("on") phase
+	done := map[string]doneEpisode{e.Key(): {Since: onBurst, BurstStart: onBurst}}
+	if got := stateCellText(e, now, done); got != "done"+flashMarker {
+		t.Fatalf("got %q, want a blinking (on) done cell early in the burst", got)
 	}
 
-	staleBlocked := entry(2, ancestry.Ghostty, "blocked")
-	staleBlocked.StateSince = now.Add(-flashDuration - time.Second)
-	if got := stateCellText(staleBlocked, now, nil); got != "blocked" {
-		t.Fatalf("got %q, want a steady (non-flashing) blocked cell once past flashDuration", got)
+	offBurst := now.Add(-blinkToggleInterval - blinkToggleInterval/2) // second ("off") phase
+	done = map[string]doneEpisode{e.Key(): {Since: offBurst, BurstStart: offBurst}}
+	if got := stateCellText(e, now, done); got != "done" {
+		t.Fatalf("got %q, want a steady (off) done cell mid-burst", got)
 	}
 
-	working := entry(3, ancestry.Ghostty, "working")
-	working.StateSince = now.Add(-time.Second)
-	if got := stateCellText(working, now, nil); got != "working" {
-		t.Fatalf("got %q, want working to never flash", got)
+	staleBurst := now.Add(-blinkBurstDuration - time.Second)
+	done = map[string]doneEpisode{e.Key(): {Since: staleBurst, BurstStart: staleBurst}}
+	if got := stateCellText(e, now, done); got != "done" {
+		t.Fatalf("got %q, want a steady done cell once the burst has settled", got)
+	}
+}
+
+func TestStateCellTextNeverBlinksAnAcknowledgedDoneRowEvenMidBurst(t *testing.T) {
+	now := time.Now()
+	e := entry(1, ancestry.Ghostty, "done")
+	done := map[string]doneEpisode{e.Key(): {Since: now, BurstStart: now, Acked: now}}
+
+	if got := stateCellText(e, now, done); got != "idle" {
+		t.Fatalf("got %q, want idle (via displayState) with no blink marker once acknowledged", got)
+	}
+}
+
+// working/idle/unknown never get any attention-getting marker at all —
+// done is the only state stateCellText treats specially.
+func TestStateCellTextNeverMarksNonDoneStates(t *testing.T) {
+	now := time.Now()
+	for _, state := range []string{"working", "idle", "unknown"} {
+		e := entry(1, ancestry.Ghostty, state)
+		e.StateSince = now.Add(-time.Second)
+		if got := stateCellText(e, now, nil); got != state {
+			t.Fatalf("got %q, want %q to never carry a marker", got, state)
+		}
+	}
+}
+
+func TestBlinkActiveAndBlinkOnToggleAcrossTheBurst(t *testing.T) {
+	burstStart := time.Now()
+	ep := doneEpisode{BurstStart: burstStart}
+
+	if !blinkActive(ep, burstStart) || !blinkOn(ep, burstStart) {
+		t.Fatal("want active and on right at BurstStart")
+	}
+	if blinkOn(ep, burstStart.Add(blinkToggleInterval)) {
+		t.Fatal("want off one toggle interval in")
+	}
+	if !blinkOn(ep, burstStart.Add(2*blinkToggleInterval)) {
+		t.Fatal("want on again two toggle intervals in")
+	}
+	if !blinkActive(ep, burstStart.Add(blinkBurstDuration-time.Millisecond)) {
+		t.Fatal("want still active just before blinkBurstDuration elapses")
+	}
+	if blinkActive(ep, burstStart.Add(blinkBurstDuration)) {
+		t.Fatal("want inactive once blinkBurstDuration has fully elapsed")
+	}
+}
+
+func TestBlinkActiveIsFalseOnceAcknowledgedEvenMidBurst(t *testing.T) {
+	burstStart := time.Now()
+	ep := doneEpisode{BurstStart: burstStart, Acked: burstStart}
+	if blinkActive(ep, burstStart) {
+		t.Fatal("want an acknowledged episode to never report as blinking, even at the exact moment its burst started")
+	}
+}
+
+func TestAdvanceBlinksStartsABurstImmediatelyAndReschedulesFiveMinutesOut(t *testing.T) {
+	now := time.Now()
+	m := New(999)
+	m.done = map[string]doneEpisode{"k": {Since: now, NextBlinkAt: now}}
+
+	m.advanceBlinks(now)
+
+	ep := m.done["k"]
+	if ep.BurstStart != now {
+		t.Fatalf("got BurstStart %v, want %v (burst starts immediately)", ep.BurstStart, now)
+	}
+	if want := now.Add(blinkReminderInterval); ep.NextBlinkAt != want {
+		t.Fatalf("got NextBlinkAt %v, want %v (next reminder five minutes later)", ep.NextBlinkAt, want)
+	}
+}
+
+func TestAdvanceBlinksLeavesAnEpisodeAloneBeforeItsNextBlinkAtArrives(t *testing.T) {
+	now := time.Now()
+	m := New(999)
+	notYet := doneEpisode{Since: now, NextBlinkAt: now.Add(time.Minute)}
+	m.done = map[string]doneEpisode{"k": notYet}
+
+	m.advanceBlinks(now)
+
+	if got := m.done["k"]; got != notYet {
+		t.Fatalf("got %+v, want untouched %+v", got, notYet)
+	}
+}
+
+func TestAdvanceBlinksSkipsAcknowledgedEpisodesEvenIfNextBlinkAtHasArrived(t *testing.T) {
+	now := time.Now()
+	m := New(999)
+	acked := doneEpisode{Since: now.Add(-time.Hour), Acked: now.Add(-time.Minute), NextBlinkAt: now.Add(-time.Second)}
+	m.done = map[string]doneEpisode{"k": acked}
+
+	m.advanceBlinks(now)
+
+	if got := m.done["k"]; got != acked {
+		t.Fatalf("got %+v, want an acknowledged episode left untouched (no restart)", got)
+	}
+}
+
+func TestAnyBlinkActiveReportsTrueOnlyWhileSomeEpisodeIsMidBurst(t *testing.T) {
+	now := time.Now()
+	m := New(999)
+	if m.anyBlinkActive(now) {
+		t.Fatal("want no active blink with an empty done map")
+	}
+
+	m.done = map[string]doneEpisode{"k": {BurstStart: now}}
+	if !m.anyBlinkActive(now) {
+		t.Fatal("want an active blink right at BurstStart")
+	}
+
+	m.done["k"] = doneEpisode{BurstStart: now.Add(-blinkBurstDuration - time.Second)}
+	if m.anyBlinkActive(now) {
+		t.Fatal("want no active blink once the only burst has settled")
 	}
 }
 
@@ -80,18 +197,18 @@ func TestSummaryLineCountsByStateInPriorityOrder(t *testing.T) {
 	entries := []registry.RegistryEntry{
 		entry(1, ancestry.Ghostty, "working"),
 		entry(2, ancestry.Ghostty, "idle"),
-		entry(3, ancestry.Ghostty, "blocked"),
+		entry(3, ancestry.Ghostty, "done"),
 	}
 
 	got := summaryLine(entries, nil)
 
-	for _, want := range []string{"3 sessions", "1 blocked", "1 working", "1 idle"} {
+	for _, want := range []string{"3 sessions", "1 done", "1 working", "1 idle"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("got %q, want it to contain %q", got, want)
 		}
 	}
-	if strings.Index(got, "blocked") > strings.Index(got, "working") {
-		t.Fatalf("got %q, want blocked listed before working", got)
+	if strings.Index(got, "done") > strings.Index(got, "working") {
+		t.Fatalf("got %q, want done listed before working", got)
 	}
 }
 
@@ -260,19 +377,13 @@ func TestCursorMarkerFollowsArrowKeysBetweenPolls(t *testing.T) {
 	}
 }
 
-func TestNeedsBellFiresOnlyOnATransitionIntoBlockedOrDone(t *testing.T) {
+func TestNeedsBellFiresOnlyOnATransitionIntoDone(t *testing.T) {
 	cases := []struct {
 		name     string
 		previous []registry.RegistryEntry
 		fresh    []registry.RegistryEntry
 		want     bool
 	}{
-		{
-			name:     "brand new entry already blocked rings the bell",
-			previous: nil,
-			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "blocked")},
-			want:     true,
-		},
 		{
 			name:     "brand new entry already done rings the bell",
 			previous: nil,
@@ -286,15 +397,9 @@ func TestNeedsBellFiresOnlyOnATransitionIntoBlockedOrDone(t *testing.T) {
 			want:     true,
 		},
 		{
-			name:     "idle flipping to blocked rings the bell",
-			previous: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "idle")},
-			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "blocked")},
-			want:     true,
-		},
-		{
-			name:     "staying blocked across polls does not re-ring",
-			previous: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "blocked")},
-			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "blocked")},
+			name:     "staying done across polls does not re-ring",
+			previous: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")},
+			fresh:    []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")},
 			want:     false,
 		},
 		{
@@ -345,23 +450,107 @@ func TestPollResultMsgReturnsBellCmdOnlyWhenBellIsEnabledAndNeeded(t *testing.T)
 	m := New(999)
 	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
 
-	// bellEnabled defaults to true (see New): a fresh done row must produce a
-	// non-nil command.
+	// bellEnabled defaults to true (see New): a fresh done row must batch a
+	// bell command together with the blink-start command that also fires
+	// for it.
 	updated, cmd := m.Update(pollResultMsg{entries: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}})
 	m = updated.(Model)
 	if cmd == nil {
-		t.Fatal("want a bell command when bellEnabled and a row just went done")
+		t.Fatal("want a non-nil command when bellEnabled and a row just went done")
+	}
+	if _, ok := cmd().(tea.BatchMsg); !ok {
+		t.Fatal("want the bell command batched alongside the blink-start command")
 	}
 
 	// Reset back to a neutral state, then disable the bell and repeat the
-	// same transition: no command this time.
+	// same transition: the blink-start command still fires on its own —
+	// blinking isn't gated by --no-bell, only the bell itself is — but with
+	// no bell command left to batch it with, it comes back unbatched.
 	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
 	m = m.WithBell(false)
 	updated, cmd = m.Update(pollResultMsg{entries: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}})
-	if cmd != nil {
-		t.Fatal("want no bell command once WithBell(false) disables it, even on a real transition")
+	if cmd == nil {
+		t.Fatal("want the blink-start command even once WithBell(false) disables the bell")
+	}
+	if _, ok := cmd().(tea.BatchMsg); ok {
+		t.Fatal("want no bell command batched in once WithBell(false) disables it, even on a real transition")
 	}
 	_ = updated
+}
+
+func TestPollResultMsgStartsABlinkBurstAndKeepsTickingUntilItSettles(t *testing.T) {
+	m := New(999)
+	updated, cmd := m.Update(pollResultMsg{entries: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("want a blink-tick command for a brand new done row")
+	}
+
+	// The burst is mid-flight right after it opens: the row renders in its
+	// visible ("on") phase.
+	if got := m.table.Rows()[0][colState]; got != "done"+flashMarker {
+		t.Fatalf("got %q, want a blinking done cell right after it opens", got)
+	}
+
+	// Fast-forward past the whole burst by rewriting BurstStart directly —
+	// waiting out blinkBurstDuration for real would make this test slow for
+	// no benefit. The next animation frame should settle the row and stop
+	// rescheduling itself.
+	for key, ep := range m.done {
+		ep.BurstStart = time.Now().Add(-blinkBurstDuration - time.Second)
+		m.done[key] = ep
+	}
+	updated, cmd = m.Update(blinkTickMsg{})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatal("want no further blink-tick command once the burst has settled")
+	}
+	if got := m.table.Rows()[0][colState]; got != "done" {
+		t.Fatalf("got %q, want a steady (non-blinking) done cell once the burst settles", got)
+	}
+}
+
+func TestAcknowledgingStopsAnInProgressBlinkBurstImmediately(t *testing.T) {
+	m := New(999)
+	updated, _ := m.Update(pollResultMsg{entries: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}})
+	m = updated.(Model)
+	if got := m.table.Rows()[0][colState]; got != "done"+flashMarker {
+		t.Fatalf("got %q, want a blinking done cell before acknowledging", got)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	mm := updated.(Model)
+	if got := mm.table.Rows()[0][colState]; got != "idle" {
+		t.Fatalf("got %q, want idle immediately, mid-burst, once acknowledged", got)
+	}
+}
+
+func TestDoneRowBlinksAgainAfterTheReminderIntervalIfStillUnacknowledged(t *testing.T) {
+	m := New(999)
+	updated, _ := m.Update(pollResultMsg{entries: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}})
+	m = updated.(Model)
+
+	// Let the first burst settle, and simulate blinkReminderInterval having
+	// passed with no enter/c in between.
+	var key string
+	for k, ep := range m.done {
+		key = k
+		ep.BurstStart = time.Now().Add(-blinkBurstDuration - time.Second)
+		ep.NextBlinkAt = time.Now().Add(-time.Second)
+		m.done[k] = ep
+	}
+
+	updated, cmd := m.Update(blinkTickMsg{})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("want a fresh blink-tick command once the reminder interval has passed")
+	}
+	if got := m.table.Rows()[0][colState]; got != "done"+flashMarker {
+		t.Fatalf("got %q, want the row blinking again for the reminder burst", got)
+	}
+	if got := m.done[key].NextBlinkAt; !got.After(time.Now().Add(blinkReminderInterval - time.Second)) {
+		t.Fatalf("got NextBlinkAt %v, want it rescheduled roughly blinkReminderInterval from now", got)
+	}
 }
 
 func TestCKeyAcknowledgesADoneRowWithoutJumping(t *testing.T) {

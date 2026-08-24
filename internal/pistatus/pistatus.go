@@ -32,8 +32,8 @@ import (
 const MaxAge = 10 * time.Second
 
 // Status is one pid's last self-reported state ("working", "idle", or
-// "done"; see canopy-status.ts for the exact transitions and why "blocked"
-// isn't among them yet).
+// "done"; see canopy-status.ts for the exact transitions, and
+// docs/agent-state-machine.md for why "blocked" isn't among them).
 type Status struct {
 	Pid       int
 	Cwd       string

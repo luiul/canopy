@@ -3,7 +3,7 @@
 // cell truncation (runewidth.Truncate) is not ANSI-aware, so escape codes
 // get counted as extra visible width and sliced mid-sequence, corrupting
 // the row (verified empirically against bubbles/table v1.0.0: a styled
-// "blocked" in a 9-wide column gets truncated to "bl…" with a dangling
+// "working" in a 6-wide column gets truncated to "wor…" with a dangling
 // escape code). Post-processing the table's already-rendered plain-text
 // view instead sidesteps that entirely: the widths/padding/truncation the
 // table computes are always over plain text, and only the final display
@@ -18,14 +18,16 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// flashMarker is appended, as plain text, to a State cell's value for a row
-// whose state just flipped into blocked or done within flashDuration. It's
-// a real, visible character rather than just an ANSI signal, so "just
-// changed" still reads under --no-color.
+// flashMarker is appended, as plain text, to a "done" State cell's value
+// whenever that row is mid-blink-burst and on its visible ("on") phase
+// (see stateCellText in app.go for exactly when that applies — done is
+// the only state with any attention-getting treatment at all). It's a
+// real, visible character rather than just an ANSI signal, so blinking
+// still reads under --no-color: the marker itself appears and disappears
+// between redraws.
 const flashMarker = "*"
 
 var stateStyles = map[string]lipgloss.Style{
-	"blocked": lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")),    // needs you now
 	"done":    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")),   // finished, ready to check
 	"working": lipgloss.NewStyle().Foreground(lipgloss.Color("11")),              // busy, nothing for you to do yet
 	"idle":    lipgloss.NewStyle().Foreground(lipgloss.Color("240")),             // waiting on a prompt
@@ -106,7 +108,9 @@ func recolor(line string, off colOffset, style lipgloss.Style) string {
 // recolorState is recolor specialized for the State column: the style
 // depends on which state word the slice holds, and a trailing flashMarker
 // (still shown, marker and all) gets a reverse-video variant of that
-// state's color for extra pop.
+// state's color for extra pop — in practice only ever seen on a "done"
+// row's visible blink phase (see stateCellText in app.go), but this stays
+// state-word-agnostic since nothing here needs to know that.
 func recolorState(line string, off colOffset) string {
 	if off.start+off.width > len(line) {
 		return line

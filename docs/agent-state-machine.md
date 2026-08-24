@@ -51,9 +51,10 @@ it's modeled as the FSM's entry/exit rather than a fifth peer state.
 There is deliberately no `blocked` state here. `pi` has no
 permission-gate pause to emit one from, so keeping it in the vocabulary
 added a state with no real transition into it; dropped for simplicity.
-(canopy's own dashboard code — `internal/tui`, `internal/registry` —
-still carries pre-existing `blocked` sorting/coloring plumbing; this
-FSM plan and `extensions/canopy-status.ts` both drop it.)
+canopy's own dashboard code (`internal/tui`) carries no `blocked`
+plumbing either — it used to, as pre-existing scaffolding for a state
+nothing has ever produced, and was removed once this FSM plan made that
+permanent.
 
 ## Events
 
