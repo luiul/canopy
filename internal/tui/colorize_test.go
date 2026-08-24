@@ -74,20 +74,20 @@ func TestColorizeRowsSkipsTheCurrentlySelectedRow(t *testing.T) {
 	}
 }
 
-func TestColorizeRowsFlashesAJustTransitionedRowInReverseVideo(t *testing.T) {
+func TestColorizeRowsBlinksAJustTransitionedRowInReverseVideo(t *testing.T) {
 	withForcedColor(t)
 	cols := []table.Column{
 		{Title: "Kind", Width: 4},
 		{Title: "State", Width: 9},
 	}
 	tbl := table.New(table.WithColumns(cols), table.WithHeight(3))
-	tbl.SetRows([]table.Row{{"pi", "working"}, {"pi", "done" + flashMarker}})
-	tbl.SetCursor(0) // row 0 selected; row 1 (the flashing one) is not
+	tbl.SetRows([]table.Row{{"pi", "working"}, {"pi", "done" + blinkMarker}})
+	tbl.SetCursor(0) // row 0 selected; row 1 (the blinking one) is not
 
 	got := colorizeRows(tbl.View(), tbl.Columns(), 1, -1)
 
-	want := stateStyle("done").Reverse(true).Render("done" + flashMarker)
+	want := stateStyle("done").Reverse(true).Render("done" + blinkMarker)
 	if !strings.Contains(got, want) {
-		t.Fatalf("got %q, want it to contain the reverse-video flash %q", got, want)
+		t.Fatalf("got %q, want it to contain the reverse-video blink %q", got, want)
 	}
 }

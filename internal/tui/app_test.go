@@ -61,7 +61,7 @@ func TestStateCellTextBlinksDoneOnAndOffDuringABurst(t *testing.T) {
 
 	onBurst := now.Add(-blinkToggleInterval / 2) // first ("on") phase
 	done := map[string]doneEpisode{e.Key(): {Since: onBurst, BurstStart: onBurst}}
-	if got := stateCellText(e, now, done); got != "done"+flashMarker {
+	if got := stateCellText(e, now, done); got != "done"+blinkMarker {
 		t.Fatalf("got %q, want a blinking (on) done cell early in the burst", got)
 	}
 
@@ -500,7 +500,7 @@ func TestPollResultMsgStartsABlinkBurstAndKeepsTickingUntilItSettles(t *testing.
 
 	// The burst is mid-flight right after it opens: the row renders in its
 	// visible ("on") phase.
-	if got := m.table.Rows()[0][colState]; got != "done"+flashMarker {
+	if got := m.table.Rows()[0][colState]; got != "done"+blinkMarker {
 		t.Fatalf("got %q, want a blinking done cell right after it opens", got)
 	}
 
@@ -526,7 +526,7 @@ func TestAcknowledgingStopsAnInProgressBlinkBurstImmediately(t *testing.T) {
 	m := New(999)
 	updated, _ := m.Update(pollResultMsg{entries: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}})
 	m = updated.(Model)
-	if got := m.table.Rows()[0][colState]; got != "done"+flashMarker {
+	if got := m.table.Rows()[0][colState]; got != "done"+blinkMarker {
 		t.Fatalf("got %q, want a blinking done cell before acknowledging", got)
 	}
 
@@ -557,7 +557,7 @@ func TestDoneRowBlinksAgainAfterTheReminderIntervalIfStillUnacknowledged(t *test
 	if cmd == nil {
 		t.Fatal("want a fresh blink-tick command once the reminder interval has passed")
 	}
-	if got := m.table.Rows()[0][colState]; got != "done"+flashMarker {
+	if got := m.table.Rows()[0][colState]; got != "done"+blinkMarker {
 		t.Fatalf("got %q, want the row blinking again for the reminder burst", got)
 	}
 	if got := m.done[key].NextBlinkAt; !got.After(time.Now().Add(blinkReminderInterval - time.Second)) {

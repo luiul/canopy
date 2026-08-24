@@ -18,14 +18,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// flashMarker is appended, as plain text, to a "done" State cell's value
+// blinkMarker is appended, as plain text, to a "done" State cell's value
 // whenever that row is mid-blink-burst and on its visible ("on") phase
 // (see stateCellText in app.go for exactly when that applies — done is
 // the only state with any attention-getting treatment at all). It's a
 // real, visible character rather than just an ANSI signal, so blinking
 // still reads under --no-color: the marker itself appears and disappears
 // between redraws.
-const flashMarker = "*"
+const blinkMarker = "*"
 
 var stateStyles = map[string]lipgloss.Style{
 	"done":    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")),   // finished, ready to check
@@ -106,7 +106,7 @@ func recolor(line string, off colOffset, style lipgloss.Style) string {
 }
 
 // recolorState is recolor specialized for the State column: the style
-// depends on which state word the slice holds, and a trailing flashMarker
+// depends on which state word the slice holds, and a trailing blinkMarker
 // (still shown, marker and all) gets a reverse-video variant of that
 // state's color for extra pop — in practice only ever seen on a "done"
 // row's visible blink phase (see stateCellText in app.go), but this stays
@@ -117,12 +117,12 @@ func recolorState(line string, off colOffset) string {
 	}
 	slice := line[off.start : off.start+off.width]
 	trimmed := strings.TrimRight(slice, " ")
-	word := strings.TrimSuffix(trimmed, flashMarker)
+	word := strings.TrimSuffix(trimmed, blinkMarker)
 	if word == "" {
 		return line // blank filler row below the real data, or the placeholder row
 	}
 	style := stateStyle(word)
-	if trimmed != word { // flashing: just transitioned
+	if trimmed != word { // mid-blink, visible phase: word carries the marker
 		style = style.Reverse(true)
 	}
 	pad := strings.Repeat(" ", len(slice)-len(trimmed))

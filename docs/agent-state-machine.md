@@ -102,11 +102,11 @@ actually sees: canopy's dashboard already requires an explicit
 `enter`/`c` before a `done` row displays as anything else, per the
 invariant above, regardless of what the raw source reported at
 settle-time. The frontmost check's *only* remaining effect was
-suppressing the bell/flash for a turn the user had already watched
-finish directly in the terminal (bell/flash logic reads the raw
+suppressing the bell/blink for a turn the user had already watched
+finish directly in the terminal (bell/blink logic reads the raw
 `State` transition, not the display overlay — see `needsBell`'s own
 doc comment in `internal/tui/app.go`). Removing it is a deliberate
-trade: the bell/flash now fires on every settled turn, including ones
+trade: the bell/blink now fires on every settled turn, including ones
 the user watched happen live, in exchange for `extensions/canopy-status.ts`
 losing its only subprocess/AppleScript call and its Accessibility-permission
 dependency entirely.
@@ -147,6 +147,16 @@ live in `internal/tui/app.go`:
 - `Model.acknowledge(entry)` — marks the episode as acknowledged on
   `key_enter`/`key_c`; a no-op if the entry is neither raw `done` nor
   has an open episode.
+- `doneEpisode.NextBlinkAt`/`BurstStart`, `Model.advanceBlinks`,
+  `blinkActive`/`blinkOn` — a purely visual layer on top of the
+  invariant above, not a second state machine: an open episode blinks
+  (a real on/off toggle, not a static highlight) the instant it opens,
+  then again every five minutes for as long as it stays unacknowledged,
+  so a `done` row is hard to miss both right away and if it's been
+  sitting there a while. Acknowledging one stops its blinking
+  immediately, mid-burst if need be — `blinkActive` checks `Acked`
+  directly, not just at scheduling time — since `displayState` never
+  reports `done` for an acknowledged episode again regardless.
 
 ### Telling two settles apart when the raw string doesn't change
 

@@ -254,15 +254,14 @@ type Model struct {
 	// summaryLine all read this instead of e.State directly; the raw State
 	// field itself is left completely untouched so needsBell and
 	// registry.stampStateSince keep comparing real poll-to-poll transitions,
-	// not what the user has dismissed on screen (or what's still awaiting
-	// dismissal) on screen. updateDoneTracking (run every poll, before
-	// sorting) is what opens and closes these episodes; deliberately does
-	// *not* close an open one just because the raw source moves off "done"
-	// by itself (e.g. the same session starting a fresh working turn before
-	// the user ever acknowledged the previous done episode in canopy) —
-	// only acknowledge() or the key vanishing from a fresh poll outright
-	// (session ended) does that. See updateDoneTracking's own doc comment
-	// for the full rationale.
+	// not what's currently displayed on screen (dismissed, or still awaiting
+	// dismissal). updateDoneTracking (run every poll, before sorting) is what
+	// opens and closes these episodes; deliberately does *not* close an open
+	// one just because the raw source moves off "done" by itself (e.g. the
+	// same session starting a fresh working turn before the user ever
+	// acknowledged the previous done episode in canopy) — only acknowledge()
+	// or the key vanishing from a fresh poll outright (session ended) does
+	// that. See updateDoneTracking's own doc comment for the full rationale.
 	done map[string]doneEpisode
 
 	notification  string
@@ -271,9 +270,9 @@ type Model struct {
 
 	// bellEnabled gates the terminal-bell side effect in applyEntries/Update
 	// (see needsBell): on by default (set in New), off via --no-bell (see
-	// cmd/canopy) for anyone who finds an audible alert intrusive. Coloring,
-	// flashing, and done's blinking (colorize.go, stateCellText) happen
-	// regardless of this flag.
+	// cmd/canopy) for anyone who finds an audible alert intrusive. Coloring
+	// and done's blinking (colorize.go, stateCellText) happen regardless of
+	// this flag.
 	bellEnabled bool
 
 	width, height int
@@ -402,10 +401,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pollResultMsg:
 		bell := m.applyEntries(msg.entries)
 		// tickBlinks is unconditional, unlike the bell: blinking is a visual
-		// treatment (like coloring/flashing), not an audible one, so --no-bell
-		// doesn't touch it. It starts a fresh burst for any episode newly due
-		// (just opened, or blinkReminderInterval since its last one) and
-		// returns a follow-up command only while a burst is still running.
+		// treatment (like coloring), not an audible one, so --no-bell doesn't
+		// touch it. It starts a fresh burst for any episode newly due (just
+		// opened, or blinkReminderInterval since its last one) and returns a
+		// follow-up command only while a burst is still running.
 		blink := m.tickBlinks(time.Now())
 		if bell && m.bellEnabled {
 			return m, tea.Batch(bellCmd(), blink)
@@ -656,7 +655,15 @@ func (m Model) anyBlinkActive(now time.Time) bool {
 // of ticking indefinitely. Called from both the poll path (pollResultMsg,
 // where a burst can newly start) and the animation path (blinkTickMsg,
 // which exists purely to keep an already-running burst visibly toggling).
+//
+// A no-op, with no row rebuild at all, when m.done is empty: the common
+// case on most polls (nothing currently done), where there is by
+// definition nothing that could be blinking and so nothing that needs
+// re-rendering on top of the rows applyEntries just built.
 func (m *Model) tickBlinks(now time.Time) tea.Cmd {
+	if len(m.done) == 0 {
+		return nil
+	}
 	m.advanceBlinks(now)
 	m.refreshCursorMarker()
 	if m.anyBlinkActive(now) {
@@ -730,7 +737,7 @@ func needsBell(previous, fresh []registry.RegistryEntry, done map[string]doneEpi
 // whatever that terminal's own bell preference is set to — without
 // touching the renderer's channel. This is the one signal in canopy that
 // reaches you even if canopy's own pane isn't the one you're looking at,
-// which a color change or flash (colorize.go) by definition cannot.
+// which a color change or blink (colorize.go) by definition cannot.
 func bellCmd() tea.Cmd {
 	return func() tea.Msg {
 		fmt.Fprint(os.Stderr, "\a")
@@ -857,7 +864,7 @@ const blinkTickInterval = blinkToggleInterval / 3
 
 // stateCellText is the State column's plain-text cell value: displayState's
 // word (see displayState — "idle" rather than "done" once acknowledged),
-// with a trailing flashMarker whenever it's a "done" row currently
+// with a trailing blinkMarker whenever it's a "done" row currently
 // mid-blink-burst and in its visible ("on") half (see blinkActive/blinkOn
 // — toggles on and off as the burst runs). done is the only state with any
 // attention-getting treatment at all; every other word (including
@@ -866,7 +873,7 @@ const blinkTickInterval = blinkToggleInterval / 3
 func stateCellText(e registry.RegistryEntry, now time.Time, done map[string]doneEpisode) string {
 	word := displayState(e, done)
 	if ep, ok := done[e.Key()]; word == "done" && ok && blinkActive(ep, now) && blinkOn(ep, now) {
-		return word + flashMarker
+		return word + blinkMarker
 	}
 	return word
 }
