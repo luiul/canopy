@@ -5,7 +5,7 @@ canopy displays per agent session (one row of the dashboard), and the
 exact events allowed to drive each transition.
 
 Status: **the invariant below (`done` only exits via `key_enter` or
-`key_c`) is implemented**, in `internal/tui/app.go`'s `doneEpisode`
+`key_c`) is implemented**, in `internal/tui/done.go`'s `doneEpisode`
 type and `Model.updateDoneTracking`/`acknowledge`/`displayState`. See
 ["Where this lives in code"](#where-this-lives-in-code) for the exact
 mapping.
@@ -83,7 +83,7 @@ Concretely, this means a `done` episode survives even a fresh
 `pi_working` (the same session starting a new turn on its own, before
 the user ever acknowledged the previous one in canopy): the row keeps
 reading `done` until `key_enter`/`key_c`, even though the process is
-now, in raw terms, actively working again. `internal/tui/app.go`'s
+now, in raw terms, actively working again. `internal/tui/done.go`'s
 `updateDoneTracking` never closes an *open* episode for any reason
 other than acknowledgment or the row disappearing outright — see
 ["Where this lives in code"](#where-this-lives-in-code).
@@ -105,7 +105,7 @@ settle-time. The frontmost check's *only* remaining effect was
 suppressing the bell/blink for a turn the user had already watched
 finish directly in the terminal (bell/blink logic reads the raw
 `State` transition, not the display overlay — see `needsBell`'s own
-doc comment in `internal/tui/app.go`). Removing it is a deliberate
+doc comment in `internal/tui/bell.go`). Removing it is a deliberate
 trade: the bell/blink now fires on every settled turn, including ones
 the user watched happen live, in exchange for `extensions/canopy-status.ts`
 losing its only subprocess/AppleScript call and its Accessibility-permission
@@ -124,7 +124,8 @@ extension) for the editable source. Rendered:
 The raw signal comes from `internal/state` (CPU heuristic) or
 `internal/pistatus` (reading `extensions/canopy-status.ts`'s status
 file for a `pi` process); the display overlay and the core invariant
-live in `internal/tui/app.go`:
+live in `internal/tui/done.go` (the bell decision that reads the same
+transitions lives in `internal/tui/bell.go`):
 
 - `doneEpisode{Since, Acked, RawAt}` — one entry per row key, tracking
   whether the current `done` episode is still open (user hasn't acted
