@@ -56,11 +56,11 @@ canopy's scope could stay exactly "agent sessions," nothing else.
 
 ```
 canopy — agent sessions on this machine
-3 sessions: 1 blocked · 1 working · 1 idle
+3 sessions: 1 done · 1 working · 1 idle
 
    State      Since   Surface    Location                                  Kind     PID
 >  working    12s     VS Code    ~/projects/personal/canopy                pi       86872
-   blocked    3m      VS Code    ~/worktrees/.../isa-orchestration         pi       9514
+   done       3m      VS Code    ~/worktrees/.../isa-orchestration         pi       9514
    idle       1h20m   Ghostty    ~/some/other/project                     pi       65834
 
 ↑/↓ move · enter jump · c complete · r refresh · q quit
@@ -76,34 +76,36 @@ a tight terminal: useful context, but rarely what you're scanning for.
 Location shortens a leading home-directory prefix to `~`, same as your
 shell prompt.
 
-State is color-coded (red (bold) for `blocked`, green (bold) for `done`,
-yellow for `working`, dim for `idle`/`unknown`), and a row that just
-transitioned into `blocked` or `done` flashes briefly (a trailing `*`
-plus a reverse-video highlight) so it's hard to miss. `blocked` and
-`done` are also the two states that ring the terminal bell (ASCII BEL)
-the moment a row newly transitions into either — the one signal here that
-reaches you even if canopy's own pane isn't the one on screen (a dock
-bounce, tab badge, or audible beep, depending on your terminal's own bell
-setting), unlike the color/flash treatment, which only helps once you're
-already looking at it. It only fires on the transition itself, not on
-every poll a row happens to stay blocked/done — including the first poll
-right after canopy starts up, if a session is already sitting blocked or
-done at that point (same as the flash treatment, which also treats "just
-discovered" the same as "just transitioned"). Sessions are sorted
-most-actionable first: `blocked`, then `done`, then `working`, then
-`idle`/`unknown`. Pass `--no-color` (or set `NO_COLOR`) to disable the
-color/flash treatment and get plain text, and `--no-bell` to disable just
-the bell.
+State is color-coded (green (bold) for `done`, yellow for `working`, dim
+for `idle`/`unknown`). A row that just went `done` blinks: a trailing `*`
+plus a reverse-video highlight, toggling on and off a few times right
+away, then again every five minutes for as long as it stays
+unacknowledged — a repeating nudge rather than a one-shot highlight, since
+`done` is the one state that otherwise only an `enter`/`c` press ever
+clears (see below). `done` is also the one state that rings the terminal
+bell (ASCII BEL) the moment a row newly transitions into it — the one
+signal here that reaches you even if canopy's own pane isn't the one on
+screen (a dock bounce, tab badge, or audible beep, depending on your
+terminal's own bell setting), unlike the color/blink treatment, which
+only helps once you're already looking at it. The bell only fires on the
+transition itself, not on every poll a row happens to stay done —
+including the first poll right after canopy starts up, if a session is
+already sitting done at that point (done's first blink burst treats "just
+discovered" the same as "just transitioned", too). Sessions are sorted
+most-actionable first: `done`, then `working`, then `idle`/`unknown`.
+Pass `--no-color` (or set `NO_COLOR`) to disable the color/blink treatment
+and get plain text, and `--no-bell` to disable just the bell.
 
 A row that's `done` stays `done` (still sorted to the top, still
-colored, still bell-eligible for its own transition) until you actually
-do something about it: press `enter` to jump to it (which also marks it
-seen right away), or `c` to mark it seen in place without jumping at
-all. Either one immediately displays that row as `idle` and drops it
-back down in the sort order, no poll wait required. It goes back to
-reading `done` — unacknowledged — the next time it actually earns that
-state again (a fresh turn ending), not on every subsequent poll where
-the underlying session happens to still be sitting done.
+colored, still bell-eligible for its own transition, still blinking every
+five minutes) until you actually do something about it: press `enter` to
+jump to it (which also marks it seen right away), or `c` to mark it seen
+in place without jumping at all. Either one immediately displays that row
+as `idle`, drops it back down in the sort order, and stops the blinking
+— no poll wait required, even mid-burst. It goes back to reading `done`
+— unacknowledged, blinking again from scratch — the next time it actually
+earns that state again (a fresh turn ending), not on every subsequent
+poll where the underlying session happens to still be sitting done.
 
 ## Why Go, not Python
 
@@ -196,12 +198,11 @@ unconditionally once a turn ends — no frontmost/focus detection at all
 canopy's dashboard already requires an explicit `enter` or `c` on the row
 before it displays anything other than `done`, so guessing whether you
 were already looking at that terminal at settle-time couldn't change what
-you'd see there either way. One consequence: the bell/flash now fires on
+you'd see there either way. One consequence: the bell/blink now fires on
 every settled turn, including ones you watched finish directly in the
-terminal, not just ones you missed. It does not report `blocked`: vanilla
-pi has no built-in permission-gate pause to detect that from. macOS only;
-not installing it (or running on another OS) just leaves canopy on the CPU
-heuristic, same as today.
+terminal, not just ones you missed. macOS only; not installing it (or
+running on another OS) just leaves canopy on the CPU heuristic, same as
+today.
 
 ## Limitations
 
