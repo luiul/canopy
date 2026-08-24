@@ -1,10 +1,13 @@
 package registry
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/luiul/canopy/internal/ancestry"
+	"github.com/luiul/canopy/internal/pistatus"
+	"github.com/luiul/canopy/internal/scan"
 )
 
 func entry(pid int, kind string, surface ancestry.Surface, state string) RegistryEntry {
@@ -243,5 +246,141 @@ func TestRefineExternalStatesIgnoresANegativeDelta(t *testing.T) {
 
 	if got[0].State != "working" {
 		t.Fatalf("got state %q, want the untouched guess working when the delta is negative", got[0].State)
+	}
+}
+
+// withResolveCwds and withPistatusRead swap in a canned seam for the
+// duration of a test, restoring the real one on cleanup, so
+// externalEntries can be exercised without a live lsof call or a real
+// ~/.pi/agent/canopy-status/<pid>.json file.
+func withResolveCwds(t *testing.T, fn func([]int) map[int]string) {
+	t.Helper()
+	previous := resolveCwds
+	resolveCwds = fn
+	t.Cleanup(func() { resolveCwds = previous })
+}
+
+func withPistatusRead(t *testing.T, fn func(int) (pistatus.Status, bool)) {
+	t.Helper()
+	previous := pistatusRead
+	pistatusRead = fn
+	t.Cleanup(func() { pistatusRead = previous })
+}
+
+func TestExternalEntriesReturnsNilForNoMatches(t *testing.T) {
+	if got := externalEntries(nil, nil); got != nil {
+		t.Fatalf("got %+v, want nil", got)
+	}
+}
+
+func TestExternalEntriesClassifiesFromTheInjectedProcessTable(t *testing.T) {
+	withResolveCwds(t, func(pids []int) map[int]string { return map[int]string{42: "/x"} })
+	withPistatusRead(t, func(int) (pistatus.Status, bool) { return pistatus.Status{}, false })
+
+	table := map[int]scan.ProcessInfo{
+		42: {Pid: 42, Pcpu: 5.0, RssKb: 1024, Etime: time.Minute, CPUTime: 3 * time.Second},
+	}
+	matches := []scan.ProcessMatch{{Pid: 42, Tty: "ttys000", Kind: "claude", Args: "claude"}}
+
+	got := externalEntries(matches, table)
+
+	if len(got) != 1 {
+		t.Fatalf("got %+v, want 1 entry", got)
+	}
+	e := got[0]
+	if e.Pid != 42 || e.Kind != "claude" || e.Cwd != "/x" {
+		t.Fatalf("got %+v, want pid 42, kind claude, cwd /x", e)
+	}
+	if e.State != "working" {
+		t.Fatalf("got state %q, want working (5%% >= DefaultThreshold on the bootstrap sample)", e.State)
+	}
+	if e.CPUPercent != 5.0 || e.RSSKb != 1024 || e.Uptime != time.Minute {
+		t.Fatalf("got %+v, want CPUPercent/RSSKb/Uptime straight from the injected table", e)
+	}
+	if e.RealState {
+		t.Fatalf("got RealState true, want false: no pi status was injected")
+	}
+}
+
+func TestExternalEntriesPrefersPistatusOverTheCPUHeuristicForPi(t *testing.T) {
+	// pi is the one agent kind canopy can ask directly instead of guessing
+	// from CPU; a pistatusRead hit must win even when the CPU sample alone
+	// would say something else.
+	withResolveCwds(t, func(pids []int) map[int]string { return map[int]string{} })
+	reportedAt := time.Now()
+	withPistatusRead(t, func(pid int) (pistatus.Status, bool) {
+		return pistatus.Status{Pid: pid, Cwd: "/pi-cwd", State: "done", UpdatedAt: reportedAt}, true
+	})
+
+	table := map[int]scan.ProcessInfo{9: {Pid: 9, Pcpu: 0}} // CPU heuristic alone would say idle
+	matches := []scan.ProcessMatch{{Pid: 9, Tty: "ttys000", Kind: "pi", Args: "pi"}}
+
+	got := externalEntries(matches, table)
+
+	if len(got) != 1 {
+		t.Fatalf("got %+v, want 1 entry", got)
+	}
+	e := got[0]
+	if e.State != "done" || !e.RealState {
+		t.Fatalf("got %+v, want State done and RealState true from pistatus", e)
+	}
+	if !e.RealStateReportedAt.Equal(reportedAt) {
+		t.Fatalf("got RealStateReportedAt %v, want %v", e.RealStateReportedAt, reportedAt)
+	}
+	if e.Cwd != "/pi-cwd" {
+		t.Fatalf("got Cwd %q, want pistatus's cwd used as a fallback since lsof found none", e.Cwd)
+	}
+}
+
+func TestExternalEntriesLeavesNonPiKindsUntouchedByPistatus(t *testing.T) {
+	withResolveCwds(t, func(pids []int) map[int]string { return map[int]string{} })
+	withPistatusRead(t, func(int) (pistatus.Status, bool) {
+		t.Fatalf("pistatusRead should never be consulted for a non-pi kind")
+		return pistatus.Status{}, false
+	})
+
+	table := map[int]scan.ProcessInfo{7: {Pid: 7, Pcpu: 0}}
+	matches := []scan.ProcessMatch{{Pid: 7, Tty: "ttys000", Kind: "claude", Args: "claude"}}
+
+	got := externalEntries(matches, table)
+
+	if len(got) != 1 || got[0].RealState {
+		t.Fatalf("got %+v, want a plain CPU-heuristic entry", got)
+	}
+}
+
+func TestPollOnceSurfacesAWarningWhenTheAgentScanFails(t *testing.T) {
+	previousScan, previousTable := scanAgentProcesses, scanProcessTable
+	t.Cleanup(func() { scanAgentProcesses, scanProcessTable = previousScan, previousTable })
+	scanAgentProcesses = func(string) ([]scan.ProcessMatch, error) {
+		return nil, fmt.Errorf("ps: exit status 1")
+	}
+	scanProcessTable = func() map[int]scan.ProcessInfo { return map[int]scan.ProcessInfo{} }
+
+	result := PollOnce("someuser", nil)
+
+	if result.Warning == "" {
+		t.Fatalf("got empty Warning, want a non-empty one when the agent scan itself failed")
+	}
+	if len(result.Entries) != 0 {
+		t.Fatalf("got %+v, want no entries", result.Entries)
+	}
+}
+
+func TestPollOnceHasNoWarningWhenTheAgentScanSucceedsWithZeroMatches(t *testing.T) {
+	// The whole point of PollResult.Warning: a successful scan that simply
+	// found nothing must not look like a failed one.
+	previousScan, previousTable := scanAgentProcesses, scanProcessTable
+	t.Cleanup(func() { scanAgentProcesses, scanProcessTable = previousScan, previousTable })
+	scanAgentProcesses = func(string) ([]scan.ProcessMatch, error) { return nil, nil }
+	scanProcessTable = func() map[int]scan.ProcessInfo { return map[int]scan.ProcessInfo{} }
+
+	result := PollOnce("someuser", nil)
+
+	if result.Warning != "" {
+		t.Fatalf("got Warning %q, want empty", result.Warning)
+	}
+	if len(result.Entries) != 0 {
+		t.Fatalf("got %+v, want no entries", result.Entries)
 	}
 }

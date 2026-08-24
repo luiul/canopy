@@ -14,12 +14,34 @@ package registry
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/luiul/canopy/internal/ancestry"
 	"github.com/luiul/canopy/internal/pistatus"
 	"github.com/luiul/canopy/internal/scan"
 	"github.com/luiul/canopy/internal/state"
+)
+
+// pistatusRead is a package-level seam onto pistatus.Read, swapped out in
+// tests (see registry_test.go) so externalEntries' pi-status merge logic
+// (RealState/RealStateReportedAt handling) can be exercised against a
+// canned Status without a real ~/.pi/agent/canopy-status/<pid>.json file
+// on disk, the same seam pattern internal/jump already uses for mycelium's
+// OpenVSCode/OpenGhostty.
+var pistatusRead = pistatus.Read
+
+// resolveCwds is a package-level seam onto scan.ResolveCwds, swapped out in
+// tests so externalEntries can be exercised without shelling out to lsof.
+var resolveCwds = scan.ResolveCwds
+
+// scanAgentProcesses and scanProcessTable are package-level seams onto
+// scan's own exec.Command wrappers, swapped out in tests so PollOnce's
+// warning-surfacing and merge logic (see PollResult) can be exercised
+// without a real `ps` subprocess.
+var (
+	scanAgentProcesses = scan.ScanAgentProcesses
+	scanProcessTable   = scan.ScanProcessTable
 )
 
 // MissLimit is how many consecutive missed polls a row survives before
@@ -117,17 +139,23 @@ func (e RegistryEntry) Key() string {
 // process, and guesses idle/working from a single macOS `ps` %cpu sample.
 // refineExternalStates corrects that guess with a real poll-to-poll delta
 // for every entry that survives to a second poll.
-func externalEntries(matches []scan.ProcessMatch) []RegistryEntry {
+//
+// table is the whole-machine process snapshot (see scan.ScanProcessTable)
+// used for ancestry classification and the CPU/RAM/Uptime columns; it's a
+// parameter rather than fetched here directly so PollOnce can take that
+// snapshot concurrently with the agent-kind scan (see PollOnce), and so
+// tests can hand externalEntries a small, hand-built table instead of a
+// live `ps -A` snapshot.
+func externalEntries(matches []scan.ProcessMatch, table map[int]scan.ProcessInfo) []RegistryEntry {
 	if len(matches) == 0 {
 		return nil
 	}
 
-	table := scan.ScanProcessTable()
 	pids := make([]int, len(matches))
 	for i, m := range matches {
 		pids[i] = m.Pid
 	}
-	cwdByPid := scan.ResolveCwds(pids)
+	cwdByPid := resolveCwds(pids)
 
 	entries := make([]RegistryEntry, 0, len(matches))
 	for _, m := range matches {
@@ -164,7 +192,7 @@ func externalEntries(matches []scan.ProcessMatch) []RegistryEntry {
 		// stale, or this pid isn't actually `pi`) just leaves the CPU guess
 		// above in place.
 		if m.Kind == "pi" {
-			if st, ok := pistatus.Read(m.Pid); ok {
+			if st, ok := pistatusRead(m.Pid); ok {
 				entry.State = st.State
 				entry.RealState = true
 				entry.RealStateReportedAt = st.UpdatedAt
@@ -290,14 +318,55 @@ func MergeRegistry(previous, fresh []RegistryEntry) []RegistryEntry {
 	return merged
 }
 
+// PollResult is one full poll's outcome: the merged entries, plus a
+// non-empty Warning whenever the primary agent-kind scan (scan.
+// ScanAgentProcesses) itself failed to run at all — missing binary,
+// sandboxed environment, permissions, a hung `ps` past scan.execTimeout —
+// as opposed to running fine and simply finding zero matching processes.
+// Those two situations render identically in Entries (nil either way);
+// Warning is what lets the tui package tell them apart instead of
+// silently showing the same empty-table placeholder for both.
+type PollResult struct {
+	Entries []RegistryEntry
+	Warning string
+}
+
 // PollOnce takes one full snapshot of every known-kind agent process,
 // merged against the previous snapshot so a single transient miss doesn't
 // flicker a row away.
-func PollOnce(user string, previous []RegistryEntry) []RegistryEntry {
+//
+// The agent-kind scan (scan.ScanAgentProcesses) and the whole-machine
+// process table (scan.ScanProcessTable) are independent `ps` invocations —
+// neither's output feeds the other — so they run concurrently rather than
+// back to back; only scan.ResolveCwds (inside externalEntries) has to wait
+// for the agent-kind scan's pids first.
+func PollOnce(user string, previous []RegistryEntry) PollResult {
 	now := time.Now()
-	matches := scan.ScanAgentProcesses(user)
-	rows := externalEntries(matches)
+
+	var (
+		matches []scan.ProcessMatch
+		scanErr error
+		table   map[int]scan.ProcessInfo
+	)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		matches, scanErr = scanAgentProcesses(user)
+	}()
+	go func() {
+		defer wg.Done()
+		table = scanProcessTable()
+	}()
+	wg.Wait()
+
+	var warning string
+	if scanErr != nil {
+		warning = fmt.Sprintf("agent process scan failed: %v", scanErr)
+	}
+
+	rows := externalEntries(matches, table)
 	rows = refineExternalStates(previous, rows, now)
 	rows = stampStateSince(previous, rows, now)
-	return MergeRegistry(previous, rows)
+	return PollResult{Entries: MergeRegistry(previous, rows), Warning: warning}
 }

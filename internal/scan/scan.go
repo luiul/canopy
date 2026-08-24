@@ -3,6 +3,7 @@
 package scan
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -10,6 +11,14 @@ import (
 	"strings"
 	"time"
 )
+
+// execTimeout bounds every ps/lsof invocation in this package: without a
+// deadline, a stuck subprocess (a macOS permission prompt, a spawn storm,
+// an unusually loaded machine) would block that poll's goroutine
+// indefinitely. Comfortably above a normal ps/lsof call (which returns in
+// milliseconds) but still short enough that a hung one can't pile up
+// unbounded across repeated poll ticks.
+const execTimeout = 5 * time.Second
 
 // KnownKinds is the set of recognized agent CLI kinds that canopy tracks.
 var KnownKinds = map[string]bool{
@@ -81,13 +90,22 @@ func ParsePsOutput(output string) []ProcessMatch {
 }
 
 // ScanAgentProcesses shells out to `ps` and returns every known-kind agent
-// process owned by user.
-func ScanAgentProcesses(user string) []ProcessMatch {
-	out, err := exec.Command("ps", "-u", user, "-o", "pid=,tty=,args=").Output()
+// process owned by user. Unlike ResolveCwds/ScanProcessTable (best-effort
+// enrichment: a failure there just leaves some columns blank), this is the
+// primary scan a poll depends on, so its error is returned rather than
+// swallowed: registry.PollOnce surfaces it as a visible warning, since a
+// `ps` invocation that fails to run at all (missing binary, sandboxed
+// environment, permissions, or the execTimeout above expiring) is a
+// meaningfully different situation from a `ps` that ran fine and simply
+// found zero matching processes.
+func ScanAgentProcesses(user string) ([]ProcessMatch, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "ps", "-u", user, "-o", "pid=,tty=,args=").Output()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("ps: %w", err)
 	}
-	return ParsePsOutput(string(out))
+	return ParsePsOutput(string(out)), nil
 }
 
 // ParseLsofCwdOutput is the pure parsing logic for `lsof -a -d cwd -Fn`
@@ -114,7 +132,13 @@ func ParseLsofCwdOutput(output string) map[int]string {
 }
 
 // ResolveCwds shells out to `lsof` to resolve the current working directory
-// of every pid in pids.
+// of every pid in pids. Best-effort: lsof commonly exits non-zero when it
+// can't resolve every pid in the batch (one of them may have already
+// exited between the scan and this call), which is a routine, expected
+// occurrence, not a sign anything is broken, so, as before, any error here
+// (including execTimeout expiring) just yields an empty map rather than
+// being surfaced to the user; whatever cwds couldn't be resolved render as
+// "?" (see the tui package's location helper).
 func ResolveCwds(pids []int) map[int]string {
 	if len(pids) == 0 {
 		return map[int]string{}
@@ -123,7 +147,9 @@ func ResolveCwds(pids []int) map[int]string {
 	for i, p := range pids {
 		pidStrs[i] = strconv.Itoa(p)
 	}
-	out, err := exec.Command("lsof", "-a", "-p", strings.Join(pidStrs, ","), "-d", "cwd", "-Fn").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "lsof", "-a", "-p", strings.Join(pidStrs, ","), "-d", "cwd", "-Fn").Output()
 	if err != nil {
 		return map[int]string{}
 	}
@@ -290,9 +316,15 @@ func ParseProcessTableOutput(output string) map[int]ProcessInfo {
 // ScanProcessTable takes one whole-machine snapshot, reused for both
 // ancestry classification and CPU-based state sampling so a poll only shells
 // out to `ps` twice total (once filtered for agent kinds, once for
-// everything).
+// everything). Best-effort like ResolveCwds: a failure here (including
+// execTimeout expiring) just leaves ancestry/CPU/RAM/Uptime columns blank
+// or unrefined for this poll rather than surfacing to the user, since
+// ScanAgentProcesses succeeding is what actually determines whether a
+// session shows up at all.
 func ScanProcessTable() map[int]ProcessInfo {
-	out, err := exec.Command("ps", "-A", "-o", "pid=,ppid=,pcpu=,rss=,etime=,tty=,time=,comm=").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "ps", "-A", "-o", "pid=,ppid=,pcpu=,rss=,etime=,tty=,time=,comm=").Output()
 	if err != nil {
 		return map[int]ProcessInfo{}
 	}

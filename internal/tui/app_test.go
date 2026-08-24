@@ -842,3 +842,24 @@ func TestDisplayStateKeepsReportingDoneForAnOpenEpisodeEvenIfRawStateMovesToIdle
 		t.Fatalf("got %q, want an open episode to keep reporting done even though raw State already reads idle", got)
 	}
 }
+
+func TestPollResultMsgWarningIsShownInTheHeaderAndPersistsAcrossPolls(t *testing.T) {
+	m := New(999 * time.Second)
+	m.width, m.height = 120, 40
+
+	updated, _ := m.Update(pollResultMsg{entries: nil, warning: "agent process scan failed: ps: exit status 1"})
+	m2 := updated.(Model)
+
+	if !strings.Contains(m2.View(), "agent process scan failed") {
+		t.Fatalf("View() = %q, want it to contain the scan warning", m2.View())
+	}
+
+	// A later poll that succeeds (empty warning) must clear the banner, not
+	// leave a stale one on screen forever.
+	updated2, _ := m2.Update(pollResultMsg{entries: nil, warning: ""})
+	m3 := updated2.(Model)
+
+	if strings.Contains(m3.View(), "agent process scan failed") {
+		t.Fatalf("View() = %q, want the warning cleared after a clean poll", m3.View())
+	}
+}
