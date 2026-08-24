@@ -20,6 +20,7 @@ import (
 
 	"github.com/luiul/canopy/internal/jump"
 	"github.com/luiul/canopy/internal/registry"
+	"github.com/luiul/loam"
 )
 
 // DefaultInterval is the poll interval used when none is given. Also sets
@@ -35,19 +36,18 @@ const notifyDuration = 4 * time.Second
 // within an already-rendered line (colorizeRows).
 //
 // Order is deliberately urgency-first: State and Since (what needs you, and
-// for how long) come immediately after the cursor marker so the most
-// action-relevant columns are also the leftmost ones, matching the
-// top-to-bottom state-priority sort. Surface and Location (where a session
-// lives) follow. CPU/RAM/Uptime (how a session is doing, resource-wise)
-// come next: useful for spotting a runaway or forgotten session, but not
-// the first thing anyone scans for, so they sit to the right of Location
-// rather than competing with State/Since for leftmost attention. Kind and
-// PID are last and narrow: useful context, but rarely the thing you're
-// scanning for, so they're the columns that give up width first and
-// truncate hardest on a narrow terminal.
+// for how long) come first, matching the top-to-bottom state-priority sort.
+// Surface and Location (where a session lives) follow. CPU/RAM/Uptime (how a
+// session is doing, resource-wise) come next: useful for spotting a runaway
+// or forgotten session, but not the first thing anyone scans for, so they sit
+// to the right of Location rather than competing with State/Since for
+// leftmost attention. Kind and PID are last and narrow: useful context, but
+// rarely the thing you're scanning for, so they're the columns that give up
+// width first and truncate hardest on a narrow terminal.
+// Note: there is no leading cursor column. Selected rows are highlighted
+// via loam.ColorizeRows' post-render row highlight; see loam's doc.
 const (
-	colCursor = iota
-	colState
+	colState = iota
 	colSince
 	colSurface
 	colLocation
@@ -65,15 +65,10 @@ var (
 	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 )
 
-// cursorMarker is the plain-text glyph shown in the leftmost column of the
-// currently selected row. It replaces bubbles/table's own Selected style
-// (a whole-row background/foreground highlight), which hid State's color
-// coding on whichever row happened to be selected. Deliberately a plain
-// ASCII character rather than a fancier Unicode arrow: colorizeRows slices
-// rendered lines by byte offset assuming 1 byte per display column, which
-// only holds if every column left of State/Since (including this one) is
-// plain ASCII.
-const cursorMarker = ">"
+// cursorSentinel is an alias for loam.Sentinel: the zero-width Unicode
+// marker prepended to the Since cell of the selected row, so colorizeRows
+// knows which line to highlight. See loam's doc for why this approach.
+var cursorSentinel = loam.Sentinel
 
 func currentUser() string {
 	if u, err := user.Current(); err == nil && u.Username != "" {
@@ -161,7 +156,6 @@ type Model struct {
 // New builds the dashboard model, polling at interval.
 func New(interval time.Duration) Model {
 	columns := []table.Column{
-		{Title: "", Width: 1}, // cursorMarker
 		{Title: "State", Width: 9},
 		{Title: "Since", Width: 6},
 		{Title: "Surface", Width: 9},
@@ -178,9 +172,8 @@ func New(interval time.Duration) Model {
 		table.WithHeight(15),
 	)
 	styles := table.DefaultStyles()
-	// No whole-row highlight for the selected row: cursorMarker (the
-	// leftmost column) shows selection instead, without covering up State's
-	// color coding on that row.
+	// The selected row is highlighted via loam.ColorizeRows' post-render
+	// row highlight; see loam's doc for why this approach.
 	styles.Selected = lipgloss.NewStyle()
 	t.SetStyles(styles)
 
@@ -274,7 +267,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			var cmd tea.Cmd
 			m.table, cmd = m.table.Update(msg)
-			m.refreshCursorMarker()
+			m.refreshCursorTag()
 			return m, cmd
 		}
 
@@ -389,12 +382,12 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 
 func (m *Model) resizeColumns() {
 	cols := m.table.Columns()
-	if len(cols) != 10 {
+	if len(cols) != 9 {
 		return
 	}
-	fixed := cols[colCursor].Width + cols[colState].Width + cols[colSince].Width + cols[colSurface].Width +
+	fixed := cols[colState].Width + cols[colSince].Width + cols[colSurface].Width +
 		cols[colCPU].Width + cols[colRAM].Width + cols[colUptime].Width + cols[colKind].Width + cols[colPID].Width
-	remaining := m.width - fixed - 20 // 2 chars of padding per cell, 10 cells
+	remaining := m.width - fixed - 18 // 2 chars of padding per cell, 9 cells
 	if remaining < 20 {
 		remaining = 20
 	}

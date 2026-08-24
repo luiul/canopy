@@ -331,7 +331,7 @@ func (m *Model) tickBlinks(now time.Time) tea.Cmd {
 		return nil
 	}
 	m.advanceBlinks(now)
-	m.refreshCursorMarker()
+	m.refreshCursorTag()
 	if m.anyBlinkActive(now) {
 		return blinkTickCmd()
 	}
@@ -394,5 +394,5 @@ func (m *Model) acknowledge(entry registry.RegistryEntry) {
 	// undo the local acknowledgment that just happened — only cross-instance
 	// sync degrades, exactly like canopy's other best-effort signals.
 	_ = ackWrite(key, ep.RawAt)
-	m.refreshCursorMarker()
+	m.refreshCursorTag()
 }

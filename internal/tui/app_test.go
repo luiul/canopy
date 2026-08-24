@@ -351,7 +351,7 @@ func TestShortenHomeReplacesTheHomePrefixWithATilde(t *testing.T) {
 	}
 }
 
-func TestBuildRowsPutsCursorMarkerOnlyOnTheCursorRow(t *testing.T) {
+func TestBuildRowsTagsOnlyTheCursorRowsSinceCell(t *testing.T) {
 	entries := []registry.RegistryEntry{
 		entry(1, ancestry.Ghostty, "idle"),
 		entry(2, ancestry.Ghostty, "working"),
@@ -359,33 +359,33 @@ func TestBuildRowsPutsCursorMarkerOnlyOnTheCursorRow(t *testing.T) {
 
 	rows := buildRows(entries, 1, "", time.Now(), nil)
 
-	if rows[0][colCursor] != "" {
-		t.Fatalf("got marker %q on row 0, want no marker", rows[0][colCursor])
+	if strings.Contains(rows[0][colSince], cursorSentinel) {
+		t.Fatalf("got cursorSentinel on non-cursor row 0's Since cell %q, want it absent", rows[0][colSince])
 	}
-	if rows[1][colCursor] != cursorMarker {
-		t.Fatalf("got marker %q on row 1, want %q", rows[1][colCursor], cursorMarker)
+	if !strings.Contains(rows[1][colSince], cursorSentinel) {
+		t.Fatalf("got %q, want row 1's Since cell to carry cursorSentinel (it's the cursor row)", rows[1][colSince])
 	}
 }
 
-func TestCursorMarkerFollowsArrowKeysBetweenPolls(t *testing.T) {
+func TestCursorSentinelFollowsArrowKeysBetweenPolls(t *testing.T) {
 	m := New(999)
 	m.applyEntries([]registry.RegistryEntry{
 		entry(1, ancestry.Ghostty, "idle"),
 		entry(2, ancestry.Ghostty, "idle"),
 	})
-	if got := m.table.Rows()[0][colCursor]; got != cursorMarker {
-		t.Fatalf("got %q, want the marker on row 0 right after applyEntries", got)
+	if got := m.table.Rows()[0][colSince]; !strings.Contains(got, cursorSentinel) {
+		t.Fatalf("got %q, want cursorSentinel on row 0's Since cell right after applyEntries", got)
 	}
 
-	// Moving down (without a poll in between) must move the marker too, not
+	// Moving down (without a poll in between) must move the tag too, not
 	// just bubbles/table's own internal cursor.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	mm := updated.(Model)
-	if got := mm.table.Rows()[0][colCursor]; got != "" {
-		t.Fatalf("got %q, want row 0's marker cleared after moving down", got)
+	if got := mm.table.Rows()[0][colSince]; strings.Contains(got, cursorSentinel) {
+		t.Fatalf("got %q, want row 0's Since cell cleared of cursorSentinel after moving down", got)
 	}
-	if got := mm.table.Rows()[1][colCursor]; got != cursorMarker {
-		t.Fatalf("got %q, want row 1 to carry the marker after moving down", got)
+	if got := mm.table.Rows()[1][colSince]; !strings.Contains(got, cursorSentinel) {
+		t.Fatalf("got %q, want row 1 to carry cursorSentinel after moving down", got)
 	}
 }
 

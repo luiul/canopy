@@ -58,17 +58,22 @@ canopy's scope could stay exactly "agent sessions," nothing else.
 canopy — agent sessions on this machine
 3 sessions: 1 done · 1 working · 1 idle
 
-   State      Since   Surface    Location                                  CPU   RAM     Uptime  Kind     PID
->  working    12s     VS Code    ~/projects/personal/canopy                4%    278M    1h      pi       86872
-   done       3m      VS Code    ~/worktrees/.../isa-orchestration         0%    140M    2h30m   pi       9514
-   idle       1h20m   Ghostty    ~/some/other/project                     0%    95M     1d       pi       65834
+State      Since   Surface    Location                                  CPU   RAM     Uptime  Kind     PID
+working    12s     VS Code    ~/projects/personal/canopy                4%    278M    1h      pi       86872
+done       3m      VS Code    ~/worktrees/.../isa-orchestration         0%    140M    2h30m   pi       9514
+idle       1h20m   Ghostty    ~/some/other/project                     0%    95M     1d       pi       65834
 
 ↑/↓ move · enter jump · c complete · r refresh · q quit
 ```
 
-The currently selected row is marked with a `>` in the leftmost column
-(rather than a full-row highlight, which would hide State's color coding
-on whichever row happens to be selected). Columns are ordered by urgency,
+(the currently selected row also gets a full-width grey highlight in the
+real terminal output, not shown here since it's just a background color)
+
+The currently selected row is highlighted with a subtle grey background
+spanning the full width of the table, rather than a leading marker glyph
+(the muted highlight sits comfortably alongside State's own color coding
+on that row, rather than replacing it — see github.com/luiul/loam, which
+both canopy and understory share for exactly this). Columns are ordered by urgency,
 left to right: State and Since (what needs you, and for how long) come
 first, then Surface and Location (where the session lives). CPU/RAM/Uptime
 (how the session is doing, resource-wise) come next: %cpu and resident

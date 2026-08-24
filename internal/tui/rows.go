@@ -13,6 +13,7 @@ import (
 
 	"github.com/luiul/canopy/internal/ancestry"
 	"github.com/luiul/canopy/internal/registry"
+	"github.com/luiul/loam"
 )
 
 var surfaceLabels = map[ancestry.Surface]string{
@@ -88,12 +89,12 @@ func sortEntries(entries []registry.RegistryEntry, done map[string]doneEpisode) 
 	})
 }
 
-// refreshCursorMarker rebuilds the table's rows so the leftmost
-// cursorMarker cell follows the cursor immediately after it moves (arrow
-// keys, page up/down, etc.), instead of waiting for the next poll. Also
-// reused by acknowledge (done.go) to reflect a dismissal immediately, for
-// the same reason: don't wait for the next poll to show it.
-func (m *Model) refreshCursorMarker() {
+// refreshCursorTag rebuilds the table's rows so the cursor's Since cell
+// carries cursorSentinel immediately after it moves (arrow keys, page up/down,
+// etc.), instead of waiting for the next poll. Also reused by acknowledge
+// (done.go) to reflect a dismissal immediately, for the same reason: don't
+// wait for the next poll to show it.
+func (m *Model) refreshCursorTag() {
 	if len(m.entries) == 0 {
 		return
 	}
@@ -101,29 +102,25 @@ func (m *Model) refreshCursorMarker() {
 }
 
 // buildRows constructs the table's rows from already-sorted entries.
-// cursor picks which row's leading cell carries cursorMarker; it's a plain
-// parameter (rather than read from the table itself) so this same helper
-// builds rows both right after a poll (applyEntries) and on every cursor
-// move in between polls (refreshCursorMarker), so the arrow tracks the
-// highlighted row immediately rather than only once every poll interval.
+// cursor picks which row's Since cell gets tagged with cursorSentinel (see
+// loam's doc); it's a plain parameter (rather than read from the table
+// itself) so this same helper builds rows both right after a poll
+// (applyEntries) and on every cursor move in between polls (refreshCursorTag),
+// so the tag tracks the highlighted row immediately rather than only once
+// every poll interval.
 func buildRows(entries []registry.RegistryEntry, cursor int, home string, now time.Time, done map[string]doneEpisode) []table.Row {
 	if len(entries) == 0 {
 		// Placeholder message goes in Location: the widest column, and the
 		// only one guaranteed to have room for it regardless of terminal width.
-		placeholder := table.Row{"", "", "", "", "", "", "", "", "", ""}
+		placeholder := table.Row{"", "", "", "", "", "", "", "", ""}
 		placeholder[colLocation] = "no known agent-kind processes found on this machine"
 		return []table.Row{placeholder}
 	}
 	rows := make([]table.Row, len(entries))
 	for i, e := range entries {
-		marker := ""
-		if i == cursor {
-			marker = cursorMarker
-		}
 		rows[i] = table.Row{
-			marker,
 			stateCellText(e, now, done),
-			sinceCellText(e, now, done),
+			loam.Tag(sinceCellText(e, now, done), i == cursor),
 			surfaceLabel(e.Surface),
 			location(e, home),
 			cpuCellText(e),
