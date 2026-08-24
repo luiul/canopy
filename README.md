@@ -134,13 +134,14 @@ One Go package per concern:
   the CPU heuristic for that one agent kind (see "Real pi status" below).
 - `internal/ancestry`: walks a process's parent chain to classify which app
   (VS Code / Ghostty) is hosting it.
-- `internal/applescript`: `osascript` wrapper for focusing a Ghostty window
-  by working directory and a VS Code window by title, with macOS
-  Automation-permission error detection.
-- `internal/jump`: picks the actual jump mechanism (`code --reuse-window` or
-  Ghostty AppleScript) per row, switching to an already-open window when one
+- `internal/jump`: maps a row's Surface onto
+  [`github.com/luiul/mycelium`](https://github.com/luiul/mycelium)'s shared
+  open-or-focus logic (`code --reuse-window`/`-n` for VS Code, Ghostty
+  AppleScript for a bare tab), switching to an already-open window when one
   matches the row's working directory, or opening a brand-new one when none
-  does.
+  does. The AppleScript window detection and switch-or-create behavior
+  itself lives in mycelium, not here, since understory needs the exact
+  same thing for a worktree row with no agent connection of its own.
 - `internal/registry`: merges a fresh poll against the previous one so a
   single missed `ps`/poll doesn't flicker a row away.
 - `internal/tui`: the Bubble Tea dashboard (table, polling timer,
