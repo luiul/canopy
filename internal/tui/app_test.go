@@ -435,7 +435,7 @@ func TestNeedsBellFiresOnlyOnATransitionIntoDone(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := needsBell(c.previous, c.fresh); got != c.want {
+			if got := needsBell(c.previous, c.fresh, nil); got != c.want {
 				t.Fatalf("needsBell() = %v, want %v", got, c.want)
 			}
 		})
@@ -699,6 +699,59 @@ func TestAcknowledgedRealStateDoneReopensForAGenuinelyNewSettleWithNoIntervening
 	}
 	if got := m.table.Rows()[0][colState]; got != "done" {
 		t.Fatalf("got %q, want the second settle to surface as done again, unacknowledged", got)
+	}
+}
+
+// TestASecondSettleWhileTheEpisodeIsStillOpenDoesNotRingTwice covers the
+// other side of the same RealStateReportedAt comparison: a second turn
+// settling again *before* the first done was ever acknowledged must not
+// double-ring, since updateDoneTracking silently absorbs it into the same
+// still-open episode — the row already reads "done" and nothing on screen
+// changes as a result, so ringing again there would reintroduce exactly
+// the drowning-out needsBell's "still is" skip exists to avoid, just
+// triggered by a second settle instead of a poll timer. Once finally
+// acknowledged, that acknowledgment must cover the *latest* settle (not
+// get stuck comparing against the first one) — the same still-fresh write
+// afterward must not falsely reopen, but a further genuinely new one
+// still must.
+func TestASecondSettleWhileTheEpisodeIsStillOpenDoesNotRingTwice(t *testing.T) {
+	t1 := time.Now()
+	m := New(999)
+
+	if bell := m.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, t1)}); !bell {
+		t.Fatal("want a bell for the first settle")
+	}
+
+	t2 := t1.Add(time.Second)
+	if bell := m.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, t2)}); bell {
+		t.Error("want no second bell: still the same unacknowledged episode, nothing new on screen")
+	}
+	if got := m.table.Rows()[0][colState]; got != "done" {
+		t.Fatalf("got %q, want still done (unacknowledged)", got)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+	if got := m.table.Rows()[0][colState]; got != "idle" {
+		t.Fatalf("got %q, want idle right after ack", got)
+	}
+
+	// The latest settle (t2) was already covered by the acknowledgment:
+	// seeing it again must not falsely reopen the row.
+	if bell := m.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, t2)}); bell {
+		t.Error("want no bell: t2 was already covered by the acknowledgment")
+	}
+	if got := m.table.Rows()[0][colState]; got != "idle" {
+		t.Fatalf("got %q, want idle to stick for the settle already covered by acknowledgment", got)
+	}
+
+	// A genuinely new settle after acknowledgment still must reopen.
+	t3 := t2.Add(time.Second)
+	if bell := m.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, t3)}); !bell {
+		t.Error("want a bell: t3 is a genuinely new settle after acknowledgment")
+	}
+	if got := m.table.Rows()[0][colState]; got != "done" {
+		t.Fatalf("got %q, want done for the genuinely new t3 settle", got)
 	}
 }
 

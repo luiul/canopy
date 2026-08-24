@@ -471,7 +471,13 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 	// Bell decisions are always made against the raw State (see needsBell),
 	// never displayState: an acknowledged row that's still raw done and
 	// stays that way must not re-ring just because a user dismissed it.
-	bell := needsBell(m.entries, fresh)
+	// Passed m.done as it stood at the *end of the previous* poll (before
+	// updateDoneTracking mutates it for this one), so needsBell can tell a
+	// settle that's landing on an already-open, still-unacknowledged episode
+	// (silently absorbed by updateDoneTracking, nothing new on screen, must
+	// not ring again) apart from one that's genuinely new since the last
+	// acknowledgment (the reopen case, which must ring).
+	bell := needsBell(m.entries, fresh, m.done)
 	m.updateDoneTracking(fresh)
 
 	sortEntries(fresh, m.done)
@@ -675,17 +681,25 @@ func blinkTickCmd() tea.Cmd {
 // and still is doesn't re-trigger it — otherwise a session sitting done
 // for an hour would ring the bell on every single poll for that whole
 // hour, drowning out the one moment that actually mattered: the
-// transition itself. "Still is" means a genuinely unchanged settle, not
-// just a repeated "done" string: for a RealState entry, RealStateReportedAt
-// advancing between the two polls means the raw source wrote a brand-new
-// "done" in between (a second turn settling within the same
-// pistatus.MaxAge window a first one's write was still fresh for, with no
-// "working" poll ever sampled in between) — see updateDoneTracking's doc
-// comment for the full rationale — and that still counts as a fresh
-// transition worth ringing for. done is the only state this checks: there
-// is no "blocked" in canopy's vocabulary (see docs/agent-state-machine.md),
-// and working/idle/unknown are never worth ringing a bell over.
-func needsBell(previous, fresh []registry.RegistryEntry) bool {
+// transition itself. "Still is" means either it's the exact same settle
+// (for a RealState entry, RealStateReportedAt hasn't advanced — the raw
+// source hasn't written anything new), or it's a genuinely new settle that
+// landed on an episode still open in done (unacknowledged): updateDoneTracking
+// silently absorbs that second settle into the same still-open episode
+// rather than opening a new one, since the row is already displaying "done"
+// and nothing changes on screen for it — ringing again there would be
+// exactly the drowning-out this skip exists to avoid, just triggered by a
+// second settle instead of a poll timer. Only a settle that's both new
+// (RealStateReportedAt advanced) *and* lands on an already-acknowledged
+// episode (the reopen case in updateDoneTracking) is a fresh transition
+// worth ringing for — see updateDoneTracking's doc comment for the full
+// rationale. done must be the caller's Model.done as it stood *before* this
+// poll's updateDoneTracking call, so "still open" reflects the previous
+// poll's episode state, not this one's. done is the only state this checks:
+// there is no "blocked" in canopy's vocabulary (see
+// docs/agent-state-machine.md), and working/idle/unknown are never worth
+// ringing a bell over.
+func needsBell(previous, fresh []registry.RegistryEntry, done map[string]doneEpisode) bool {
 	prevByKey := make(map[string]registry.RegistryEntry, len(previous))
 	for _, p := range previous {
 		prevByKey[p.Key()] = p
@@ -695,8 +709,11 @@ func needsBell(previous, fresh []registry.RegistryEntry) bool {
 			continue
 		}
 		if was, ok := prevByKey[f.Key()]; ok && was.State == "done" {
-			if !f.RealState || f.RealStateReportedAt.Equal(was.RealStateReportedAt) {
-				continue // the exact same settle we already rang for
+			sameWrite := !f.RealState || f.RealStateReportedAt.Equal(was.RealStateReportedAt)
+			ep, tracked := done[f.Key()]
+			stillOpen := tracked && ep.Acked.IsZero()
+			if sameWrite || stillOpen {
+				continue // the exact same settle we already rang for, or one already-flagged and unacknowledged
 			}
 		}
 		return true
