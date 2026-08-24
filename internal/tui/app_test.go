@@ -16,6 +16,18 @@ func entry(pid int, surface ancestry.Surface, state string) registry.RegistryEnt
 	return registry.RegistryEntry{Pid: pid, Kind: "pi", Tty: "s017", Cwd: "/Users/x/dotfiles", Surface: surface, State: state}
 }
 
+// pistatusEntry is entry, but for a RealState "done" reading with an
+// explicit reportedAt: what a real canopy-status.ts write looks like on
+// the wire, as opposed to entry's bare State string with no source
+// timestamp at all. Used by the tests below that need to distinguish two
+// separate settle events that both read the literal string "done".
+func pistatusEntry(pid int, surface ancestry.Surface, reportedAt time.Time) registry.RegistryEntry {
+	e := entry(pid, surface, "done")
+	e.RealState = true
+	e.RealStateReportedAt = reportedAt
+	return e
+}
+
 func TestSortEntriesRanksDoneAboveWorking(t *testing.T) {
 	entries := []registry.RegistryEntry{
 		entry(1, ancestry.Ghostty, "working"),
@@ -629,6 +641,64 @@ func TestAcknowledgedDoneStaysAcknowledgedAcrossPollsUntilTheRawStateMovesOn(t *
 	}
 	if got := m.table.Rows()[0][colState]; got != "done" {
 		t.Fatalf("got %q, want the new done episode to display as done again, unacknowledged", got)
+	}
+}
+
+// TestAcknowledgedRealStateDoneStaysAcknowledgedForTheSameStillFreshWrite
+// guards the non-buggy half of the RawAt comparison introduced for the two
+// tests below: pistatus.Read legitimately keeps returning the exact same
+// "done" write (same RealStateReportedAt) for up to pistatus.MaxAge after a
+// turn settles, with nothing else happening in between. That must not
+// look like a fresh settle just because RealState is now populated.
+func TestAcknowledgedRealStateDoneStaysAcknowledgedForTheSameStillFreshWrite(t *testing.T) {
+	settledAt := time.Now()
+	m := New(999)
+	m.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, settledAt)})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+
+	if bell := m.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, settledAt)}); bell {
+		t.Error("want no bell: this is the exact same settle already acknowledged, not a new one")
+	}
+	if got := m.table.Rows()[0][colState]; got != "idle" {
+		t.Fatalf("got %q, want the same still-fresh done write to keep displaying idle after acknowledgment", got)
+	}
+}
+
+// TestAcknowledgedRealStateDoneReopensForAGenuinelyNewSettleWithNoInterveningPoll
+// is the regression test for the bug this fix addresses: canopy-status.ts
+// only writes "done" once at settle time (no heartbeat, unlike "working"),
+// and pistatus.Read keeps returning that literal string for up to
+// pistatus.MaxAge afterward. If a second turn starts and settles again
+// inside that same window — plausible for a fast, tool-free turn — with
+// canopy's poll cadence never happening to catch a "working" sample in
+// between, the raw State reads "done" on both sides of an acknowledgment
+// with nothing to tell the two settles apart except pistatus's own write
+// timestamp (RealStateReportedAt). Before this fix, updateDoneTracking only
+// ever compared the State *string*, so this second, genuinely new "done"
+// was silently swallowed: no new episode, no bell, the row just kept
+// reading the acknowledged "idle" as if the second turn had never
+// finished at all.
+func TestAcknowledgedRealStateDoneReopensForAGenuinelyNewSettleWithNoInterveningPoll(t *testing.T) {
+	firstSettle := time.Now()
+	m := New(999)
+	m.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, firstSettle)})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	m = updated.(Model)
+	if got := m.table.Rows()[0][colState]; got != "idle" {
+		t.Fatalf("after ack: got %q, want idle", got)
+	}
+
+	// A second turn settles before the next poll — no "working" sample in
+	// between, and the raw State string is still literally "done" both
+	// times, but pistatus's own write timestamp has moved on.
+	secondSettle := firstSettle.Add(time.Second)
+	bell := m.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, secondSettle)})
+	if !bell {
+		t.Error("want a fresh bell: a second, genuinely new settle finished, even though the State string never changed")
+	}
+	if got := m.table.Rows()[0][colState]; got != "done" {
+		t.Fatalf("got %q, want the second settle to surface as done again, unacknowledged", got)
 	}
 }
 

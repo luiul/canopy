@@ -126,9 +126,13 @@ The raw signal comes from `internal/state` (CPU heuristic) or
 file for a `pi` process); the display overlay and the core invariant
 live in `internal/tui/app.go`:
 
-- `doneEpisode{Since, Acked}` — one entry per row key, tracking whether
-  the current `done` episode is still open (user hasn't acted yet) or
-  acknowledged (user pressed `enter` or `c`), held in `Model.done`.
+- `doneEpisode{Since, Acked, RawAt}` — one entry per row key, tracking
+  whether the current `done` episode is still open (user hasn't acted
+  yet) or acknowledged (user pressed `enter` or `c`), held in
+  `Model.done`. `RawAt` is the raw source's own report timestamp
+  (`RegistryEntry.RealStateReportedAt`, i.e. `pistatus.Status.UpdatedAt`)
+  for the settle this episode currently reflects — see the note below on
+  telling two settles apart.
 - `Model.updateDoneTracking(fresh)` — run every poll, before sorting:
   opens a new episode the first time a key's raw State reads `done`
   since its last acknowledgment; never closes an *open* one for any
@@ -144,10 +148,39 @@ live in `internal/tui/app.go`:
   `key_enter`/`key_c`; a no-op if the entry is neither raw `done` nor
   has an open episode.
 
+### Telling two settles apart when the raw string doesn't change
+
+`extensions/canopy-status.ts` writes `done` once, at `agent_settled`, with
+no heartbeat (unlike `working`'s `WORKING_HEARTBEAT_MS`). `pistatus.Read`
+keeps returning that same literal string for up to `pistatus.MaxAge`
+afterward, since nothing else has overwritten the file yet. If a *second*
+turn starts and settles again inside that same window — plausible for a
+fast, tool-free turn — without canopy's poll cadence ever happening to
+sample a `pi_working` reading in between, `RegistryEntry.State` reads the
+literal string `"done"` on both sides of an acknowledgment, with nothing
+in the string itself to tell the two settles apart.
+
+`updateDoneTracking` and `needsBell` resolve this with
+`RegistryEntry.RealStateReportedAt` (`pistatus.Status.UpdatedAt`, the
+moment `canopy-status.ts` itself wrote the file, not the moment canopy
+polled it): an *acknowledged* episode only reopens as new — with a fresh
+bell — once this timestamp has actually advanced past the one the
+episode last saw, not merely whenever `State` is still `"done"`. Without
+this, the second settle was silently swallowed: no new episode, no bell,
+the row just kept reading the acknowledged `idle` as if the second turn
+had never finished. `RawAt` is kept current every poll while an episode
+is still *open* too (not just at the moment it opens), so a settle that
+happens before the eventual acknowledgment is correctly treated as
+already covered by it, and only a settle *after* the acknowledgment
+counts as new.
+
 Regression coverage in `internal/tui/app_test.go` exercises the
 invariant across a poll where the raw source has already moved off
 `done` on its own — a scenario the current `extensions/canopy-status.ts`
 can no longer actually produce (nothing writes `done -> idle`
 automatically anymore), but the display layer still enforces
 defensively, since a new `pi_working` turn starting while an episode is
-still open exercises the identical code path.
+still open exercises the identical code path — as well as the two
+settles-with-no-intervening-poll scenario above (both the "same write,
+still acknowledged" and "genuinely new write, reopens" cases).
+
