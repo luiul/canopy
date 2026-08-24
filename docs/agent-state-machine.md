@@ -209,3 +209,49 @@ settles-with-no-intervening-poll cases above ("same write, still
 acknowledged", "genuinely new write after acknowledgment, reopens", and
 "genuinely new write while still open, absorbed silently").
 
+
+## Cross-instance sync
+
+Everything above is written as if there's exactly one `Model`, but
+canopy has no daemon and no notion of "the" dashboard — running it in
+two terminal windows at once starts two fully independent processes,
+each with its own `Model.done` map. `RegistryEntry.State` itself needs
+no help staying consistent between them: every instance derives it
+independently but identically from the same shared, externally
+observable sources (`ps`/`lsof`, and `internal/pistatus`'s per-pid status
+file). The display overlay does not — `key_enter`/`key_c` only ever
+mutate the acting instance's own in-memory `Model.done`, so a second
+instance has no way to learn that a row was acknowledged there.
+
+`internal/ack` closes that gap: `Model.acknowledge` best-effort writes a
+small record (`Key`, `RawAt`, `At`) to
+`~/.pi/agent/canopy-status/acks/<pid>-<kind>.json` — one file per row
+key, written atomically (temp file + rename), the same pattern
+`extensions/canopy-status.ts` already uses for its own status files.
+`Model.updateDoneTracking`'s `syncAcksFromOtherInstances` step reads that
+store every poll: for each episode this instance still considers open, a
+matching record (same `RawAt`, not just the same key) closes the episode
+locally exactly as if `key_enter`/`key_c` had fired here too. Matching
+on `RawAt` — not `Key` alone — reuses the exact identity anchor the
+single-instance logic above already needs (see "Telling two settles
+apart" above): without it, a stale record left over from an earlier,
+already-superseded episode for the same key could wrongly swallow a
+brand new one.
+
+This rides the existing poll timer (`internal/tui`'s `DefaultInterval`,
+2s) rather than adding any new timer, socket, or daemon — an
+acknowledgment made in one instance becomes visible in another within
+one poll interval of each. Cleanup piggybacks on the same triggers that
+already close a local episode: once a key disappears from a poll
+(session ended) or an acknowledged episode's raw source moves off
+`done`, `updateDoneTracking` removes the ack record too, so the shared
+store doesn't accumulate one file per episode forever. `ack.MaxAge` is a
+defensive backstop for the one case that trigger-based cleanup can't
+reach on its own: every canopy instance closing before any of them ever
+notices a particular episode close.
+
+Regression coverage for this lives in `internal/tui/done_sync_test.go`,
+using an in-memory fake in place of the real
+`~/.pi/agent/canopy-status/acks` directory
+(`internal/tui/main_test.go`'s `withAckStore`) so two `Model`s sharing
+that fake stand in for two concurrently running canopy processes.

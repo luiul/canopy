@@ -11,7 +11,20 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/luiul/canopy/internal/ack"
 	"github.com/luiul/canopy/internal/registry"
+)
+
+// ackRead/ackWrite/ackRemove are package-level seams onto the ack
+// package's own Read/Write/Remove — the same seam pattern registry.go
+// already uses for pistatusRead — swapped out in tests (see
+// done_sync_test.go) so the cross-instance sync logic below can be
+// exercised without touching the real ~/.pi/agent/canopy-status/acks
+// directory.
+var (
+	ackRead   = ack.Read
+	ackWrite  = ack.Write
+	ackRemove = ack.Remove
 )
 
 // doneEpisode is one open-or-closed "done" episode for a single entry key
@@ -171,15 +184,51 @@ func (m *Model) updateDoneTracking(fresh []registry.RegistryEntry) {
 		m.done[key] = doneEpisode{Since: now, NextBlinkAt: now, RawAt: e.RealStateReportedAt}
 	}
 
+	m.syncAcksFromOtherInstances()
+
 	for key, ep := range m.done {
 		e, present := byKey[key]
 		if !present {
-			delete(m.done, key) // session ended before this episode was ever resolved
+			ackRemove(key) // session ended before this episode was ever resolved; nothing left to sync
+			delete(m.done, key)
 			continue
 		}
 		if !ep.Acked.IsZero() && e.State != "done" {
-			delete(m.done, key) // acknowledged, and raw independently resolved off "done": stale bookkeeping
+			ackRemove(key) // acknowledged, and raw independently resolved off "done": stale bookkeeping
+			delete(m.done, key)
 		}
+	}
+}
+
+// syncAcksFromOtherInstances lets an episode acknowledged (enter/c) in a
+// different, concurrently running canopy instance take effect here too:
+// for every episode this instance still considers open, check
+// internal/ack's shared store for a matching record and, if one exists,
+// close the episode locally exactly as Model.acknowledge would — same
+// field, same effect on displayState/blinking/sorting — just driven by a
+// poll instead of a keypress.
+//
+// "Matching" means RawAt equal, not just the key: RawAt is the same
+// identity anchor the opening loop above already uses to tell a
+// genuinely new settle apart from the same still-fresh "done" string
+// repeating (see RawAt's own doc comment on doneEpisode), and it's needed
+// here for exactly the same reason — an ack record left over from an
+// already-superseded episode for the same key must never be mistaken for
+// acknowledging a brand new one that happens to reuse it. A record with
+// no match yet isn't an error: this instance's own RawAt may simply not
+// have caught up to the latest settle yet either, and the next poll will
+// try again.
+func (m *Model) syncAcksFromOtherInstances() {
+	for key, ep := range m.done {
+		if !ep.Acked.IsZero() {
+			continue // already resolved locally (by this instance or an earlier sync); nothing to do
+		}
+		rec, ok := ackRead(key)
+		if !ok || !rec.RawAt.Equal(ep.RawAt) {
+			continue
+		}
+		ep.Acked = rec.At
+		m.done[key] = ep
 	}
 }
 
@@ -339,5 +388,11 @@ func (m *Model) acknowledge(entry registry.RegistryEntry) {
 	}
 	ep.Acked = time.Now()
 	m.done[key] = ep
+	// Best-effort: let every other running canopy instance pick this
+	// acknowledgment up on its own next poll (see internal/ack and
+	// syncAcksFromOtherInstances above). A write failure here must never
+	// undo the local acknowledgment that just happened — only cross-instance
+	// sync degrades, exactly like canopy's other best-effort signals.
+	_ = ackWrite(key, ep.RawAt)
 	m.refreshCursorMarker()
 }

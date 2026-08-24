@@ -151,6 +151,11 @@ One Go package per concern:
   same thing for a worktree row with no agent connection of its own.
 - `internal/registry`: merges a fresh poll against the previous one so a
   single missed `ps`/poll doesn't flicker a row away.
+- `internal/ack`: lets multiple concurrently running canopy instances
+  agree on which `done` rows have been acknowledged (`enter`/`c`), the one
+  piece of dashboard state that isn't already derivable from a shared,
+  externally observable source the way `State` itself is (see "Multiple
+  instances" below).
 - `internal/tui`: the Bubble Tea dashboard (table, polling timer,
   jump-on-Enter, notifications).
 - `cmd/canopy`: the CLI entry point (flags, version).
@@ -215,6 +220,18 @@ every settled turn, including ones you watched finish directly in the
 terminal, not just ones you missed. macOS only; not installing it (or
 running on another OS) just leaves canopy on the CPU heuristic, same as
 today.
+
+## Multiple instances
+
+Running canopy in more than one terminal at once (e.g. two Ghostty tabs)
+just works: every instance polls the same machine independently, so the
+table itself already looks identical everywhere. Acknowledging a `done`
+row (`enter`/`c`) syncs too — within one poll interval (2s by default),
+not instantly — via a small shared file per row under
+`~/.pi/agent/canopy-status/acks/`; see
+[docs/agent-state-machine.md](docs/agent-state-machine.md#cross-instance-sync)
+for how. No daemon, no locking: each instance still only ever talks to
+the filesystem, the same as everything else canopy reads.
 
 ## Limitations
 
