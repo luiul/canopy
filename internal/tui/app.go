@@ -36,15 +36,22 @@ const notifyDuration = 4 * time.Second
 // for how long) come immediately after the cursor marker so the most
 // action-relevant columns are also the leftmost ones, matching the
 // top-to-bottom state-priority sort. Surface and Location (where a session
-// lives) follow. Kind and PID are last and narrow: useful context, but
-// rarely the thing you're scanning for, so they're the columns that give up
-// width first and truncate hardest on a narrow terminal.
+// lives) follow. CPU/RAM/Uptime (how a session is doing, resource-wise)
+// come next: useful for spotting a runaway or forgotten session, but not
+// the first thing anyone scans for, so they sit to the right of Location
+// rather than competing with State/Since for leftmost attention. Kind and
+// PID are last and narrow: useful context, but rarely the thing you're
+// scanning for, so they're the columns that give up width first and
+// truncate hardest on a narrow terminal.
 const (
 	colCursor = iota
 	colState
 	colSince
 	colSurface
 	colLocation
+	colCPU
+	colRAM
+	colUptime
 	colKind
 	colPID
 )
@@ -287,6 +294,9 @@ func New(interval time.Duration) Model {
 		{Title: "Since", Width: 6},
 		{Title: "Surface", Width: 9},
 		{Title: "Location", Width: 40},
+		{Title: "CPU", Width: 4},
+		{Title: "RAM", Width: 6},
+		{Title: "Uptime", Width: 6},
 		{Title: "Kind", Width: 7}, // narrow on purpose; truncates long kinds (e.g. "mastracode")
 		{Title: "PID", Width: 6},  // narrow on purpose; truncates rare 6+ digit pids
 	}
@@ -811,7 +821,7 @@ func buildRows(entries []registry.RegistryEntry, cursor int, home string, now ti
 	if len(entries) == 0 {
 		// Placeholder message goes in Location: the widest column, and the
 		// only one guaranteed to have room for it regardless of terminal width.
-		placeholder := table.Row{"", "", "", "", "", "", ""}
+		placeholder := table.Row{"", "", "", "", "", "", "", "", "", ""}
 		placeholder[colLocation] = "no known agent-kind processes found on this machine"
 		return []table.Row{placeholder}
 	}
@@ -827,6 +837,9 @@ func buildRows(entries []registry.RegistryEntry, cursor int, home string, now ti
 			sinceCellText(e, now, done),
 			surfaceLabel(e.Surface),
 			location(e, home),
+			cpuCellText(e),
+			ramCellText(e),
+			uptimeCellText(e),
 			e.Kind,
 			fmt.Sprintf("%d", e.Pid),
 		}
@@ -954,11 +967,12 @@ func surfaceLabel(s ancestry.Surface) string {
 
 func (m *Model) resizeColumns() {
 	cols := m.table.Columns()
-	if len(cols) != 7 {
+	if len(cols) != 10 {
 		return
 	}
-	fixed := cols[colCursor].Width + cols[colState].Width + cols[colSince].Width + cols[colSurface].Width + cols[colKind].Width + cols[colPID].Width
-	remaining := m.width - fixed - 14 // 2 chars of padding per cell, 7 cells
+	fixed := cols[colCursor].Width + cols[colState].Width + cols[colSince].Width + cols[colSurface].Width +
+		cols[colCPU].Width + cols[colRAM].Width + cols[colUptime].Width + cols[colKind].Width + cols[colPID].Width
+	remaining := m.width - fixed - 20 // 2 chars of padding per cell, 10 cells
 	if remaining < 20 {
 		remaining = 20
 	}

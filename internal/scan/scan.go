@@ -136,11 +136,17 @@ func ResolveCwds(pids []int) map[int]string {
 // compute a poll-to-poll CPU delta (CPUTime) for everything else, since
 // Pcpu itself is a decaying average macOS computes over up to a minute of
 // real time and lags well behind a process actually going idle (see
-// registry.refineExternalStates).
+// registry.refineExternalStates). RssKb (resident memory, in KB, ps's own
+// unit for this field) and Etime (wall-clock time since the process
+// started, not to be confused with CPUTime's accumulated CPU time) back
+// the dashboard's RAM and Uptime columns; both come along for free on the
+// same `ps` snapshot everything else here already needed.
 type ProcessInfo struct {
 	Pid     int
 	Ppid    int
 	Pcpu    float64
+	RssKb   int
+	Etime   time.Duration
 	CPUTime time.Duration
 	Tty     string
 	Comm    string
@@ -179,6 +185,45 @@ func parsePsCPUTime(s string) (time.Duration, error) {
 	return time.Duration(hours)*time.Hour + time.Duration(minutes)*time.Minute + time.Duration(seconds*float64(time.Second)), nil
 }
 
+// parsePsEtime parses ps's "etime" field: on macOS this is
+// [[dd-]hh:]mm:ss — an optional leading "<days>-" prefix, then 2 or 3
+// colon-separated components (mm:ss, or hh:mm:ss). Unlike parsePsCPUTime's
+// "time" field (accumulated CPU time, where macOS lets minutes grow
+// unbounded rather than ever rolling into an hours component), etime is
+// real wall-clock time since the process started, so days/hours genuinely
+// roll over here.
+func parsePsEtime(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	var days int
+	if idx := strings.Index(s, "-"); idx != -1 {
+		d, err := strconv.Atoi(s[:idx])
+		if err != nil {
+			return 0, fmt.Errorf("unrecognized ps etime format %q", s)
+		}
+		days = d
+		s = s[idx+1:]
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return 0, fmt.Errorf("unrecognized ps etime format %q", s)
+	}
+	seconds, err := strconv.ParseFloat(parts[len(parts)-1], 64)
+	if err != nil {
+		return 0, err
+	}
+	minutes, err := strconv.Atoi(parts[len(parts)-2])
+	if err != nil {
+		return 0, err
+	}
+	var hours int
+	if len(parts) == 3 {
+		if hours, err = strconv.Atoi(parts[0]); err != nil {
+			return 0, err
+		}
+	}
+	return time.Duration(days)*24*time.Hour + time.Duration(hours)*time.Hour + time.Duration(minutes)*time.Minute + time.Duration(seconds*float64(time.Second)), nil
+}
+
 // pySplitN mimics Python's str.split(sep=None, maxsplit=n): runs of
 // whitespace are a single delimiter, leading/trailing whitespace around the
 // whole string is stripped once, and once maxSplit fields have been peeled
@@ -208,14 +253,14 @@ func pySplitN(s string, maxSplit int) []string {
 }
 
 // ParseProcessTableOutput is the pure parsing logic for
-// `ps -A -o pid=,ppid=,pcpu=,tty=,time=,comm=` output. comm is the full
-// executable path on macOS and is always last, so it is parsed greedily:
-// paths like `.../Code Helper (Plugin).app/.../Code Helper (Plugin)`
-// contain spaces and would otherwise be truncated. comm is what makes
-// ancestor-chain surface detection possible: an agent under VS Code's
-// integrated terminal has a `Code Helper` (under
-// `.../Visual Studio Code.app/...`) a couple of hops up; one under a bare
-// Ghostty tab has `ghostty` (under `.../Ghostty.app/...`) instead.
+// `ps -A -o pid=,ppid=,pcpu=,rss=,etime=,tty=,time=,comm=` output. comm is
+// the full executable path on macOS and is always last, so it is parsed
+// greedily: paths like `.../Code Helper (Plugin).app/.../Code Helper
+// (Plugin)` contain spaces and would otherwise be truncated. comm is what
+// makes ancestor-chain surface detection possible: an agent under VS
+// Code's integrated terminal has a `Code Helper` (under `.../Visual Studio
+// Code.app/...`) a couple of hops up; one under a bare Ghostty tab has
+// `ghostty` (under `.../Ghostty.app/...`) instead.
 func ParseProcessTableOutput(output string) map[int]ProcessInfo {
 	table := map[int]ProcessInfo{}
 	for _, rawLine := range strings.Split(output, "\n") {
@@ -223,19 +268,21 @@ func ParseProcessTableOutput(output string) map[int]ProcessInfo {
 		if line == "" {
 			continue
 		}
-		parts := pySplitN(line, 5)
-		if len(parts) < 6 {
+		parts := pySplitN(line, 7)
+		if len(parts) < 8 {
 			continue
 		}
-		pidStr, ppidStr, pcpuStr, tty, timeStr, comm := parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+		pidStr, ppidStr, pcpuStr, rssStr, etimeStr, tty, timeStr, comm := parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7]
 		pid, err1 := strconv.Atoi(pidStr)
 		ppid, err2 := strconv.Atoi(ppidStr)
 		pcpu, err3 := strconv.ParseFloat(pcpuStr, 64)
-		cpuTime, err4 := parsePsCPUTime(timeStr)
-		if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		rss, err4 := strconv.Atoi(rssStr)
+		etime, err5 := parsePsEtime(etimeStr)
+		cpuTime, err6 := parsePsCPUTime(timeStr)
+		if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil || err6 != nil {
 			continue
 		}
-		table[pid] = ProcessInfo{Pid: pid, Ppid: ppid, Pcpu: pcpu, CPUTime: cpuTime, Tty: tty, Comm: comm}
+		table[pid] = ProcessInfo{Pid: pid, Ppid: ppid, Pcpu: pcpu, RssKb: rss, Etime: etime, CPUTime: cpuTime, Tty: tty, Comm: comm}
 	}
 	return table
 }
@@ -245,7 +292,7 @@ func ParseProcessTableOutput(output string) map[int]ProcessInfo {
 // out to `ps` twice total (once filtered for agent kinds, once for
 // everything).
 func ScanProcessTable() map[int]ProcessInfo {
-	out, err := exec.Command("ps", "-A", "-o", "pid=,ppid=,pcpu=,tty=,time=,comm=").Output()
+	out, err := exec.Command("ps", "-A", "-o", "pid=,ppid=,pcpu=,rss=,etime=,tty=,time=,comm=").Output()
 	if err != nil {
 		return map[int]ProcessInfo{}
 	}

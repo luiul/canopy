@@ -52,6 +52,26 @@ type RegistryEntry struct {
 	// canopy's own poll interval instead.
 	CPUTime      time.Duration
 	CPUSampledAt time.Time
+	// CPUPercent is the raw macOS `ps` %cpu sample for this entry's most
+	// recent poll (see scan.ProcessInfo.Pcpu): a decaying average over up to
+	// a minute of real time, exactly like the one refineExternalStates
+	// corrects for its own idle/working guess. Kept separately, unrefined,
+	// purely for the TUI's CPU column: showing the same number `top`/`ps`
+	// would, not canopy's own tightened delta. Zero for an entry with no
+	// sample this poll (already gone from the whole-machine `ps` snapshot by
+	// the time it was taken), indistinguishable from a real 0% sample — the
+	// same tradeoff CPUTime already makes.
+	CPUPercent float64
+	// RSSKb and Uptime are scan.ProcessInfo's RssKb/Etime, carried straight
+	// through for the TUI's RAM and Uptime columns: resident memory in KB,
+	// and wall-clock time since the process itself started (not to be
+	// confused with StateSince, which is time in the *current state*). Both
+	// come from the same whole-machine `ps` snapshot canopy already takes
+	// every poll for ancestry/CPU purposes, so displaying them costs nothing
+	// extra. Zero when there's no sample for this pid this poll, same caveat
+	// as CPUPercent/CPUTime.
+	RSSKb  int
+	Uptime time.Duration
 	// RealState is true when State this poll came from canopy-status.ts (see
 	// internal/pistatus) rather than the CPU heuristic: pi self-reporting its
 	// own working/idle/done straight from its agent-lifecycle events.
@@ -114,19 +134,28 @@ func externalEntries(matches []scan.ProcessMatch) []RegistryEntry {
 		surface := ancestry.ClassifySurface(m.Pid, table)
 		var pcpu *float64
 		var cpuTime time.Duration
+		var cpuPercent float64
+		var rssKb int
+		var uptime time.Duration
 		if info, ok := table[m.Pid]; ok {
 			v := info.Pcpu
 			pcpu = &v
 			cpuTime = info.CPUTime
+			cpuPercent = info.Pcpu
+			rssKb = info.RssKb
+			uptime = info.Etime
 		}
 		entry := RegistryEntry{
-			Pid:     m.Pid,
-			Kind:    m.Kind,
-			Tty:     m.Tty,
-			Cwd:     cwdByPid[m.Pid],
-			Surface: surface,
-			State:   string(state.ClassifyStateDefault(pcpu)),
-			CPUTime: cpuTime,
+			Pid:        m.Pid,
+			Kind:       m.Kind,
+			Tty:        m.Tty,
+			Cwd:        cwdByPid[m.Pid],
+			Surface:    surface,
+			State:      string(state.ClassifyStateDefault(pcpu)),
+			CPUTime:    cpuTime,
+			CPUPercent: cpuPercent,
+			RSSKb:      rssKb,
+			Uptime:     uptime,
 		}
 		// `pi` is the one agent kind canopy can ask directly instead of
 		// guessing from CPU: canopy-status.ts (see internal/pistatus) writes

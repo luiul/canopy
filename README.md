@@ -58,10 +58,10 @@ canopy's scope could stay exactly "agent sessions," nothing else.
 canopy — agent sessions on this machine
 3 sessions: 1 done · 1 working · 1 idle
 
-   State      Since   Surface    Location                                  Kind     PID
->  working    12s     VS Code    ~/projects/personal/canopy                pi       86872
-   done       3m      VS Code    ~/worktrees/.../isa-orchestration         pi       9514
-   idle       1h20m   Ghostty    ~/some/other/project                     pi       65834
+   State      Since   Surface    Location                                  CPU   RAM     Uptime  Kind     PID
+>  working    12s     VS Code    ~/projects/personal/canopy                4%    278M    1h      pi       86872
+   done       3m      VS Code    ~/worktrees/.../isa-orchestration         0%    140M    2h30m   pi       9514
+   idle       1h20m   Ghostty    ~/some/other/project                     0%    95M     1d       pi       65834
 
 ↑/↓ move · enter jump · c complete · r refresh · q quit
 ```
@@ -70,11 +70,16 @@ The currently selected row is marked with a `>` in the leftmost column
 (rather than a full-row highlight, which would hide State's color coding
 on whichever row happens to be selected). Columns are ordered by urgency,
 left to right: State and Since (what needs you, and for how long) come
-first, then Surface and Location (where the session lives). Kind and PID
-are last and deliberately narrow, truncating before anything else does on
-a tight terminal: useful context, but rarely what you're scanning for.
-Location shortens a leading home-directory prefix to `~`, same as your
-shell prompt.
+first, then Surface and Location (where the session lives). CPU/RAM/Uptime
+(how the session is doing, resource-wise) come next: %cpu and resident
+memory straight from `ps`, and total wall-clock time the process has been
+running (distinct from Since, which is time in the *current* state) —
+useful for spotting a runaway or long-forgotten session, but secondary to
+State/Since so they sit to the right of Location rather than competing for
+leftmost attention. Kind and PID are last and deliberately narrow,
+truncating before anything else does on a tight terminal: useful context,
+but rarely what you're scanning for. Location shortens a leading
+home-directory prefix to `~`, same as your shell prompt.
 
 State is color-coded (green (bold) for `done`, yellow for `working`, dim
 for `idle`/`unknown`). A row that just went `done` blinks: a trailing `*`
