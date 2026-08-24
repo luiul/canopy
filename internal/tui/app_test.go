@@ -420,9 +420,9 @@ func TestAcknowledgedDoneStaysAcknowledgedAcrossPollsUntilTheRawStateMovesOn(t *
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	m = updated.(Model)
 
-	// Still reported done by the source on the next poll (e.g. "c" never
-	// brought the terminal to the front, so canopy-status.ts's own frontmost
-	// poll never noticed): stays displayed as idle.
+	// Still reported done by the source on the next poll (the raw source
+	// stays "done" until a fresh working turn overwrites it — nothing flips
+	// it back to "idle" on its own): stays displayed as idle.
 	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")})
 	if got := m.table.Rows()[0][colState]; got != "idle" {
 		t.Fatalf("got %q, want an acknowledged done row to keep displaying idle across polls", got)
@@ -443,11 +443,69 @@ func TestAcknowledgedDoneStaysAcknowledgedAcrossPollsUntilTheRawStateMovesOn(t *
 	}
 }
 
+func TestDoneStaysDisplayedUntilTheUserActsEvenIfTheRawSourceQuietlyDropsToIdleOnItsOwn(t *testing.T) {
+	// This is the scenario the invariant in docs/agent-state-machine.md
+	// exists for: nothing in canopy's current sources can actually flip raw
+	// State from "done" back to "idle" on its own anymore (canopy-status.ts
+	// writes "done" unconditionally and only a fresh working turn overwrites
+	// it — see docs/agent-state-machine.md's "Removed: frontmost/focus
+	// detection"), but the dashboard must keep enforcing this defensively
+	// regardless of what any given raw source does. The dashboard must still
+	// show done until the user actually acts on it here.
+	m := New(999)
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")})
+	if got := m.table.Rows()[0][colState]; got != "done" {
+		t.Fatalf("got %q, want done on the first poll", got)
+	}
+
+	// Raw source moves to idle on its own; still no enter/c pressed.
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "idle")})
+	if got := m.table.Rows()[0][colState]; got != "done" {
+		t.Fatalf("got %q, want done to keep displaying even though the raw source moved to idle on its own", got)
+	}
+
+	// Same again a few polls later: still no user action, still done.
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "idle")})
+	if got := m.table.Rows()[0][colState]; got != "done" {
+		t.Fatalf("got %q, want done to stay latched across further polls with no user action", got)
+	}
+
+	// The user finally presses c (works just as well with enter): only now
+	// does the row actually leave done.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	mm := updated.(Model)
+	if got := mm.table.Rows()[0][colState]; got != "idle" {
+		t.Fatalf("got %q, want idle once the user actually acknowledges it", got)
+	}
+
+	// And it stays idle afterward: the closed episode must not resurrect
+	// "done" on a later poll just because it once was.
+	mm.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "idle")})
+	if got := mm.table.Rows()[0][colState]; got != "idle" {
+		t.Fatalf("got %q, want idle to stick after acknowledgment", got)
+	}
+}
+
+func TestEnterAcknowledgesAnOpenDoneEpisodeEvenAfterRawStateAlreadyMovedToIdle(t *testing.T) {
+	m := New(999)
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")})
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "idle")}) // moved on its own
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("want enter to still return a jump command for a row that's displaying done")
+	}
+	mm := updated.(Model)
+	if got := mm.table.Rows()[0][colState]; got != "idle" {
+		t.Fatalf("got %q, want idle immediately after pressing enter on it", got)
+	}
+}
+
 func TestDisplayStateFoldsAckedDoneIntoIdleWithoutTouchingRawState(t *testing.T) {
 	e := entry(1, ancestry.Ghostty, "done")
-	acked := map[string]time.Time{e.Key(): time.Now()}
+	done := map[string]doneEpisode{e.Key(): {Since: time.Now(), Acked: time.Now()}}
 
-	if got := displayState(e, acked); got != "idle" {
+	if got := displayState(e, done); got != "idle" {
 		t.Fatalf("got %q, want idle for an acked done entry", got)
 	}
 	if e.State != "done" {
@@ -455,5 +513,20 @@ func TestDisplayStateFoldsAckedDoneIntoIdleWithoutTouchingRawState(t *testing.T)
 	}
 	if got := displayState(e, nil); got != "done" {
 		t.Fatalf("got %q, want done with no acknowledgment recorded", got)
+	}
+}
+
+func TestDisplayStateKeepsReportingDoneForAnOpenEpisodeEvenIfRawStateMovesToIdleOnItsOwn(t *testing.T) {
+	// Simulates the raw source already having flipped back to idle on its
+	// own (a defensive scenario: nothing today actually does this, see
+	// docs/agent-state-machine.md's "Removed: frontmost/focus detection"),
+	// but the episode is still open (Acked zero): no enter/c has happened in
+	// canopy yet, so displayState must keep reporting done regardless of
+	// what the raw State says this poll.
+	e := entry(1, ancestry.Ghostty, "idle")
+	done := map[string]doneEpisode{e.Key(): {Since: time.Now()}}
+
+	if got := displayState(e, done); got != "done" {
+		t.Fatalf("got %q, want an open episode to keep reporting done even though raw State already reads idle", got)
 	}
 }

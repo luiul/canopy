@@ -98,14 +98,12 @@ the bell.
 A row that's `done` stays `done` (still sorted to the top, still
 colored, still bell-eligible for its own transition) until you actually
 do something about it: press `enter` to jump to it (which also marks it
-seen right away, without waiting on the extension's own frontmost check—
-see "Real pi status" below), or `c` to mark it seen in place without
-jumping at all. Either one immediately displays that row as `idle` and
-drops it back down in the sort order, no poll wait required. It goes
-back to reading `done` — unacknowledged — the next time it actually
-earns that state again (a fresh turn ending while you're not looking),
-not on every subsequent poll where the underlying session happens to
-still be sitting done.
+seen right away), or `c` to mark it seen in place without jumping at
+all. Either one immediately displays that row as `idle` and drops it
+back down in the sort order, no poll wait required. It goes back to
+reading `done` — unacknowledged — the next time it actually earns that
+state again (a fresh turn ending), not on every subsequent poll where
+the underlying session happens to still be sitting done.
 
 ## Why Go, not Python
 
@@ -119,6 +117,10 @@ prototype made. Measured against that prototype: ~34x faster startup,
 vs. an interpreter + venv).
 
 ## Architecture
+
+See [docs/agent-state-machine.md](docs/agent-state-machine.md) for the
+finite state machine behind a row's state, including the invariant
+that a `done` row only ever leaves `done` via `enter` or `c`.
 
 One Go package per concern:
 
@@ -187,19 +189,18 @@ directory:
 ln -s "$(pwd)/extensions/canopy-status.ts" ~/.pi/agent/extensions/canopy-status.ts
 ```
 
-It reports `working` while pi is actively running, and `idle` or `done`
-once a turn ends, depending on whether you were already looking at that
-terminal (same frontmost-app check used by desktop-notification setups) —
-`done` then flips to `idle` on its own, the moment you bring that terminal
-to the front, without waiting for you to send another prompt. canopy
-itself doesn't wait on that check either: pressing `enter` or `c` on a
-`done` row in canopy marks it seen immediately (see "What it looks like"
-above), independent of whether this extension is installed or that
-frontmost check ever fires. It does not report `blocked`: vanilla pi has
-no built-in permission-gate pause to detect that from (see the comment at
-the top of the file for how a permission-gate extension could feed it
-one). macOS only; not installing it (or running on another OS) just
-leaves canopy on the CPU heuristic, same as today.
+It reports `working` while pi is actively running, and `done`
+unconditionally once a turn ends — no frontmost/focus detection at all
+(see docs/agent-state-machine.md's "Removed: frontmost/focus detection"):
+canopy's dashboard already requires an explicit `enter` or `c` on the row
+before it displays anything other than `done`, so guessing whether you
+were already looking at that terminal at settle-time couldn't change what
+you'd see there either way. One consequence: the bell/flash now fires on
+every settled turn, including ones you watched finish directly in the
+terminal, not just ones you missed. It does not report `blocked`: vanilla
+pi has no built-in permission-gate pause to detect that from. macOS only;
+not installing it (or running on another OS) just leaves canopy on the CPU
+heuristic, same as today.
 
 ## Limitations
 

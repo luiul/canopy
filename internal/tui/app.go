@@ -137,12 +137,12 @@ func statePriorityOf(state string) int {
 
 // sortEntries orders entries by statePriority, most actionable first, then
 // grouped by surface, then stable by pid. Ranks by displayState (which
-// folds in acked), not the raw State, so an acknowledged done row sorts
+// folds in done), not the raw State, so an acknowledged done row sorts
 // back down with the rest of idle rather than staying pinned at the top.
-func sortEntries(entries []registry.RegistryEntry, acked map[string]time.Time) {
+func sortEntries(entries []registry.RegistryEntry, done map[string]doneEpisode) {
 	sort.SliceStable(entries, func(i, j int) bool {
 		a, b := entries[i], entries[j]
-		if pa, pb := statePriorityOf(displayState(a, acked)), statePriorityOf(displayState(b, acked)); pa != pb {
+		if pa, pb := statePriorityOf(displayState(a, done)), statePriorityOf(displayState(b, done)); pa != pb {
 			return pa < pb
 		}
 		if a.Surface != b.Surface {
@@ -155,18 +155,43 @@ func sortEntries(entries []registry.RegistryEntry, acked map[string]time.Time) {
 	})
 }
 
-// displayState is the state actually shown for e: its raw source State
-// exactly as registry/pistatus reported it (which needsBell and
-// registry.stampStateSince must keep comparing poll to poll — see
-// Model.acknowledge's doc comment for why that raw value is never
-// overwritten), or "idle" if e is (raw) done and the user has already
-// acknowledged this done episode (the "enter" and "c" keys, see
-// Model.acknowledge). Sorting, coloring, the summary line, and the
+// doneEpisode is one open-or-closed "done" episode for a single entry key
+// (see Model.done). Since is when updateDoneTracking first saw this
+// episode's raw State read "done"; Acked is zero while the episode is
+// still open (unacknowledged) and set to the moment enter or c actually
+// fired for it (see acknowledge).
+type doneEpisode struct {
+	Since time.Time
+	Acked time.Time
+}
+
+// displayState is the state actually shown for e. Three cases, checked in
+// order:
+//
+//  1. e has an open (unacknowledged) episode in done: report "done"
+//     unconditionally, regardless of what e.State (the raw source) says
+//     right now. This is the one deliberately sticky case — see
+//     updateDoneTracking's doc comment for why an episode has to survive a
+//     raw source that quietly moves off "done" on its own, with no enter/c
+//     ever happening in canopy.
+//  2. e has an acknowledged episode in done, and e.State is still
+//     literally "done" (the common case: the user acted before the raw
+//     source moved on by itself): report the synthetic "idle".
+//  3. Anything else (no episode at all, or an acknowledged one whose raw
+//     source has already independently moved past "done"): report e.State
+//     directly.
+//
+// e.State itself (which needsBell and registry.stampStateSince must keep
+// comparing poll to poll — see Model.acknowledge's doc comment) is never
+// overwritten by any of this. Sorting, coloring, the summary line, and the
 // State/Since cells all go through this instead of e.State directly, so
 // acknowledging a row is reflected everywhere at once.
-func displayState(e registry.RegistryEntry, acked map[string]time.Time) string {
-	if e.State == "done" {
-		if _, ok := acked[e.Key()]; ok {
+func displayState(e registry.RegistryEntry, done map[string]doneEpisode) string {
+	if ep, ok := done[e.Key()]; ok {
+		if ep.Acked.IsZero() {
+			return "done"
+		}
+		if e.State == "done" {
 			return "idle"
 		}
 	}
@@ -187,20 +212,23 @@ type Model struct {
 	entries []registry.RegistryEntry // sorted, parallel to the table's real rows
 	table   table.Model
 
-	// acked holds, per entry Key(), when the user acknowledged that entry's
-	// current "done" episode (pressed enter or c on it while it read done —
-	// see acknowledge). Presence, not the raw State, is what
-	// displayState/sortEntries/stateCellText/sinceCellText/summaryLine treat
-	// as "already seen, show idle instead"; the raw State field itself is
-	// left completely untouched so needsBell and registry.stampStateSince
-	// keep comparing real poll-to-poll transitions, not what the user has
-	// dismissed on screen. pruneAcked drops an entry the moment its raw
-	// State moves off "done" on its own (canopy-status.ts's own frontmost
-	// poll noticing the terminal came forward some other way, or a fresh
-	// working turn starting), or the moment it's not in the fresh poll at
-	// all (the session ended) — either way, a future done episode for that
-	// same key needs a fresh acknowledgment.
-	acked map[string]time.Time
+	// done tracks each entry's current "done" episode by Key() (see
+	// doneEpisode): open (Acked zero) until the user actually acts on it —
+	// pressing enter or c, see acknowledge — closed (Acked set) from that
+	// instant on. displayState/sortEntries/stateCellText/sinceCellText/
+	// summaryLine all read this instead of e.State directly; the raw State
+	// field itself is left completely untouched so needsBell and
+	// registry.stampStateSince keep comparing real poll-to-poll transitions,
+	// not what the user has dismissed on screen (or what's still awaiting
+	// dismissal) on screen. updateDoneTracking (run every poll, before
+	// sorting) is what opens and closes these episodes; deliberately does
+	// *not* close an open one just because the raw source moves off "done"
+	// by itself (e.g. the same session starting a fresh working turn before
+	// the user ever acknowledged the previous done episode in canopy) —
+	// only acknowledge() or the key vanishing from a fresh poll outright
+	// (session ended) does that. See updateDoneTracking's own doc comment
+	// for the full rationale.
+	done map[string]doneEpisode
 
 	notification  string
 	notifyIsError bool
@@ -305,13 +333,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !ok {
 				return m, nil
 			}
-			// The jump itself will (for a `pi` row with canopy-status.ts
-			// installed) eventually also flip done -> idle on its own, once
-			// its own frontmost poll notices this terminal came forward --
-			// but that is seconds away and depends on jumpCmd actually
-			// succeeding. Acknowledging right here is immediate and
-			// unconditional: the row stops reading done the instant you act
-			// on it, whether or not the jump itself lands.
+			// canopy-status.ts writes "done" unconditionally at settle time and
+			// only ever overwrites it once a fresh working turn starts (see
+			// docs/agent-state-machine.md's "Removed: frontmost/focus
+			// detection") — nothing flips it back to "idle" on its own anymore.
+			// Acknowledging right here is what actually clears it: the row
+			// stops reading done the instant the user acts on it, whether or
+			// not the jump itself lands.
 			m.acknowledge(entry)
 			return m, jumpCmd(entry)
 		case "c":
@@ -397,9 +425,9 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 	// never displayState: an acknowledged row that's still raw done and
 	// stays that way must not re-ring just because a user dismissed it.
 	bell := needsBell(m.entries, fresh)
-	pruneAcked(m.acked, fresh)
+	m.updateDoneTracking(fresh)
 
-	sortEntries(fresh, m.acked)
+	sortEntries(fresh, m.done)
 	m.entries = fresh
 
 	cursor := m.table.Cursor()
@@ -417,33 +445,61 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 		cursor = clampInt(cursor, 0, len(fresh)-1)
 	}
 
-	m.table.SetRows(buildRows(fresh, cursor, m.home, time.Now(), m.acked))
+	m.table.SetRows(buildRows(fresh, cursor, m.home, time.Now(), m.done))
 	m.table.SetCursor(cursor)
 	return bell
 }
 
-// pruneAcked drops any acknowledgment whose entry's raw State has moved on
-// from "done" by itself — canopy-status.ts's own frontmost poll noticing
-// the terminal came forward some other way, or a fresh working turn
-// starting — and any acknowledgment for a key no longer present in fresh at
-// all (the session ended). Without this, acknowledging one done episode
-// would silently swallow every later done episode for that same pid too:
-// displayState only ever checks presence in acked, so a stale entry left
-// behind would keep masking a brand new, never-acknowledged done.
-func pruneAcked(acked map[string]time.Time, fresh []registry.RegistryEntry) {
-	if len(acked) == 0 {
-		return
-	}
-	present := make(map[string]bool, len(fresh))
+// updateDoneTracking maintains m.done (see its own doc comment) against a
+// fresh poll, before sorting/rendering. Two independent things happen here:
+//
+//  1. Opening a new episode: any key whose raw State reads "done" and has
+//     no entry in done at all yet (never seen done since its last
+//     acknowledgment) gets one, stamped with this poll's time. From this
+//     instant, displayState reports "done" for that key on every
+//     subsequent poll — even one where the raw source has already moved on
+//     to something else by itself (e.g. a fresh working turn starting on
+//     the same session before the user ever acknowledged the previous
+//     episode in canopy) — until acknowledge() actually fires for it, or
+//     the key disappears from fresh outright (session ended). This is
+//     deliberate and is the entire point of this map: without it, a row
+//     could silently stop reading "done" with no enter/c ever happening in
+//     canopy, which the dashboard's whole "done stays done until you act
+//     on it" contract depends on not happening.
+//  2. Closing a stale, already-acknowledged episode: one whose raw source
+//     has independently moved off "done" (nothing left for it to mask —
+//     displayState already falls through to the real State once Acked is
+//     set and raw isn't literally "done"), or whose key is no longer in
+//     fresh at all. An *open* (unacknowledged) episode is never closed
+//     here just because raw moved off "done" — see point 1.
+func (m *Model) updateDoneTracking(fresh []registry.RegistryEntry) {
+	byKey := make(map[string]registry.RegistryEntry, len(fresh))
 	for _, e := range fresh {
-		present[e.Key()] = true
-		if e.State != "done" {
-			delete(acked, e.Key())
-		}
+		byKey[e.Key()] = e
 	}
-	for k := range acked {
-		if !present[k] {
-			delete(acked, k)
+
+	for _, e := range fresh {
+		if e.State != "done" {
+			continue
+		}
+		key := e.Key()
+		if _, ok := m.done[key]; ok {
+			continue // already tracked, pending or acked: leave it exactly as is
+		}
+		if m.done == nil {
+			m.done = map[string]doneEpisode{}
+		}
+		m.done[key] = doneEpisode{Since: time.Now()}
+	}
+
+	for key, ep := range m.done {
+		e, present := byKey[key]
+		if !present {
+			delete(m.done, key) // session ended before this episode was ever resolved
+			continue
+		}
+		if !ep.Acked.IsZero() && e.State != "done" {
+			delete(m.done, key) // acknowledged, and raw independently resolved off "done": stale bookkeeping
 		}
 	}
 }
@@ -507,31 +563,44 @@ func (m *Model) refreshCursorMarker() {
 	if len(m.entries) == 0 {
 		return
 	}
-	m.table.SetRows(buildRows(m.entries, m.table.Cursor(), m.home, time.Now(), m.acked))
+	m.table.SetRows(buildRows(m.entries, m.table.Cursor(), m.home, time.Now(), m.done))
 }
 
-// acknowledge marks entry's current "done" episode as seen: from this
-// instant on, displayState treats it as idle everywhere (sorting, coloring,
-// the summary line, the State/Since cells) without waiting for
-// canopy-status.ts's own frontmost poll to notice and flip it on the source
-// side — and without requiring that poll to ever succeed at all, which is
-// exactly what the "c" keybind is for: dismissing a row without bringing
-// its terminal to the front. A no-op for anything not currently (raw)
-// done — nothing to acknowledge — so it's safe to call unconditionally from
-// both "enter" and "c".
+// acknowledge closes entry's current "done" episode: from this instant on,
+// displayState treats it as idle everywhere (sorting, coloring, the
+// summary line, the State/Since cells). That's exactly what the "c"
+// keybind is for: dismissing a row without bringing its terminal to the
+// front, and it's also why this closes an *open* episode in m.done
+// (entry.Key() present, Acked still zero — see updateDoneTracking) rather
+// than only ever looking at entry.State: the raw source may have already
+// moved on to something else by the time the user presses enter/c (e.g. a
+// fresh working turn starting on the same session before it was
+// acknowledged), and this must still count as acknowledging the earlier
+// done episode — that's the entire point of m.done latching an episode
+// open across exactly that kind of poll.
 //
-// This only ever sets m.acked; it never touches an entry's raw State field
-// (see the acked field's own doc comment on Model for why that has to stay
-// untouched for needsBell/registry.stampStateSince to keep working across
-// polls).
+// A no-op for anything neither currently (raw) done nor already tracked as
+// an open episode — nothing to acknowledge — so it's safe to call
+// unconditionally from both "enter" and "c".
+//
+// This only ever writes to m.done; it never touches entry's raw State
+// field (see the done field's own doc comment on Model for why that has to
+// stay untouched for needsBell/registry.stampStateSince to keep working
+// across polls).
 func (m *Model) acknowledge(entry registry.RegistryEntry) {
-	if entry.State != "done" {
+	key := entry.Key()
+	ep, tracked := m.done[key]
+	if entry.State != "done" && !tracked {
 		return
 	}
-	if m.acked == nil {
-		m.acked = map[string]time.Time{}
+	if m.done == nil {
+		m.done = map[string]doneEpisode{}
 	}
-	m.acked[entry.Key()] = time.Now()
+	if !tracked {
+		ep = doneEpisode{Since: entry.StateSince}
+	}
+	ep.Acked = time.Now()
+	m.done[key] = ep
 	m.refreshCursorMarker()
 }
 
@@ -541,7 +610,7 @@ func (m *Model) acknowledge(entry registry.RegistryEntry) {
 // builds rows both right after a poll (applyEntries) and on every cursor
 // move in between polls (refreshCursorMarker), so the arrow tracks the
 // highlighted row immediately rather than only once every poll interval.
-func buildRows(entries []registry.RegistryEntry, cursor int, home string, now time.Time, acked map[string]time.Time) []table.Row {
+func buildRows(entries []registry.RegistryEntry, cursor int, home string, now time.Time, done map[string]doneEpisode) []table.Row {
 	if len(entries) == 0 {
 		// Placeholder message goes in Location: the widest column, and the
 		// only one guaranteed to have room for it regardless of terminal width.
@@ -557,8 +626,8 @@ func buildRows(entries []registry.RegistryEntry, cursor int, home string, now ti
 		}
 		rows[i] = table.Row{
 			marker,
-			stateCellText(e, now, acked),
-			sinceCellText(e, now, acked),
+			stateCellText(e, now, done),
+			sinceCellText(e, now, done),
 			surfaceLabel(e.Surface),
 			location(e, home),
 			e.Kind,
@@ -580,8 +649,8 @@ const flashDuration = 8 * time.Second
 // (the two states worth calling out) within flashDuration and hasn't been
 // acknowledged since. Actual coloring happens later, in View, by
 // post-processing the rendered table (see colorize.go).
-func stateCellText(e registry.RegistryEntry, now time.Time, acked map[string]time.Time) string {
-	word := displayState(e, acked)
+func stateCellText(e registry.RegistryEntry, now time.Time, done map[string]doneEpisode) string {
+	word := displayState(e, done)
 	if (word == "blocked" || word == "done") && !e.StateSince.IsZero() && now.Sub(e.StateSince) < flashDuration {
 		return word + flashMarker
 	}
@@ -591,14 +660,25 @@ func stateCellText(e registry.RegistryEntry, now time.Time, acked map[string]tim
 // sinceCellText is the Since column's plain-text cell value: how long the
 // entry has been in its current state, or "" if that's not known yet (a
 // StateSince hasn't been stamped, e.g. in tests that build entries by
-// hand). For an acknowledged done row, "current state" means since it was
-// acknowledged (displayState already reports it as idle), not since the
-// underlying source originally went done — otherwise a row sitting done
-// for an hour before you dismissed it would misleadingly read as "idle
-// 1h" the instant you did.
-func sinceCellText(e registry.RegistryEntry, now time.Time, acked map[string]time.Time) string {
-	if ackedAt, ok := acked[e.Key()]; ok && e.State == "done" {
-		return humanizeSince(now.Sub(ackedAt))
+// hand). Two special cases, both driven by done rather than e.StateSince
+// directly:
+//   - an *open* (unacknowledged) episode reports since its own Since (when
+//     updateDoneTracking first saw it go done), not e.StateSince, which the
+//     raw source may have already overwritten with some later transition
+//     of its own.
+//   - an *acknowledged* episode whose raw State is still literally "done"
+//     reports since it was acknowledged, not since the underlying source
+//     originally went done — otherwise a row sitting done for an hour
+//     before you dismissed it would misleadingly read as "idle 1h" the
+//     instant you did.
+func sinceCellText(e registry.RegistryEntry, now time.Time, done map[string]doneEpisode) string {
+	if ep, ok := done[e.Key()]; ok {
+		if ep.Acked.IsZero() {
+			return humanizeSince(now.Sub(ep.Since))
+		}
+		if e.State == "done" {
+			return humanizeSince(now.Sub(ep.Acked))
+		}
 	}
 	if e.StateSince.IsZero() {
 		return ""
@@ -610,13 +690,13 @@ func sinceCellText(e registry.RegistryEntry, now time.Time, acked map[string]tim
 // breakdown, colored to match the State column and ordered the same way
 // (most actionable first), skipping any state with a zero count. Empty
 // when there are no entries, since the placeholder row already says so.
-func summaryLine(entries []registry.RegistryEntry, acked map[string]time.Time) string {
+func summaryLine(entries []registry.RegistryEntry, done map[string]doneEpisode) string {
 	if len(entries) == 0 {
 		return ""
 	}
 	counts := map[string]int{}
 	for _, e := range entries {
-		counts[displayState(e, acked)]++
+		counts[displayState(e, done)]++
 	}
 
 	parts := make([]string, 0, len(stateOrder))
@@ -671,7 +751,7 @@ func (m Model) View() string {
 		return ""
 	}
 	header := titleStyle.Render("canopy") + subtleStyle.Render(" — agent sessions on this machine")
-	if summary := summaryLine(m.entries, m.acked); summary != "" {
+	if summary := summaryLine(m.entries, m.done); summary != "" {
 		header += "\n" + summary
 	}
 
