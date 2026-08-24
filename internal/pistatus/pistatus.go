@@ -94,5 +94,5 @@ func parse(data []byte, now time.Time) (Status, bool) {
 	if now.Sub(w.UpdatedAt) > MaxAge {
 		return Status{}, false
 	}
-	return Status{Pid: w.Pid, Cwd: w.Cwd, State: w.State, UpdatedAt: w.UpdatedAt}, true
+	return Status(w), true
 }

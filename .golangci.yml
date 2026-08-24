@@ -1,0 +1,13 @@
+version: "2"
+
+# Deliberately close to golangci-lint's own defaults (errcheck, govet,
+# ineffassign, staticcheck, unused), spelled out explicitly here so CI's
+# linter set doesn't silently drift if golangci-lint's own default set ever
+# changes in a future major version.
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
