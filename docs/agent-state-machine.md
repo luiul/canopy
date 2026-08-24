@@ -174,13 +174,27 @@ happens before the eventual acknowledgment is correctly treated as
 already covered by it, and only a settle *after* the acknowledgment
 counts as new.
 
+The symmetric case: if the *second* settle lands while the first is still
+*open* (unacknowledged), `updateDoneTracking` silently absorbs it into the
+same episode rather than opening a new one — the row already reads `done`
+and nothing changes on screen for it. `needsBell` has to know that too
+(via the caller's `Model.done`, passed in as it stood at the end of the
+previous poll), or it would ring a second time for a row that visibly
+didn't change — exactly the drowning-out its own "still done, don't
+re-ring" rule exists to avoid, just triggered by a second settle instead
+of a poll timer. So `needsBell` only rings for a `RealStateReportedAt`
+advance when the *previous* poll's episode for that key was already
+acknowledged (the genuine reopen case above) — never while it's still
+open.
+
 Regression coverage in `internal/tui/app_test.go` exercises the
 invariant across a poll where the raw source has already moved off
 `done` on its own — a scenario the current `extensions/canopy-status.ts`
 can no longer actually produce (nothing writes `done -> idle`
 automatically anymore), but the display layer still enforces
 defensively, since a new `pi_working` turn starting while an episode is
-still open exercises the identical code path — as well as the two
-settles-with-no-intervening-poll scenario above (both the "same write,
-still acknowledged" and "genuinely new write, reopens" cases).
+still open exercises the identical code path — as well as all three
+settles-with-no-intervening-poll cases above ("same write, still
+acknowledged", "genuinely new write after acknowledgment, reopens", and
+"genuinely new write while still open, absorbed silently").
 
