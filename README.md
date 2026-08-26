@@ -63,11 +63,20 @@ working    12s     VS Code    ~/projects/personal/canopy                4%    27
 done       3m      VS Code    ~/worktrees/.../isa-orchestration         0%    140M    2h30m   pi       9514
 idle       1h20m   Ghostty    ~/some/other/project                     0%    95M     1d       pi       65834
 
-↑/↓ move · enter jump · c complete · r refresh · q quit
+↑/↓ move · enter jump · c complete · drag column border to resize · r refresh · q quit
 ```
 
 (the currently selected row also gets a full-width grey highlight in the
 real terminal output, not shown here since it's just a background color)
+
+Any column's border can be dragged with the mouse to widen or narrow it —
+Location absorbs whatever a drag adds to or takes from anywhere else, so
+the table's own total width never changes, only how it's divided up (see
+[`github.com/luiul/trellis`](https://github.com/luiul/trellis) below,
+the same package understory uses for its own table). A resize sticks
+across the next poll, but resets on a terminal resize, since that already
+recomputes Location's own width from scratch against the new terminal
+width anyway.
 
 The currently selected row is highlighted with a subtle grey background
 spanning the full width of the table, rather than a leading marker glyph
@@ -162,7 +171,9 @@ One Go package per concern:
   externally observable source the way `State` itself is (see "Multiple
   instances" below).
 - `internal/tui`: the Bubble Tea dashboard (table, polling timer,
-  jump-on-Enter, notifications).
+  jump-on-Enter, notifications, and mouse column resizing via
+  [`github.com/luiul/trellis`](https://github.com/luiul/trellis) — the
+  same package understory uses for its own table).
 - `cmd/canopy`: the CLI entry point (flags, version).
 
 ## Install

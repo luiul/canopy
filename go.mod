@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/luiul/loam v0.1.0
 	github.com/luiul/mycelium v0.1.0
+	github.com/luiul/trellis v0.1.0
 	github.com/muesli/termenv v0.16.0
 )
 

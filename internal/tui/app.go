@@ -21,6 +21,7 @@ import (
 	"github.com/luiul/canopy/internal/jump"
 	"github.com/luiul/canopy/internal/registry"
 	"github.com/luiul/loam"
+	"github.com/luiul/trellis"
 )
 
 // DefaultInterval is the poll interval used when none is given. Also sets
@@ -142,6 +143,18 @@ type Model struct {
 	// a jump attempt is.
 	scanWarning string
 
+	// resizer tracks an in-progress mouse column-border drag (see
+	// github.com/luiul/trellis); colOverrides remembers the resulting width
+	// of whichever column(s) the user has actually dragged, by column
+	// index (see the Column indexes above), so resizeColumns' own recompute
+	// on every terminal resize doesn't silently discard an unrelated
+	// column's earlier resize. Cleared whenever a WindowSizeMsg arrives
+	// (see Update): a genuinely new terminal width invalidates the old
+	// distribution of space entirely, so resizeColumns starts fresh rather
+	// than fighting stale overrides sized for a different width.
+	colOverrides map[int]int
+	resizer      trellis.Model
+
 	// bellEnabled gates the terminal-bell side effect in applyEntries/Update
 	// (see needsBell in bell.go): on by default (set in New), off via
 	// --no-bell (see cmd/canopy) for anyone who finds an audible alert
@@ -183,6 +196,7 @@ func New(interval time.Duration) Model {
 		home:        homeDir(),
 		table:       t,
 		bellEnabled: true,
+		resizer:     trellis.New(),
 	}
 }
 
@@ -227,9 +241,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		// A new terminal width invalidates whatever distribution of space a
+		// prior drag settled on — resizeColumns is about to recompute every
+		// column from scratch against the new width, so any stale override
+		// is dropped first rather than fighting that recompute.
+		m.colOverrides = nil
 		m.table.SetWidth(msg.Width)
 		m.table.SetHeight(clampInt(msg.Height-6, 3, 1000))
 		m.resizeColumns()
+		return m, nil
+
+	case tea.MouseMsg:
+		_, originY := m.renderHeader()
+		cols := m.table.Columns()
+		widths, changed := m.resizer.Handle(msg, cols, columnMinWidths(), colLocation, 0, originY)
+		if changed {
+			if m.colOverrides == nil {
+				m.colOverrides = map[int]int{}
+			}
+			m.colOverrides[m.resizer.DragColumn()] = widths[m.resizer.DragColumn()]
+			m.table.SetColumns(trellis.Apply(cols, widths))
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -380,13 +412,42 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 	return bell
 }
 
+// columnMinWidths returns each column's own minimum width, in the same
+// order/index New builds them (see the Column indexes above), for
+// trellis' mouse-resize handling (see Update's tea.MouseMsg case): every
+// fixed column floors at its own current default width, since every
+// value it ever shows already fits exactly there (State/Kind's own
+// longest words, Since/CPU/RAM/Uptime/PID's own widest realistic
+// numbers) and shrinking further would only truncate it; Location floors
+// at 20, the same floor resizeColumns' own leftover-space computation
+// already respects.
+func columnMinWidths() []int {
+	return []int{9, 6, 9, 20, 4, 6, 6, 7, 6}
+}
+
+// resizeColumns rebuilds Location's width (the only one that depends on
+// terminal width) against m.width, applying any of colOverrides first —
+// see Model.colOverrides' own doc for why a fixed column might carry one
+// — to whichever fixed columns have one, then giving Location whatever's
+// left after every other column's own effective (possibly overridden)
+// width is accounted for. That's the same invariant a mouse drag itself
+// already keeps (see trellis.Model.Handle's doc): the table's total width
+// never changes, no matter which column a user actually resized.
 func (m *Model) resizeColumns() {
 	cols := m.table.Columns()
 	if len(cols) != 9 {
 		return
 	}
-	fixed := cols[colState].Width + cols[colSince].Width + cols[colSurface].Width +
-		cols[colCPU].Width + cols[colRAM].Width + cols[colUptime].Width + cols[colKind].Width + cols[colPID].Width
+	fixed := 0
+	for i := range cols {
+		if i == colLocation {
+			continue
+		}
+		if w, ok := m.colOverrides[i]; ok {
+			cols[i].Width = w
+		}
+		fixed += cols[i].Width
+	}
 	remaining := m.width - fixed - 18 // 2 chars of padding per cell, 9 cells
 	if remaining < 20 {
 		remaining = 20
@@ -395,23 +456,40 @@ func (m *Model) resizeColumns() {
 	m.table.SetColumns(cols)
 }
 
-// View implements tea.Model.
-func (m Model) View() string {
-	if m.quitting {
-		return ""
-	}
-	header := titleStyle.Render("canopy") + subtleStyle.Render(" — agent sessions on this machine")
+// renderHeader builds the header block (title, plus an optional summary
+// line and scan-warning banner) and reports how many terminal rows
+// precede the table's own header row: the header block's own line count,
+// plus the blank separator line View always inserts before the table.
+// View and the tea.MouseMsg case in Update both need exactly this — View
+// to render the text, mouse handling to know whether a click landed on
+// the table's own header row (see trellis.Model.Handle's doc) — so both
+// call this one helper rather than keeping two copies of the same
+// line-counting logic in sync by hand.
+func (m Model) renderHeader() (text string, tableOriginY int) {
+	text = titleStyle.Render("canopy") + subtleStyle.Render(" — agent sessions on this machine")
+	lines := 1
 	if summary := summaryLine(m.entries, m.done); summary != "" {
-		header += "\n" + summary
+		text += "\n" + summary
+		lines++
 	}
 	if m.scanWarning != "" {
 		// Persists across polls for as long as the underlying condition
 		// does (see Model.scanWarning's own doc comment), unlike the
 		// footer's notification, which auto-clears after notifyDuration.
-		header += "\n" + errorStyle.Render("⚠ "+m.scanWarning)
+		text += "\n" + errorStyle.Render("⚠ "+m.scanWarning)
+		lines++
 	}
+	return text, lines + 1 // +1 for the blank separator line View puts before the table
+}
 
-	footer := subtleStyle.Render("↑/↓ move · enter jump · c complete · r refresh · q quit")
+// View implements tea.Model.
+func (m Model) View() string {
+	if m.quitting {
+		return ""
+	}
+	header, _ := m.renderHeader()
+
+	footer := subtleStyle.Render("↑/↓ move · enter jump · c complete · drag column border to resize · r refresh · q quit")
 	if m.notification != "" {
 		style := okStyle
 		if m.notifyIsError {
@@ -426,7 +504,7 @@ func (m Model) View() string {
 
 // Run starts the dashboard program and blocks until the user quits.
 func Run(interval time.Duration, bellEnabled bool) error {
-	p := tea.NewProgram(New(interval).WithBell(bellEnabled), tea.WithAltScreen())
+	p := tea.NewProgram(New(interval).WithBell(bellEnabled), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
 }

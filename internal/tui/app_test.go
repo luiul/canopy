@@ -5,11 +5,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/luiul/canopy/internal/ancestry"
 	"github.com/luiul/canopy/internal/jump"
 	"github.com/luiul/canopy/internal/registry"
+	"github.com/luiul/loam"
 )
 
 func entry(pid int, surface ancestry.Surface, state string) registry.RegistryEntry {
@@ -861,5 +863,104 @@ func TestPollResultMsgWarningIsShownInTheHeaderAndPersistsAcrossPolls(t *testing
 
 	if strings.Contains(m3.View(), "agent process scan failed") {
 		t.Fatalf("View() = %q, want the warning cleared after a clean poll", m3.View())
+	}
+}
+
+// stateBorderX returns the on-screen X of the State column's own
+// right-hand border, given cols in the same order/widths New builds them.
+func stateBorderX(cols []table.Column) int {
+	off := loam.ColumnOffsets(cols)[colState]
+	return off.Start + off.Width
+}
+
+func TestMouseDragWidensStateColumnAndShrinksLocationToMatch(t *testing.T) {
+	m := New(999 * time.Second)
+	m.width, m.height = 120, 40
+	m.resizeColumns()
+
+	cols := m.table.Columns()
+	_, originY := m.renderHeader()
+	borderX := stateBorderX(cols)
+	oldStateWidth, oldLocationWidth := cols[colState].Width, cols[colLocation].Width
+
+	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.MouseMsg{X: borderX + 4, Y: originY, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+
+	gotCols := m.table.Columns()
+	if got, want := gotCols[colState].Width, oldStateWidth+4; got != want {
+		t.Fatalf("State width = %d, want %d", got, want)
+	}
+	if got, want := gotCols[colLocation].Width, oldLocationWidth-4; got != want {
+		t.Fatalf("Location width = %d, want %d (flex column absorbs the drag)", got, want)
+	}
+}
+
+func TestMouseDragSurvivesTheNextTerminalResizeAtTheSameWidth(t *testing.T) {
+	m := New(999 * time.Second)
+	m.width, m.height = 120, 40
+	m.resizeColumns()
+
+	cols := m.table.Columns()
+	_, originY := m.renderHeader()
+	borderX := stateBorderX(cols)
+
+	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.MouseMsg{X: borderX + 4, Y: originY, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+	resized := m.table.Columns()[colState].Width
+
+	// resizeColumns runs unconditionally on every WindowSizeMsg; calling it
+	// again directly (same width) must reapply the override rather than
+	// silently reverting to State's own fixed default.
+	m.resizeColumns()
+	if got := m.table.Columns()[colState].Width; got != resized {
+		t.Fatalf("State width = %d after resizeColumns, want %d (the drag override, undiscarded)", got, resized)
+	}
+}
+
+func TestWindowSizeMsgClearsColumnOverrides(t *testing.T) {
+	m := New(999 * time.Second)
+	m.width, m.height = 120, 40
+	m.resizeColumns()
+
+	cols := m.table.Columns()
+	_, originY := m.renderHeader()
+	borderX := stateBorderX(cols)
+
+	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.MouseMsg{X: borderX + 4, Y: originY, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+	if m.colOverrides[colState] == 0 {
+		t.Fatal("want a State override recorded after the drag")
+	}
+
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if m.colOverrides != nil {
+		t.Fatalf("colOverrides = %v after a terminal resize, want nil", m.colOverrides)
+	}
+}
+
+func TestMouseClickOffTheHeaderRowDoesNotStartADrag(t *testing.T) {
+	m := New(999 * time.Second)
+	m.width, m.height = 120, 40
+	m.resizeColumns()
+
+	cols := m.table.Columns()
+	borderX := stateBorderX(cols)
+	oldStateWidth := cols[colState].Width
+
+	// Well below the header row, e.g. a click on a data row.
+	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: 50, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.MouseMsg{X: borderX + 4, Y: 50, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+
+	if got := m.table.Columns()[colState].Width; got != oldStateWidth {
+		t.Fatalf("State width = %d, want unchanged %d (click was off the header row)", got, oldStateWidth)
 	}
 }
