@@ -13,7 +13,7 @@ import (
 
 	"github.com/luiul/canopy/internal/ancestry"
 	"github.com/luiul/canopy/internal/registry"
-	"github.com/luiul/loam"
+	"github.com/luiul/dashkit/loam"
 )
 
 var surfaceLabels = map[ancestry.Surface]string{

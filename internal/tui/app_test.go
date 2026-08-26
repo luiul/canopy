@@ -11,7 +11,7 @@ import (
 	"github.com/luiul/canopy/internal/ancestry"
 	"github.com/luiul/canopy/internal/jump"
 	"github.com/luiul/canopy/internal/registry"
-	"github.com/luiul/loam"
+	"github.com/luiul/dashkit/loam"
 )
 
 func entry(pid int, surface ancestry.Surface, state string) registry.RegistryEntry {

@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/luiul/loam"
+	"github.com/luiul/dashkit/loam"
 	"github.com/muesli/termenv"
 )
 

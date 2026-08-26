@@ -5,7 +5,7 @@ import (
 
 	"github.com/luiul/canopy/internal/ancestry"
 	"github.com/luiul/canopy/internal/registry"
-	"github.com/luiul/mycelium"
+	"github.com/luiul/dashkit/mycelium"
 )
 
 func entry(surface ancestry.Surface, mutate func(*registry.RegistryEntry)) registry.RegistryEntry {

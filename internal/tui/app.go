@@ -20,8 +20,8 @@ import (
 
 	"github.com/luiul/canopy/internal/jump"
 	"github.com/luiul/canopy/internal/registry"
-	"github.com/luiul/loam"
-	"github.com/luiul/trellis"
+	"github.com/luiul/dashkit/loam"
+	"github.com/luiul/dashkit/trellis"
 )
 
 // DefaultInterval is the poll interval used when none is given. Also sets
@@ -144,7 +144,7 @@ type Model struct {
 	scanWarning string
 
 	// resizer tracks an in-progress mouse column-border drag (see
-	// github.com/luiul/trellis); colOverrides remembers the resulting width
+	// github.com/luiul/dashkit/trellis); colOverrides remembers the resulting width
 	// of whichever column(s) the user has actually dragged, by column
 	// index (see the Column indexes above), so resizeColumns' own recompute
 	// on every terminal resize doesn't silently discard an unrelated

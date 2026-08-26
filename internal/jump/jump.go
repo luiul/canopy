@@ -1,6 +1,6 @@
 // Package jump brings whichever window is actually running a given agent
 // process to the front. It maps a row's Surface (VS Code / Ghostty /
-// unknown) onto github.com/luiul/mycelium's shared open-or-focus logic —
+// unknown) onto github.com/luiul/dashkit/mycelium's shared open-or-focus logic —
 // switch to an already-open window when one matches the row's working
 // directory, or open a brand-new one when none does — rather than
 // re-implementing that AppleScript-backed detection here: understory
@@ -13,7 +13,7 @@ package jump
 import (
 	"github.com/luiul/canopy/internal/ancestry"
 	"github.com/luiul/canopy/internal/registry"
-	"github.com/luiul/mycelium"
+	"github.com/luiul/dashkit/mycelium"
 )
 
 // Result reports whether a jump succeeded and a human-readable message
