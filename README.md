@@ -72,8 +72,8 @@ real terminal output, not shown here since it's just a background color)
 Any column's border can be dragged with the mouse to widen or narrow it —
 Location absorbs whatever a drag adds to or takes from anywhere else, so
 the table's own total width never changes, only how it's divided up (see
-[`github.com/luiul/trellis`](https://github.com/luiul/trellis) below,
-the same package understory uses for its own table). A resize sticks
+[`github.com/luiul/dashkit/trellis`](https://github.com/luiul/dashkit/tree/main/trellis)
+below, the same package understory uses for its own table). A resize sticks
 across the next poll, but resets on a terminal resize, since that already
 recomputes Location's own width from scratch against the new terminal
 width anyway.
@@ -81,8 +81,8 @@ width anyway.
 The currently selected row is highlighted with a subtle grey background
 spanning the full width of the table, rather than a leading marker glyph
 (the muted highlight sits comfortably alongside State's own color coding
-on that row, rather than replacing it — see github.com/luiul/loam, which
-both canopy and understory share for exactly this). Columns are ordered by urgency,
+on that row, rather than replacing it — see github.com/luiul/dashkit/loam,
+which both canopy and understory share for exactly this). Columns are ordered by urgency,
 left to right: State and Since (what needs you, and for how long) come
 first, then Surface and Location (where the session lives). CPU/RAM/Uptime
 (how the session is doing, resource-wise) come next: %cpu and resident
@@ -156,8 +156,8 @@ One Go package per concern:
 - `internal/ancestry`: walks a process's parent chain to classify which app
   (VS Code / Ghostty) is hosting it.
 - `internal/jump`: maps a row's Surface onto
-  [`github.com/luiul/mycelium`](https://github.com/luiul/mycelium)'s shared
-  open-or-focus logic (`code --reuse-window`/`-n` for VS Code, Ghostty
+  [`github.com/luiul/dashkit/mycelium`](https://github.com/luiul/dashkit/tree/main/mycelium)'s
+  shared open-or-focus logic (`code --reuse-window`/`-n` for VS Code, Ghostty
   AppleScript for a bare tab), switching to an already-open window when one
   matches the row's working directory, or opening a brand-new one when none
   does. The AppleScript window detection and switch-or-create behavior
@@ -172,8 +172,8 @@ One Go package per concern:
   instances" below).
 - `internal/tui`: the Bubble Tea dashboard (table, polling timer,
   jump-on-Enter, notifications, and mouse column resizing via
-  [`github.com/luiul/trellis`](https://github.com/luiul/trellis) — the
-  same package understory uses for its own table).
+  [`github.com/luiul/dashkit/trellis`](https://github.com/luiul/dashkit/tree/main/trellis)
+  — the same package understory uses for its own table).
 - `cmd/canopy`: the CLI entry point (flags, version).
 
 ## Install
