@@ -184,6 +184,21 @@ One Go package per concern:
 
 ```bash
 cd canopy
+scripts/install.sh   # builds, installs to ~/.local/bin, code-signs with a
+                     # stable local identity so macOS Accessibility/
+                     # Automation permission (needed by mycelium's
+                     # window-detection AppleScript) survives future
+                     # rebuilds instead of resetting every time -- see
+                     # the script's own comment for why and how to set
+                     # up that signing identity once
+```
+
+Or, without the stable signature (fine for a one-off build, but expect
+to re-grant Accessibility/Automation to VS Code/Ghostty + System Events
+after every rebuild):
+
+```bash
+cd canopy
 go build -o /tmp/canopy-build ./cmd/canopy
 install -m 0755 /tmp/canopy-build ~/.local/bin/canopy   # or anywhere on PATH
 ```
