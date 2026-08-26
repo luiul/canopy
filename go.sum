@@ -30,6 +30,8 @@ github.com/lucasb-eyer/go-colorful v1.3.0 h1:2/yBRLdWBZKrf7gB40FoiKfAWYQ0lqNcbuQ
 github.com/lucasb-eyer/go-colorful v1.3.0/go.mod h1:R4dSotOR9KMtayYi1e77YzuveK+i7ruzyGqttikkLy0=
 github.com/luiul/dashkit v0.2.1 h1:A4GNmjKEIw/YrID3uSIDeVEy3T9nH+e5tyDBE2NlX4k=
 github.com/luiul/dashkit v0.2.1/go.mod h1:79ScTHKZjb2AWLhH3/u2VnukdK6jNAqupDCegg5yIfg=
+github.com/luiul/dashkit v0.2.2 h1:LuTOzzjl9KqoCtvknK8m5b1xqVE9ncabfp3i6+y0OMI=
+github.com/luiul/dashkit v0.2.2/go.mod h1:79ScTHKZjb2AWLhH3/u2VnukdK6jNAqupDCegg5yIfg=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/mattn/go-localereader v0.0.1 h1:ygSAOl7ZXTx4RdPYinUpg6W99U8jWvWi9Ye2JC/oIi4=
