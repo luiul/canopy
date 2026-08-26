@@ -914,6 +914,73 @@ func locationBorderX(cols []table.Column) int {
 	return off.Start + off.Width
 }
 
+// TestRenderHeaderOriginYMatchesTheTablesActualHeaderRow is a regression
+// test for an off-by-one that once made every mouse-drag test in this
+// file pass while resizing was completely broken in a real terminal:
+// renderHeader's own tableOriginY must equal the index (0-based, within
+// View()'s full output) of the line View() builds from m.table.View()'s
+// own first line — not one more than that, however plausible the extra
+// "+1" reads in isolation (View() joins header and the table with a
+// single "\n\n", i.e. exactly one blank separator line, not two).
+// Handle's own Y check (tea.MouseActionPress) is exact-match, not a
+// range, so being off by even one line silently drops every click on
+// the table's own header row — a drag can never even start, with no
+// error or other symptom besides "nothing happens".
+func TestRenderHeaderOriginYMatchesTheTablesActualHeaderRow(t *testing.T) {
+	m := New(999 * time.Second)
+	m.width, m.height = 120, 40
+	m.resizeColumns()
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
+
+	lines := strings.Split(m.View(), "\n")
+	tableHeaderLine := strings.Split(m.table.View(), "\n")[0]
+
+	want := -1
+	for i, line := range lines {
+		if strings.Contains(line, tableHeaderLine) || (i > 0 && strings.Contains(line, "State") && strings.Contains(line, "PID")) {
+			want = i
+			break
+		}
+	}
+	if want < 0 {
+		t.Fatalf("could not find the table's own header row in View()'s output: %q", m.View())
+	}
+
+	_, got := m.renderHeader()
+	if got != want {
+		t.Fatalf("renderHeader's tableOriginY = %d, want %d (the actual line index of the table's header row in View()'s output)", got, want)
+	}
+}
+
+// TestRenderHeaderOriginYMatchesTheTablesActualHeaderRowWithAWarningLine
+// is the same check as above with a 3-line header block (title, summary,
+// scan warning), so a fix that only special-cases the common 1-or-2-line
+// case can't sneak back in undetected.
+func TestRenderHeaderOriginYMatchesTheTablesActualHeaderRowWithAWarningLine(t *testing.T) {
+	m := New(999 * time.Second)
+	m.width, m.height = 120, 40
+	m.resizeColumns()
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
+	m.scanWarning = "agent process scan failed: ps: exit status 1"
+
+	lines := strings.Split(m.View(), "\n")
+	want := -1
+	for i, line := range lines {
+		if strings.Contains(line, "State") && strings.Contains(line, "PID") {
+			want = i
+			break
+		}
+	}
+	if want < 0 {
+		t.Fatalf("could not find the table's own header row in View()'s output: %q", m.View())
+	}
+
+	_, got := m.renderHeader()
+	if got != want {
+		t.Fatalf("renderHeader's tableOriginY = %d, want %d", got, want)
+	}
+}
+
 func TestMouseDragOnlyResizesTheTwoColumnsStraddlingTheDraggedBorder(t *testing.T) {
 	m := New(999 * time.Second)
 	m.width, m.height = 120, 40
