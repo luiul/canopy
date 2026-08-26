@@ -69,14 +69,18 @@ idle       1h20m   Ghostty    ~/some/other/project                     0%    95M
 (the currently selected row also gets a full-width grey highlight in the
 real terminal output, not shown here since it's just a background color)
 
-Any column's border can be dragged with the mouse to widen or narrow it —
-Location absorbs whatever a drag adds to or takes from anywhere else, so
-the table's own total width never changes, only how it's divided up (see
+Each internal column border can be dragged with the mouse to widen or
+narrow it: the two columns it sits between trade width between
+themselves, so the table's own total width never changes, only how it's
+divided up between whichever two columns you actually grabbed (see
 [`github.com/luiul/dashkit/trellis`](https://github.com/luiul/dashkit/tree/main/trellis)
-below, the same package understory uses for its own table). A resize sticks
-across the next poll, but resets on a terminal resize, since that already
-recomputes Location's own width from scratch against the new terminal
-width anyway.
+below, the same package understory uses for its own table). A visible
+divider marks each border on the header row (see
+[`github.com/luiul/dashkit/loam`](https://github.com/luiul/dashkit/tree/main/loam)'s
+`DrawHeaderBorders`) so there's something to aim the drag at, rather than
+an invisible 2-space gap. A resize sticks across the next poll, but
+resets on a terminal resize, since that already recomputes Location's
+own width from scratch against the new terminal width anyway.
 
 The currently selected row is highlighted with a subtle grey background
 spanning the full width of the table, rather than a leading marker glyph

@@ -256,6 +256,29 @@ func TestDashboardShowsAPlaceholderRowWhenNothingIsFound(t *testing.T) {
 	}
 }
 
+func TestViewMarksColumnBordersOnTheHeaderRowSoThereIsSomethingToDrag(t *testing.T) {
+	m := New(999 * time.Second)
+	m.width, m.height = 120, 40
+	m.resizeColumns()
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
+
+	lines := strings.Split(m.View(), "\n")
+	var headerLine string
+	for _, line := range lines {
+		if strings.Contains(line, "State") {
+			headerLine = line
+			break
+		}
+	}
+	if headerLine == "" {
+		t.Fatalf("View() = %q, want a header line containing \"State\"", m.View())
+	}
+	// 9 columns, so 8 internal borders.
+	if n := strings.Count(headerLine, loam.BorderGlyph); n != 8 {
+		t.Fatalf("header line has %d border glyphs, want 8 (one per internal column border): %q", n, headerLine)
+	}
+}
+
 func TestEnterOnARowTriggersJumpToTheSelectedEntry(t *testing.T) {
 	target := entry(42, ancestry.Ghostty, "working")
 	m := New(999)
@@ -873,15 +896,34 @@ func stateBorderX(cols []table.Column) int {
 	return off.Start + off.Width
 }
 
-func TestMouseDragWidensStateColumnAndShrinksLocationToMatch(t *testing.T) {
+// surfaceBorderX returns the on-screen X of the Surface column's own
+// right-hand border — the Surface/Location border, the one actually
+// adjacent to Location — given cols in the same order/widths New builds
+// them.
+func surfaceBorderX(cols []table.Column) int {
+	off := loam.ColumnOffsets(cols)[colSurface]
+	return off.Start + off.Width
+}
+
+// locationBorderX returns the on-screen X of Location's own right-hand
+// border — the Location/CPU border. Under the old flex-column design
+// this never responded to a drag at all (see trellis' package doc for
+// why); it's an ordinary border like any other now.
+func locationBorderX(cols []table.Column) int {
+	off := loam.ColumnOffsets(cols)[colLocation]
+	return off.Start + off.Width
+}
+
+func TestMouseDragOnlyResizesTheTwoColumnsStraddlingTheDraggedBorder(t *testing.T) {
 	m := New(999 * time.Second)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 
 	cols := m.table.Columns()
 	_, originY := m.renderHeader()
-	borderX := stateBorderX(cols)
-	oldStateWidth, oldLocationWidth := cols[colState].Width, cols[colLocation].Width
+	borderX := surfaceBorderX(cols)
+	oldSurfaceWidth, oldLocationWidth := cols[colSurface].Width, cols[colLocation].Width
+	oldStateWidth, oldCPUWidth := cols[colState].Width, cols[colCPU].Width
 
 	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	m = updated.(Model)
@@ -889,11 +931,76 @@ func TestMouseDragWidensStateColumnAndShrinksLocationToMatch(t *testing.T) {
 	m = updated.(Model)
 
 	gotCols := m.table.Columns()
-	if got, want := gotCols[colState].Width, oldStateWidth+4; got != want {
-		t.Fatalf("State width = %d, want %d", got, want)
+	if got, want := gotCols[colSurface].Width, oldSurfaceWidth+4; got != want {
+		t.Fatalf("Surface width = %d, want %d", got, want)
 	}
 	if got, want := gotCols[colLocation].Width, oldLocationWidth-4; got != want {
-		t.Fatalf("Location width = %d, want %d (flex column absorbs the drag)", got, want)
+		t.Fatalf("Location width = %d, want %d (its own left-hand neighbor absorbs the drag)", got, want)
+	}
+	// Every column not touching the dragged border must stay put — unlike
+	// the old flex-column design, where *any* drag anywhere in the table
+	// silently resized Location instead of whichever column actually sat
+	// next to the border being dragged (see trellis' package doc).
+	if got := gotCols[colState].Width; got != oldStateWidth {
+		t.Fatalf("State width = %d, want unchanged %d", got, oldStateWidth)
+	}
+	if got := gotCols[colCPU].Width; got != oldCPUWidth {
+		t.Fatalf("CPU width = %d, want unchanged %d", got, oldCPUWidth)
+	}
+}
+
+func TestMouseDragNowWorksOnLocationsOwnRightHandBorder(t *testing.T) {
+	m := New(999 * time.Second)
+	m.width, m.height = 120, 40
+	m.resizeColumns()
+
+	cols := m.table.Columns()
+	_, originY := m.renderHeader()
+	borderX := locationBorderX(cols)
+	oldLocationWidth, oldCPUWidth := cols[colLocation].Width, cols[colCPU].Width
+
+	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+	// Drag left: Location gives width to CPU, its right-hand neighbor.
+	updated, _ = m.Update(tea.MouseMsg{X: borderX - 4, Y: originY, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+
+	gotCols := m.table.Columns()
+	if got, want := gotCols[colLocation].Width, oldLocationWidth-4; got != want {
+		t.Fatalf("Location width = %d, want %d (its own border must respond to a drag now)", got, want)
+	}
+	if got, want := gotCols[colCPU].Width, oldCPUWidth+4; got != want {
+		t.Fatalf("CPU width = %d, want %d", got, want)
+	}
+}
+
+func TestMouseDragBetweenTwoAlreadyMinimalColumnsIsANoOp(t *testing.T) {
+	// State and Since are both already at their own tightest legible
+	// width (columnMinWidths mirrors each one's own default), so their
+	// shared border has nothing to give in either direction — and,
+	// crucially, no longer silently resizes Location instead the way the
+	// old flex-column design did for every border that wasn't already
+	// adjacent to it.
+	m := New(999 * time.Second)
+	m.width, m.height = 120, 40
+	m.resizeColumns()
+
+	cols := m.table.Columns()
+	_, originY := m.renderHeader()
+	borderX := stateBorderX(cols)
+	oldLocationWidth := cols[colLocation].Width
+
+	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.MouseMsg{X: borderX + 4, Y: originY, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+
+	gotCols := m.table.Columns()
+	if got, want := gotCols[colState].Width, cols[colState].Width; got != want {
+		t.Fatalf("State width = %d, want unchanged %d (Since has nothing to give)", got, want)
+	}
+	if got, want := gotCols[colLocation].Width, oldLocationWidth; got != want {
+		t.Fatalf("Location width = %d, want unchanged %d (it isn't this border's neighbor)", got, want)
 	}
 }
 
@@ -904,20 +1011,20 @@ func TestMouseDragSurvivesTheNextTerminalResizeAtTheSameWidth(t *testing.T) {
 
 	cols := m.table.Columns()
 	_, originY := m.renderHeader()
-	borderX := stateBorderX(cols)
+	borderX := surfaceBorderX(cols)
 
 	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	m = updated.(Model)
 	updated, _ = m.Update(tea.MouseMsg{X: borderX + 4, Y: originY, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
 	m = updated.(Model)
-	resized := m.table.Columns()[colState].Width
+	resized := m.table.Columns()[colSurface].Width
 
 	// resizeColumns runs unconditionally on every WindowSizeMsg; calling it
 	// again directly (same width) must reapply the override rather than
-	// silently reverting to State's own fixed default.
+	// silently reverting to Surface's own fixed default.
 	m.resizeColumns()
-	if got := m.table.Columns()[colState].Width; got != resized {
-		t.Fatalf("State width = %d after resizeColumns, want %d (the drag override, undiscarded)", got, resized)
+	if got := m.table.Columns()[colSurface].Width; got != resized {
+		t.Fatalf("Surface width = %d after resizeColumns, want %d (the drag override, undiscarded)", got, resized)
 	}
 }
 
@@ -928,14 +1035,14 @@ func TestWindowSizeMsgClearsColumnOverrides(t *testing.T) {
 
 	cols := m.table.Columns()
 	_, originY := m.renderHeader()
-	borderX := stateBorderX(cols)
+	borderX := surfaceBorderX(cols)
 
 	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	m = updated.(Model)
 	updated, _ = m.Update(tea.MouseMsg{X: borderX + 4, Y: originY, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
 	m = updated.(Model)
-	if m.colOverrides[colState] == 0 {
-		t.Fatal("want a State override recorded after the drag")
+	if m.colOverrides[colSurface] == 0 {
+		t.Fatal("want a Surface override recorded after the drag")
 	}
 
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
