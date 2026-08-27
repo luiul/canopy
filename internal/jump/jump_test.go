@@ -22,7 +22,7 @@ func entry(surface ancestry.Surface, mutate func(*registry.RegistryEntry)) regis
 // covers the window-detection logic these fakes stand in for; these tests
 // only need to verify that To() dispatches to the right one, with the
 // right argument, and maps its Result straight through.
-func withFakes(t *testing.T, vscode func(path string) mycelium.Result, ghostty func(path string) mycelium.Result) {
+func withFakes(t *testing.T, vscode func(path, branch string) mycelium.Result, ghostty func(path string) mycelium.Result) {
 	t.Helper()
 	origVSCode, origGhostty := openVSCode, openGhostty
 	if vscode != nil {
@@ -38,9 +38,9 @@ func withFakes(t *testing.T, vscode func(path string) mycelium.Result, ghostty f
 }
 
 func TestJumpToVSCodeDelegatesToMyceliumWithTheEntrysCwd(t *testing.T) {
-	var gotPath string
-	withFakes(t, func(path string) mycelium.Result {
-		gotPath = path
+	var gotPath, gotBranch string
+	withFakes(t, func(path, branch string) mycelium.Result {
+		gotPath, gotBranch = path, branch
 		return mycelium.Result{OK: true, Message: "Focused VS Code window for " + path + "."}
 	}, nil)
 
@@ -52,13 +52,16 @@ func TestJumpToVSCodeDelegatesToMyceliumWithTheEntrysCwd(t *testing.T) {
 	if gotPath != "/Users/x/dotfiles" {
 		t.Fatalf("got path %q, want /Users/x/dotfiles", gotPath)
 	}
+	if gotBranch != "" {
+		t.Fatalf("got branch %q, want \"\" (a RegistryEntry doesn't know the branch)", gotBranch)
+	}
 	if result.Message != "Focused VS Code window for /Users/x/dotfiles." {
 		t.Fatalf("got message %q", result.Message)
 	}
 }
 
 func TestJumpToVSCodeSurfacesAFailureFromMycelium(t *testing.T) {
-	withFakes(t, func(path string) mycelium.Result {
+	withFakes(t, func(path, branch string) mycelium.Result {
 		return mycelium.Result{OK: false, Message: "couldn't open VS Code"}
 	}, nil)
 
@@ -74,7 +77,7 @@ func TestJumpToVSCodeSurfacesAFailureFromMycelium(t *testing.T) {
 
 func TestJumpToVSCodeWithoutACwdFailsClearlyWithoutCallingMycelium(t *testing.T) {
 	called := false
-	withFakes(t, func(path string) mycelium.Result {
+	withFakes(t, func(path, branch string) mycelium.Result {
 		called = true
 		return mycelium.Result{OK: true}
 	}, nil)
@@ -128,7 +131,7 @@ func TestJumpToGhosttyWithoutACwdFailsClearlyWithoutCallingMycelium(t *testing.T
 
 func TestJumpToUnknownSurfaceSaysSoWithoutCallingMycelium(t *testing.T) {
 	vscodeCalled, ghosttyCalled := false, false
-	withFakes(t, func(path string) mycelium.Result {
+	withFakes(t, func(path, branch string) mycelium.Result {
 		vscodeCalled = true
 		return mycelium.Result{OK: true}
 	}, func(path string) mycelium.Result {

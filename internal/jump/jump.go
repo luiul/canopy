@@ -40,7 +40,10 @@ func To(entry registry.RegistryEntry) Result {
 		if entry.Cwd == "" {
 			return Result{false, "No known working directory to open."}
 		}
-		return fromMycelium(openVSCode(entry.Cwd))
+		// "" for the branch: a RegistryEntry knows the agent's cwd but not
+		// which branch that checkout is on, so mycelium falls back to its
+		// branch-less matching here (see mycelium.OpenVSCode's own doc).
+		return fromMycelium(openVSCode(entry.Cwd, ""))
 	case ancestry.Ghostty:
 		if entry.Cwd == "" {
 			return Result{false, "No known working directory to focus."}
