@@ -170,17 +170,19 @@ type Model struct {
 // New builds the dashboard model, polling at interval.
 func New(interval time.Duration) Model {
 	columns := []table.Column{
-		{Title: "State", Width: 9},
+		// Every fixed column's default fits its widest value without
+		// truncating and is at least its title's width plus one: the
+		// header's column-border glyph (loam.DrawHeaderBorders) sits
+		// immediately right of the content area, so a column exactly as
+		// wide as its title renders "Title│" with the border touching
+		// the text. How far each one may NARROW on a drag is a separate
+		// question — see the content-floor constants by columnMinWidths.
+		{Title: "State", Width: 8},
 		{Title: "Since", Width: 6},
 		{Title: "Surface", Width: 9},
 		{Title: "Location", Width: 40},
 		{Title: "CPU", Width: 4},
 		{Title: "RAM", Width: 6},
-		// Uptime is its own title's width plus one, not exactly it: the
-		// header's column-border glyph (loam.DrawHeaderBorders) sits
-		// immediately right of the content area, so a column exactly as
-		// wide as its title renders "Uptime│" with the border touching
-		// the text. Every other column is already wider than its title.
 		{Title: "Uptime", Width: 7},
 		{Title: "Kind", Width: 7}, // narrow on purpose; truncates long kinds (e.g. "mastracode")
 		{Title: "PID", Width: 6},  // narrow on purpose; truncates rare 6+ digit pids
@@ -267,16 +269,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// A drag always moves the dragged column and its right-hand
 			// neighbor together (see trellis.Model.Handle's own doc), so
-			// both of their new widths need remembering, not only the one
-			// at DragColumn() — recording every index widths actually has
-			// is simpler than working out which two changed and is
-			// harmless for the rest: resizeColumns already treats an
-			// override as "use this width verbatim", the same value it
-			// would otherwise have kept anyway for any column a given drag
-			// left untouched.
-			for i, w := range widths {
-				m.colOverrides[i] = w
-			}
+			// both of their new widths need remembering — and no others:
+			// recording every column's width would pin columns this drag
+			// never touched (see colOverrides' own doc), the same
+			// pair-only rule understory's handler follows.
+			dragged := m.resizer.DragColumn()
+			m.colOverrides[dragged] = widths[dragged]
+			m.colOverrides[dragged+1] = widths[dragged+1]
 			m.table.SetColumns(trellis.Apply(cols, widths))
 		}
 		return m, nil
@@ -429,20 +428,54 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 	return bell
 }
 
+// stateContentWidth, surfaceContentWidth, ramContentWidth,
+// uptimeContentWidth, and pidContentWidth are the widest values those
+// columns ever display: the states top out at "working"/"unknown", the
+// surfaces at "VS Code"/"Ghostty"/"unknown", RAM at "1023M"/"99.9G"
+// (see ramCellText), Uptime at "23h59m" (humanizeSince's longest form
+// before it switches to "%dd"), and PIDs at five digits. kindDragFloor
+// is the exception: Kind's default already truncates long kinds on
+// purpose ("mastracode"), so its floor only keeps the short kinds
+// ("pi", "grok", "kimi") fully visible rather than fitting every value.
+const (
+	stateContentWidth   = 7
+	surfaceContentWidth = 7
+	ramContentWidth     = 5
+	uptimeContentWidth  = 6
+	kindDragFloor       = 4
+	pidContentWidth     = 5
+)
+
 // columnMinWidths returns each column's own minimum width, in the same
 // order/index New builds them (see the Column indexes above), for
-// trellis' mouse-resize handling (see Update's tea.MouseMsg case): every
-// fixed column floors at its own current default width, since every
-// value it ever shows already fits exactly there (State/Kind's own
-// longest words, Since/CPU/RAM/Uptime/PID's own widest realistic
-// numbers) and shrinking further would only truncate it; Location floors
-// at 20, the same floor resizeColumns' own leftover-space computation
-// already respects. Trellis itself treats every column, Location
-// included, identically — there's no column singled out as a drag sink
-// any more (see the trellis package's own doc); this slice only says
-// how far each one may shrink.
+// trellis' mouse-resize handling (see Update's tea.MouseMsg case). The
+// fixed columns floor at their CONTENT widths (see the constants above),
+// not their defaults: their values are bounded and always fit there,
+// while their defaults only add room for the title — so a drag can
+// narrow them past the default (truncating the title, never a value) to
+// make room for Location or a neighbor, the same deal understory's fixed
+// columns get. Flooring at the defaults instead would freeze every fixed
+// column in place: each one always sits exactly at its default, leaving
+// zero room to trade in either direction. Since and CPU are the
+// exceptions: their defaults ARE their content widths ("23h59m",
+// "100%"), so they have nothing to give and their borders move only via
+// their neighbors. Location floors at 20, the same floor resizeColumns'
+// own leftover-space computation already respects. Trellis itself treats
+// every column, Location included, identically — there's no column
+// singled out as a drag sink any more (see the trellis package's own
+// doc); this slice only says how far each one may shrink.
 func columnMinWidths() []int {
-	return []int{9, 6, 9, 20, 4, 6, 7, 7, 6}
+	return []int{
+		stateContentWidth,
+		6, // Since: its default is already its content width ("23h59m")
+		surfaceContentWidth,
+		20,
+		4, // CPU: its default is already its content width ("100%")
+		ramContentWidth,
+		uptimeContentWidth,
+		kindDragFloor,
+		pidContentWidth,
+	}
 }
 
 // resizeColumns rebuilds Location's width (the only one that depends on

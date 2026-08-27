@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mattn/go-runewidth"
 
 	"github.com/luiul/canopy/internal/ancestry"
 	"github.com/luiul/canopy/internal/jump"
@@ -914,6 +915,21 @@ func locationBorderX(cols []table.Column) int {
 	return off.Start + off.Width
 }
 
+func sinceBorderX(cols []table.Column) int {
+	off := loam.ColumnOffsets(cols)[colSince]
+	return off.Start + off.Width
+}
+
+func uptimeBorderX(cols []table.Column) int {
+	off := loam.ColumnOffsets(cols)[colUptime]
+	return off.Start + off.Width
+}
+
+func kindBorderX(cols []table.Column) int {
+	off := loam.ColumnOffsets(cols)[colKind]
+	return off.Start + off.Width
+}
+
 // TestRenderHeaderOriginYMatchesTheTablesActualHeaderRow is a regression
 // test for an off-by-one that once made every mouse-drag test in this
 // file pass while resizing was completely broken in a real terminal:
@@ -1042,11 +1058,11 @@ func TestMouseDragNowWorksOnLocationsOwnRightHandBorder(t *testing.T) {
 }
 
 func TestMouseDragBetweenTwoAlreadyMinimalColumnsIsANoOp(t *testing.T) {
-	// State and Since are both already at their own tightest legible
-	// width (columnMinWidths mirrors each one's own default), so their
-	// shared border has nothing to give in either direction — and,
-	// crucially, no longer silently resizes Location instead the way the
-	// old flex-column design did for every border that wasn't already
+	// Since's default IS its content width ("23h59m" fills all 6
+	// columns), so dragging the State/Since border toward it has nothing
+	// to take: Since is already at its floor and the drag is a no-op —
+	// and, crucially, no longer silently resizes Location instead the way
+	// the old flex-column design did for every border that wasn't already
 	// adjacent to it.
 	m := New(999 * time.Second)
 	m.width, m.height = 120, 40
@@ -1063,8 +1079,11 @@ func TestMouseDragBetweenTwoAlreadyMinimalColumnsIsANoOp(t *testing.T) {
 	m = updated.(Model)
 
 	gotCols := m.table.Columns()
-	if got, want := gotCols[colState].Width, cols[colState].Width; got != want {
+	if got, want := gotCols[colState].Width, 8; got != want {
 		t.Fatalf("State width = %d, want unchanged %d (Since has nothing to give)", got, want)
+	}
+	if got, want := gotCols[colSince].Width, 6; got != want {
+		t.Fatalf("Since width = %d, want unchanged %d (already at its content floor)", got, want)
 	}
 	if got, want := gotCols[colLocation].Width, oldLocationWidth; got != want {
 		t.Fatalf("Location width = %d, want unchanged %d (it isn't this border's neighbor)", got, want)
@@ -1072,8 +1091,8 @@ func TestMouseDragBetweenTwoAlreadyMinimalColumnsIsANoOp(t *testing.T) {
 }
 
 func TestResizeColumnsNeverOverflowsTheTerminal(t *testing.T) {
-	// The fixed columns sum to 54, plus 18 of cell padding: below a
-	// terminal width of 92, flooring Location at 20 used to push the
+	// The fixed columns sum to 53, plus 18 of cell padding: below a
+	// terminal width of 91, flooring Location at 20 used to push the
 	// table past the terminal's right edge, clipping Kind/PID entirely.
 	// Location dips below its floor instead, down to the hard floor of 8.
 	m := New(999 * time.Second)
@@ -1088,7 +1107,7 @@ func TestResizeColumnsNeverOverflowsTheTerminal(t *testing.T) {
 	if total > m.width {
 		t.Fatalf("got total table width %d, want <= terminal width %d", total, m.width)
 	}
-	if got, want := cols[colLocation].Width, 8; got != want {
+	if got, want := cols[colLocation].Width, 9; got != want {
 		t.Fatalf("Location width = %d, want %d (below its floor of 20, but the table fits)", got, want)
 	}
 
@@ -1166,5 +1185,103 @@ func TestMouseClickOffTheHeaderRowDoesNotStartADrag(t *testing.T) {
 
 	if got := m.table.Columns()[colState].Width; got != oldStateWidth {
 		t.Fatalf("State width = %d, want unchanged %d (click was off the header row)", got, oldStateWidth)
+	}
+}
+
+func TestColumnTitlesNeverTouchTheirRightBorder(t *testing.T) {
+	// The header's column-border glyph (loam.DrawHeaderBorders) sits
+	// immediately right of each column's content area, so a column
+	// exactly as wide as its title renders "Title│" with the border
+	// touching the text. Every column's default must be at least
+	// title+1 wide. (Drag minimums may go lower — a user dragging a
+	// column narrow has chosen to truncate its title.)
+	m := New(999 * time.Second)
+	for _, c := range m.table.Columns() {
+		if got, need := c.Width, runewidth.StringWidth(c.Title)+1; got < need {
+			t.Errorf("column %q width %d, want at least %d (title + 1 space before the border)", c.Title, got, need)
+		}
+	}
+}
+
+func TestMouseDragSurfaceBorderNarrowsToItsContentFloor(t *testing.T) {
+	// Surface's default (9) only adds title room over its content floor
+	// ("VS Code"/"Ghostty", 7), so dragging the Since/Surface border
+	// right narrows Surface down to that floor — truncating only its
+	// title, never a value — and hands the width to Since. (Since itself
+	// can't narrow: its default is already its content width.)
+	m := New(999 * time.Second)
+	m.width, m.height = 120, 40
+	m.resizeColumns()
+
+	cols := m.table.Columns()
+	_, originY := m.renderHeader()
+	borderX := sinceBorderX(cols)
+
+	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.MouseMsg{X: borderX + 10, Y: originY, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+
+	gotCols := m.table.Columns()
+	if got, want := gotCols[colSurface].Width, surfaceContentWidth; got != want {
+		t.Fatalf("Surface width = %d, want %d (clamped at its content floor)", got, want)
+	}
+	if got, want := gotCols[colSince].Width, 6+(9-surfaceContentWidth); got != want {
+		t.Fatalf("Since width = %d, want %d (it absorbed exactly what Surface gave up)", got, want)
+	}
+}
+
+func TestMouseDragUptimeBorderNarrowsToItsContentFloor(t *testing.T) {
+	// Uptime's default (7) is its title's width plus one; its content
+	// ("23h59m", 6) is one narrower, so the Uptime/Kind border can move
+	// left exactly one before Uptime floors — the same clamp understory's
+	// Merge column has.
+	m := New(999 * time.Second)
+	m.width, m.height = 120, 40
+	m.resizeColumns()
+
+	cols := m.table.Columns()
+	_, originY := m.renderHeader()
+	borderX := uptimeBorderX(cols)
+
+	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.MouseMsg{X: borderX - 5, Y: originY, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+
+	gotCols := m.table.Columns()
+	if got, want := gotCols[colUptime].Width, uptimeContentWidth; got != want {
+		t.Fatalf("Uptime width = %d, want %d (clamped at its content floor)", got, want)
+	}
+	if got, want := gotCols[colKind].Width, 7+(7-uptimeContentWidth); got != want {
+		t.Fatalf("Kind width = %d, want %d (it absorbed exactly what Uptime gave up)", got, want)
+	}
+}
+
+func TestMouseDragKindBorderNarrowsToItsDragFloor(t *testing.T) {
+	// Kind's default (7) already truncates long kinds on purpose
+	// ("mastracode"), so its drag floor sits below every value at 4 —
+	// enough to keep the short kinds ("pi", "grok", "kimi") fully
+	// visible — and dragging the Kind/PID border left narrows it down to
+	// exactly that floor, no further.
+	m := New(999 * time.Second)
+	m.width, m.height = 120, 40
+	m.resizeColumns()
+
+	cols := m.table.Columns()
+	_, originY := m.renderHeader()
+	borderX := kindBorderX(cols)
+
+	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.MouseMsg{X: borderX - 10, Y: originY, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	m = updated.(Model)
+
+	gotCols := m.table.Columns()
+	if got, want := gotCols[colKind].Width, kindDragFloor; got != want {
+		t.Fatalf("Kind width = %d, want %d (clamped at its drag floor)", got, want)
+	}
+	if got, want := gotCols[colPID].Width, 6+(7-kindDragFloor); got != want {
+		t.Fatalf("PID width = %d, want %d (it absorbed exactly what Kind gave up)", got, want)
 	}
 }

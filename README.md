@@ -78,9 +78,14 @@ below, the same package understory uses for its own table). A visible
 divider marks each border on the header row (see
 [`github.com/luiul/dashkit/loam`](https://github.com/luiul/dashkit/tree/main/loam)'s
 `DrawHeaderBorders`) so there's something to aim the drag at, rather than
-an invisible 2-space gap. A resize sticks across the next poll, but
-resets on a terminal resize, since that already recomputes Location's
-own width from scratch against the new terminal width anyway.
+an invisible 2-space gap. Each column can shrink down to the width its
+values still fit (State/Surface/RAM/Uptime/PID their widest value, Kind
+its short kinds, Location its own floor of 20; Since and CPU's defaults
+already ARE their widest values, so their borders move only via their
+neighbors) — a narrower drag truncates only the header title, never a
+value. A resize sticks across the next poll, but resets on a terminal
+resize, since that already recomputes Location's own width from scratch
+against the new terminal width anyway.
 
 The currently selected row is highlighted with a subtle grey background
 spanning the full width of the table, rather than a leading marker glyph
