@@ -176,7 +176,12 @@ func New(interval time.Duration) Model {
 		{Title: "Location", Width: 40},
 		{Title: "CPU", Width: 4},
 		{Title: "RAM", Width: 6},
-		{Title: "Uptime", Width: 6},
+		// Uptime is its own title's width plus one, not exactly it: the
+		// header's column-border glyph (loam.DrawHeaderBorders) sits
+		// immediately right of the content area, so a column exactly as
+		// wide as its title renders "Uptime│" with the border touching
+		// the text. Every other column is already wider than its title.
+		{Title: "Uptime", Width: 7},
 		{Title: "Kind", Width: 7}, // narrow on purpose; truncates long kinds (e.g. "mastracode")
 		{Title: "PID", Width: 6},  // narrow on purpose; truncates rare 6+ digit pids
 	}
@@ -437,7 +442,7 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 // any more (see the trellis package's own doc); this slice only says
 // how far each one may shrink.
 func columnMinWidths() []int {
-	return []int{9, 6, 9, 20, 4, 6, 6, 7, 6}
+	return []int{9, 6, 9, 20, 4, 6, 7, 7, 6}
 }
 
 // resizeColumns rebuilds Location's width (the only one that depends on

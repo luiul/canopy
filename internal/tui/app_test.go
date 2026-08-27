@@ -1072,8 +1072,8 @@ func TestMouseDragBetweenTwoAlreadyMinimalColumnsIsANoOp(t *testing.T) {
 }
 
 func TestResizeColumnsNeverOverflowsTheTerminal(t *testing.T) {
-	// The fixed columns sum to 53, plus 18 of cell padding: below a
-	// terminal width of 91, flooring Location at 20 used to push the
+	// The fixed columns sum to 54, plus 18 of cell padding: below a
+	// terminal width of 92, flooring Location at 20 used to push the
 	// table past the terminal's right edge, clipping Kind/PID entirely.
 	// Location dips below its floor instead, down to the hard floor of 8.
 	m := New(999 * time.Second)
@@ -1088,7 +1088,7 @@ func TestResizeColumnsNeverOverflowsTheTerminal(t *testing.T) {
 	if total > m.width {
 		t.Fatalf("got total table width %d, want <= terminal width %d", total, m.width)
 	}
-	if got, want := cols[colLocation].Width, 9; got != want {
+	if got, want := cols[colLocation].Width, 8; got != want {
 		t.Fatalf("Location width = %d, want %d (below its floor of 20, but the table fits)", got, want)
 	}
 
