@@ -31,5 +31,3 @@ require (
 	golang.org/x/sys v0.38.0 // indirect
 	golang.org/x/text v0.3.8 // indirect
 )
-
-replace github.com/luiul/dashkit => /Users/luis.aceituno/projects/personal/dashkit
