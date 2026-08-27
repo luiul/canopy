@@ -450,6 +450,14 @@ func columnMinWidths() []int {
 // actually lives — a policy entirely separate from how a mouse drag
 // divides width between two columns (trellis.Model.Handle's own doc),
 // which no longer treats Location specially in any way.
+//
+// Location's floor is 20 whenever there's genuinely room for it, but on
+// a terminal too narrow for even that it dips below the floor (down to
+// 8) rather than pushing the table past the terminal's right edge — a
+// wider-than-terminal table just gets its rightmost columns (Kind, PID)
+// clipped away entirely, which is worse than a truncated Location. Past
+// 8 the terminal is simply too narrow for nine columns; the remaining
+// overflow is accepted.
 func (m *Model) resizeColumns() {
 	cols := m.table.Columns()
 	if len(cols) != 9 {
@@ -467,7 +475,7 @@ func (m *Model) resizeColumns() {
 	}
 	remaining := m.width - fixed - 18 // 2 chars of padding per cell, 9 cells
 	if remaining < 20 {
-		remaining = 20
+		remaining = max(remaining, 8)
 	}
 	cols[colLocation].Width = remaining
 	m.table.SetColumns(cols)

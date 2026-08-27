@@ -94,10 +94,13 @@ memory straight from `ps`, and total wall-clock time the process has been
 running (distinct from Since, which is time in the *current* state) —
 useful for spotting a runaway or long-forgotten session, but secondary to
 State/Since so they sit to the right of Location rather than competing for
-leftmost attention. Kind and PID are last and deliberately narrow,
-truncating before anything else does on a tight terminal: useful context,
-but rarely what you're scanning for. Location shortens a leading
-home-directory prefix to `~`, same as your shell prompt.
+leftmost attention. Kind and PID are last and deliberately narrow:
+useful context, but rarely what you're scanning for. Location absorbs
+whatever width the terminal leaves after the fixed columns, dipping
+below its preferred floor on a tight terminal rather than letting the
+table overflow and clip Kind/PID off the right edge entirely. Location
+shortens a leading home-directory prefix to `~`, same as your shell
+prompt.
 
 State is color-coded (green (bold) for `done`, yellow for `working`, dim
 for `idle`/`unknown`). A row that just went `done` blinks: a trailing `*`
