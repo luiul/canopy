@@ -396,3 +396,43 @@ func (m *Model) acknowledge(entry registry.RegistryEntry) {
 	_ = ackWrite(key, ep.RawAt)
 	m.refreshCursorTag()
 }
+
+// acknowledgeAll closes every currently open "done" episode at once: the
+// "C" keybind's bulk form of acknowledge's per-row dismissal, for the
+// common case of coming back to a screen full of done rows that all just
+// need clearing. The target set is exactly the open episodes in m.done —
+// not m.entries: displayState only ever reports "done" for an open
+// episode (updateDoneTracking opens one for every raw-done key on every
+// poll), so rows without an open episode (working, idle, already
+// acknowledged) have nothing to complete, and the one acknowledge()
+// case this deliberately doesn't share — acting on a raw-done row with
+// no tracked episode at all — can't exist outside tests driving
+// acknowledge directly.
+//
+// Already-acknowledged episodes are skipped, not re-stamped: bumping
+// their Acked would reset sinceCellText's "idle since" clock and rewrite
+// ack files for episodes already resolved. Every episode closed here
+// gets the same Acked timestamp, too — one keypress, one acknowledgment
+// moment, so all their "idle since" clocks agree.
+//
+// Blinking needs no cleanup of its own: blinkActive/blinkOn key off
+// Acked.IsZero(), so every burst stops on the very next blink frame
+// (see tickBlinks), and the bell side is untouched for the same reason
+// acknowledge's doc comment covers — this only writes m.done, never raw
+// State. Safe to call with no done episodes at all (nil map included):
+// the loop does nothing and refreshCursorTag early-returns on an empty
+// entry list.
+func (m *Model) acknowledgeAll() {
+	now := time.Now()
+	for key, ep := range m.done {
+		if !ep.Acked.IsZero() {
+			continue
+		}
+		ep.Acked = now
+		m.done[key] = ep
+		// Best-effort cross-instance sync per key, exactly as acknowledge's
+		// own ackWrite: a failure here never undoes the local acknowledgment.
+		_ = ackWrite(key, ep.RawAt)
+	}
+	m.refreshCursorTag()
+}

@@ -27,12 +27,12 @@ What a row shows is computed in two layers:
 2. A **display overlay** (`Model.done`, `displayState()`): once a row's
    raw signal has read `done`, that episode stays displayed as `done` —
    regardless of what the raw signal reports on any later poll — until
-   the user presses `enter` or `c` on it, at which point it displays as
-   `idle`.
+   the user presses `enter` or `c` on it (`C` for every open episode at
+   once), at which point it displays as `idle`.
 
 This FSM formalizes that combination into a single state per row, with
 one explicit, load-bearing invariant: **once a row is `done`, only a
-user action (`enter` or `c`) may move it off `done`.**
+user action (`enter`, `c`, or `C`) may move it off `done`.**
 
 ## States
 
@@ -66,24 +66,26 @@ permanent.
 | `pi_settled`                | `canopy-status.ts` writes `done` (`agent_settled` — a turn ended). Unconditional: no frontmost/focus check, see ["Removed: frontmost/focus detection"](#removed-frontmostfocus-detection) below. |
 | `key_enter`                 | User presses `enter` on the row in canopy (jumps to its window: VS Code integrated terminal or a Ghostty tab). |
 | `key_c`                     | User presses `c` on the row in canopy (marks it seen, no jump).                          |
+| `key_C`                     | User presses `C` in canopy: `key_c` for every row with an open episode at once (marks all seen, no jump). |
 | `miss_exceeded`             | The process is absent from more than `MissLimit` (currently 1) consecutive polls, or has genuinely exited. |
 
 ## The invariant
 
-> **`done` has exactly two outbound edges, both user-initiated:
-> `key_enter` and `key_c`. No other event — not `cpu_idle`, not
-> `cpu_working`, not `pi_working`, not a fresh poll, not a timeout — may
-> move a row out of `done`.**
+> **`done` has exactly three outbound edges, all user-initiated:
+> `key_enter`, `key_c`, and `key_C`. No other event — not `cpu_idle`,
+> not `cpu_working`, not `pi_working`, not a fresh poll, not a timeout
+> — may move a row out of `done`.**
 
-Both edges land on `idle`. `key_enter` additionally has a side effect
-(jump to the row's window) that `key_c` does not; the resulting state
-is the same either way.
+All three edges land on `idle`. `key_enter` additionally has a side
+effect (jump to the row's window) that `key_c` and `key_C` do not, and
+`key_C` fires the `key_c` transition for every open episode at once;
+the resulting per-row state is the same either way.
 
 Concretely, this means a `done` episode survives even a fresh
 `pi_working` (the same session starting a new turn on its own, before
 the user ever acknowledged the previous one in canopy): the row keeps
-reading `done` until `key_enter`/`key_c`, even though the process is
-now, in raw terms, actively working again. `internal/tui/done.go`'s
+reading `done` until `key_enter`/`key_c`/`key_C`, even though the
+process is now, in raw terms, actively working again. `internal/tui/done.go`'s
 `updateDoneTracking` never closes an *open* episode for any reason
 other than acknowledgment or the row disappearing outright — see
 ["Where this lives in code"](#where-this-lives-in-code).
@@ -129,7 +131,7 @@ transitions lives in `internal/tui/bell.go`):
 
 - `doneEpisode{Since, Acked, RawAt}` — one entry per row key, tracking
   whether the current `done` episode is still open (user hasn't acted
-  yet) or acknowledged (user pressed `enter` or `c`), held in
+  yet) or acknowledged (user pressed `enter`, `c`, or `C`), held in
   `Model.done`. `RawAt` is the raw source's own report timestamp
   (`RegistryEntry.RealStateReportedAt`, i.e. `pistatus.Status.UpdatedAt`)
   for the settle this episode currently reflects — see the note below on

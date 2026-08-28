@@ -63,7 +63,7 @@ working    12s     VS Code    ~/projects/personal/canopy                4%    27
 done       3m      VS Code    ~/worktrees/.../isa-orchestration         0%    140M    2h30m   pi       9514
 idle       1h20m   Ghostty    ~/some/other/project                     0%    95M     1d       pi       65834
 
-↑/↓ move · enter jump · c complete · drag column border to resize · r refresh · q quit
+↑/↓ move · enter jump · c/C complete row/all · drag column border to resize · r refresh · q quit
 ```
 
 (the currently selected row also gets a full-width grey highlight in the
@@ -131,8 +131,10 @@ A row that's `done` stays `done` (still sorted to the top, still
 colored, still bell-eligible for its own transition, still blinking every
 five minutes) until you actually do something about it: press `enter` to
 jump to it (which also marks it seen right away), or `c` to mark it seen
-in place without jumping at all. Either one immediately displays that row
-as `idle`, drops it back down in the sort order, and stops the blinking
+in place without jumping at all. To clear a whole screen of done rows at
+once, `C` marks every row seen in place, no jumping, no per-row
+selection. Any of these immediately displays the affected rows
+as `idle`, drops them back down in the sort order, and stops the blinking
 — no poll wait required, even mid-burst. It goes back to reading `done`
 — unacknowledged, blinking again from scratch — the next time it actually
 earns that state again (a fresh turn ending), not on every subsequent

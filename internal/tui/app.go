@@ -312,6 +312,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// currently stops reading done.
 			m.acknowledge(entry)
 			return m, nil
+		case "C":
+			// Dismiss every open done episode at once, no jump, no per-row
+			// selection: the bulk form of c for clearing a screen full of
+			// done rows (see acknowledgeAll in done.go).
+			m.acknowledgeAll()
+			return m, nil
 		default:
 			var cmd tea.Cmd
 			m.table, cmd = m.table.Update(msg)
@@ -552,7 +558,7 @@ func (m Model) View() string {
 	}
 	header, _ := m.renderHeader()
 
-	footer := subtleStyle.Render("↑/↓ move · enter jump · c complete · drag column border to resize · r refresh · q quit")
+	footer := subtleStyle.Render("↑/↓ move · enter jump · c/C complete row/all · drag column border to resize · r refresh · q quit")
 	if m.notification != "" {
 		style := okStyle
 		if m.notifyIsError {
