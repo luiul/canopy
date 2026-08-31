@@ -232,9 +232,15 @@ One Go package per concern:
   externally observable source the way `State` itself is (see "Multiple
   instances" below).
 - `internal/tui`: the Bubble Tea dashboard (table, polling timer,
-  jump-on-Enter, notifications, and mouse column resizing via
+  jump-on-Enter, notifications, mouse column resizing via
   [`github.com/luiul/dashkit/trellis`](https://github.com/luiul/dashkit/tree/main/trellis)
-  — the same package understory uses for its own table).
+  — the same package understory uses for its own table — and the kill
+  confirmation modal behind x/X/D plus the `?` help overlay, the modal's
+  state machine and the overlay's renderer shared with understory via
+  [`github.com/luiul/dashkit/confirm`](https://github.com/luiul/dashkit/tree/main/confirm)
+  and
+  [`github.com/luiul/dashkit/loam`](https://github.com/luiul/dashkit/tree/main/loam)'s
+  `HelpView`).
 - `cmd/canopy`: the CLI entry point (flags, version).
 
 ## Install

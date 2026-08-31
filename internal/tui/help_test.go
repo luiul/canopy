@@ -61,7 +61,7 @@ func TestAnyKeyClosesTheHelpOverlayWithoutActing(t *testing.T) {
 		if m.quitting {
 			t.Fatalf("key %q: want q intercepted (close only), not quitting, while the overlay is open", key)
 		}
-		if m.pendingKill != nil {
+		if m.pendingKill.Active() {
 			t.Fatalf("key %q: want x intercepted (close only), not arming a kill prompt", key)
 		}
 	}
@@ -97,7 +97,7 @@ func TestKillPromptSwallowsQuestionMarkBeforeHelpCanOpen(t *testing.T) {
 	if m.showHelp {
 		t.Fatal("want the kill prompt's modal intercept to win over the help overlay")
 	}
-	if m.pendingKill == nil {
+	if !m.pendingKill.Active() {
 		t.Fatal("want ? swallowed, leaving the armed prompt untouched")
 	}
 	if m.notification != "" {

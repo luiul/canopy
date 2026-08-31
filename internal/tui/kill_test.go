@@ -11,6 +11,7 @@ import (
 	"github.com/luiul/canopy/internal/ancestry"
 	"github.com/luiul/canopy/internal/kill"
 	"github.com/luiul/canopy/internal/registry"
+	"github.com/luiul/dashkit/confirm"
 )
 
 // killCall records one invocation of the killProcess seam.
@@ -56,14 +57,14 @@ func TestXArmsASIGTERMPromptAndXArmsSIGKILL(t *testing.T) {
 
 	updated, _ := m.Update(keyMsg("x"))
 	m = updated.(Model)
-	if m.pendingKill == nil {
+	if !m.pendingKill.Active() {
 		t.Fatal("want x to arm a kill prompt")
 	}
-	if m.pendingKill.sig != syscall.SIGTERM {
-		t.Fatalf("got sig %v, want SIGTERM for x", m.pendingKill.sig)
+	if m.pendingKill.Payload.sig != syscall.SIGTERM {
+		t.Fatalf("got sig %v, want SIGTERM for x", m.pendingKill.Payload.sig)
 	}
-	if len(m.pendingKill.entries) != 1 || m.pendingKill.entries[0].Pid != 42 {
-		t.Fatalf("got targets %+v, want pid 42", m.pendingKill.entries)
+	if len(m.pendingKill.Payload.entries) != 1 || m.pendingKill.Payload.entries[0].Pid != 42 {
+		t.Fatalf("got targets %+v, want pid 42", m.pendingKill.Payload.entries)
 	}
 
 	// X arms SIGKILL instead. On a fresh model: while a prompt is armed,
@@ -73,7 +74,7 @@ func TestXArmsASIGTERMPromptAndXArmsSIGKILL(t *testing.T) {
 	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 	updated, _ = m.Update(keyMsg("X"))
 	m = updated.(Model)
-	if m.pendingKill == nil || m.pendingKill.sig != syscall.SIGKILL {
+	if !m.pendingKill.Active() || m.pendingKill.Payload.sig != syscall.SIGKILL {
 		t.Fatalf("got %+v, want X to arm SIGKILL", m.pendingKill)
 	}
 }
@@ -93,7 +94,7 @@ func TestXOnThePlaceholderRowIsANoOp(t *testing.T) {
 	m.applyEntries(nil)
 
 	updated, _ := m.Update(keyMsg("x"))
-	if updated.(Model).pendingKill != nil {
+	if updated.(Model).pendingKill.Active() {
 		t.Fatal("want no prompt when there is no selected entry")
 	}
 }
@@ -137,7 +138,7 @@ func TestYConfirmsAnArmedPrompt(t *testing.T) {
 	updated, cmd := m.Update(keyMsg("y"))
 	m = updated.(Model)
 
-	if m.pendingKill != nil {
+	if m.pendingKill.Active() {
 		t.Fatal("want the prompt cleared once y confirms it")
 	}
 	if cmd == nil {
@@ -171,7 +172,7 @@ func TestNEscAndEnterCancelAnArmedPromptSilently(t *testing.T) {
 		updated, cmd := m.Update(keyMsg(key))
 		m = updated.(Model)
 
-		if m.pendingKill != nil {
+		if m.pendingKill.Active() {
 			t.Fatalf("key %q: want the prompt cancelled", key)
 		}
 		if cmd != nil {
@@ -203,11 +204,11 @@ func TestAnArmedPromptSwallowsAnyNonAnswer(t *testing.T) {
 		updated, cmd := m.Update(keyMsg(key))
 		m = updated.(Model)
 
-		if m.pendingKill == nil {
+		if !m.pendingKill.Active() {
 			t.Fatalf("key %q: want the prompt still armed (swallowed, not cancelled)", key)
 		}
-		if m.pendingKill.sig != syscall.SIGTERM {
-			t.Fatalf("key %q: got sig %v, want the original SIGTERM prompt untouched", key, m.pendingKill.sig)
+		if m.pendingKill.Payload.sig != syscall.SIGTERM {
+			t.Fatalf("key %q: got sig %v, want the original SIGTERM prompt untouched", key, m.pendingKill.Payload.sig)
 		}
 		if m.quitting {
 			t.Fatalf("key %q: want q swallowed, not quitting, while a prompt is armed", key)
@@ -251,9 +252,9 @@ func TestAnArmedPromptAutoCancelsAfterTheTimeout(t *testing.T) {
 	updated, _ := m.Update(keyMsg("x"))
 	m = updated.(Model)
 
-	updated, cmd := m.Update(cancelConfirmMsg{token: m.confirmToken})
+	updated, cmd := m.Update(confirm.Msg{Token: m.pendingKill.Token()})
 	m = updated.(Model)
-	if m.pendingKill != nil {
+	if m.pendingKill.Active() {
 		t.Fatal("want the prompt cancelled once its own token fires")
 	}
 	if m.notification != "cancelled: no answer within 10s" || m.notifyIsError {
@@ -270,9 +271,9 @@ func TestAStaleCancelConfirmTokenIsIgnored(t *testing.T) {
 	updated, _ := m.Update(keyMsg("x"))
 	m = updated.(Model)
 
-	updated, _ = m.Update(cancelConfirmMsg{token: m.confirmToken - 1})
+	updated, _ = m.Update(confirm.Msg{Token: m.pendingKill.Token() - 1})
 	m = updated.(Model)
-	if m.pendingKill == nil {
+	if !m.pendingKill.Active() {
 		t.Fatal("want the prompt to survive a stale cancel token")
 	}
 }
@@ -290,18 +291,18 @@ func TestDArmsABulkPromptForDoneRowsOnly(t *testing.T) {
 	updated, _ := m.Update(keyMsg("D"))
 	m = updated.(Model)
 
-	if m.pendingKill == nil {
+	if !m.pendingKill.Active() {
 		t.Fatal("want D to arm a bulk prompt")
 	}
-	if m.pendingKill.sig != syscall.SIGTERM {
-		t.Fatalf("got sig %v, want SIGTERM for the bulk cleanup", m.pendingKill.sig)
+	if m.pendingKill.Payload.sig != syscall.SIGTERM {
+		t.Fatalf("got sig %v, want SIGTERM for the bulk cleanup", m.pendingKill.Payload.sig)
 	}
-	if len(m.pendingKill.entries) != 2 {
-		t.Fatalf("got %d targets, want exactly the 2 done rows", len(m.pendingKill.entries))
+	if len(m.pendingKill.Payload.entries) != 2 {
+		t.Fatalf("got %d targets, want exactly the 2 done rows", len(m.pendingKill.Payload.entries))
 	}
-	for _, e := range m.pendingKill.entries {
+	for _, e := range m.pendingKill.Payload.entries {
 		if e.Pid == 2 {
-			t.Fatalf("got targets %+v, want the working row excluded", m.pendingKill.entries)
+			t.Fatalf("got targets %+v, want the working row excluded", m.pendingKill.Payload.entries)
 		}
 	}
 	if !strings.Contains(m.View(), "Terminate 2 done sessions? [y/N]") {
@@ -316,7 +317,7 @@ func TestDWithNoDoneRowsJustNotifies(t *testing.T) {
 	updated, _ := m.Update(keyMsg("D"))
 	m = updated.(Model)
 
-	if m.pendingKill != nil {
+	if m.pendingKill.Active() {
 		t.Fatal("want no prompt when nothing reads done")
 	}
 	if m.notification != "no done sessions to kill" {
@@ -437,10 +438,10 @@ func TestAPollKeepsAnArmedPromptsTargetsFresh(t *testing.T) {
 	updated, _ = m.Update(pollResultMsg{entries: []registry.RegistryEntry{fresher}})
 	m = updated.(Model)
 
-	if m.pendingKill == nil {
+	if !m.pendingKill.Active() {
 		t.Fatal("want the prompt to survive a poll still containing its target")
 	}
-	if got := m.pendingKill.entries[0].Uptime; got != 104*time.Second {
+	if got := m.pendingKill.Payload.entries[0].Uptime; got != 104*time.Second {
 		t.Fatalf("got target Uptime %v, want the fresh sample 104s (kill.Process's identity guard compares against it)", got)
 	}
 }
@@ -454,7 +455,7 @@ func TestAPollCancelsAnArmedPromptWhoseTargetsAllVanished(t *testing.T) {
 	updated, _ = m.Update(pollResultMsg{entries: nil})
 	m = updated.(Model)
 
-	if m.pendingKill != nil {
+	if m.pendingKill.Active() {
 		t.Fatal("want the prompt cancelled once its target exited on its own")
 	}
 }
@@ -468,19 +469,19 @@ func TestAPollPrunesVanishedTargetsFromABulkPrompt(t *testing.T) {
 
 	updated, _ := m.Update(keyMsg("D"))
 	m = updated.(Model)
-	if len(m.pendingKill.entries) != 2 {
-		t.Fatalf("got %d targets, want 2", len(m.pendingKill.entries))
+	if len(m.pendingKill.Payload.entries) != 2 {
+		t.Fatalf("got %d targets, want 2", len(m.pendingKill.Payload.entries))
 	}
 
 	// Pid 1 exited on its own; pid 2 is still there (and still done).
 	updated, _ = m.Update(pollResultMsg{entries: []registry.RegistryEntry{entry(2, ancestry.Ghostty, "done")}})
 	m = updated.(Model)
 
-	if m.pendingKill == nil {
+	if !m.pendingKill.Active() {
 		t.Fatal("want the bulk prompt to survive while any target remains")
 	}
-	if len(m.pendingKill.entries) != 1 || m.pendingKill.entries[0].Pid != 2 {
-		t.Fatalf("got targets %+v, want only pid 2 left", m.pendingKill.entries)
+	if len(m.pendingKill.Payload.entries) != 1 || m.pendingKill.Payload.entries[0].Pid != 2 {
+		t.Fatalf("got targets %+v, want only pid 2 left", m.pendingKill.Payload.entries)
 	}
 }
 
