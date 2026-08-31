@@ -1,6 +1,9 @@
 package jump
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/luiul/canopy/internal/ancestry"
@@ -21,19 +24,24 @@ func entry(surface ancestry.Surface, mutate func(*registry.RegistryEntry)) regis
 // to osascript or the real `code` CLI. mycelium's own test suite already
 // covers the window-detection logic these fakes stand in for; these tests
 // only need to verify that To() dispatches to the right one, with the
-// right argument, and maps its Result straight through.
+// right argument, and maps its Result straight through. repoContext is
+// stubbed to the identity (cwd, "") so dispatch tests never shell out to
+// git either; a test that cares about the resolution overrides
+// repoContext itself afterward.
 func withFakes(t *testing.T, vscode func(path, branch string) mycelium.Result, ghostty func(path string) mycelium.Result) {
 	t.Helper()
-	origVSCode, origGhostty := openVSCode, openGhostty
+	origVSCode, origGhostty, origRepoContext := openVSCode, openGhostty, repoContext
 	if vscode != nil {
 		openVSCode = vscode
 	}
 	if ghostty != nil {
 		openGhostty = ghostty
 	}
+	repoContext = func(cwd string) (string, string) { return cwd, "" }
 	t.Cleanup(func() {
 		openVSCode = origVSCode
 		openGhostty = origGhostty
+		repoContext = origRepoContext
 	})
 }
 
@@ -57,6 +65,99 @@ func TestJumpToVSCodeDelegatesToMyceliumWithTheEntrysCwd(t *testing.T) {
 	}
 	if result.Message != "Focused VS Code window for /Users/x/dotfiles." {
 		t.Fatalf("got message %q", result.Message)
+	}
+}
+
+func TestJumpToVSCodeResolvesTheRepoRootAndBranchBeforeJumping(t *testing.T) {
+	// The whole point of repoContext: mycelium's rootName+branch matching
+	// can only tell same-named worktree windows apart when it gets the
+	// branch, and only matches titles (which carry the repo root's folder
+	// name) when it gets the root, not a subdirectory of it.
+	var gotPath, gotBranch string
+	withFakes(t, func(path, branch string) mycelium.Result {
+		gotPath, gotBranch = path, branch
+		return mycelium.Result{OK: true}
+	}, nil)
+	repoContext = func(cwd string) (string, string) {
+		if cwd != "/x/worktrees/ISA-18436/global-ops/pipelines" {
+			t.Fatalf("got repoContext cwd %q, want the entry's own cwd", cwd)
+		}
+		return "/x/worktrees/ISA-18436/global-ops", "ISA-18436"
+	}
+
+	To(entry(ancestry.VSCode, func(e *registry.RegistryEntry) {
+		e.Cwd = "/x/worktrees/ISA-18436/global-ops/pipelines"
+	}))
+
+	if gotPath != "/x/worktrees/ISA-18436/global-ops" {
+		t.Fatalf("got path %q, want the resolved repo root", gotPath)
+	}
+	if gotBranch != "ISA-18436" {
+		t.Fatalf("got branch %q, want %q", gotBranch, "ISA-18436")
+	}
+}
+
+func TestGitRepoContextResolvesASubdirToItsRepoRootAndBranch(t *testing.T) {
+	root := initTestRepo(t)
+	sub := filepath.Join(root, "a", "b")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	path, branch := gitRepoContext(sub)
+
+	if path != root {
+		t.Fatalf("got path %q, want %q", path, root)
+	}
+	if branch != "main" {
+		t.Fatalf("got branch %q, want %q", branch, "main")
+	}
+}
+
+func TestGitRepoContextFallsBackOutsideAWorkTree(t *testing.T) {
+	dir := t.TempDir() // no git init: not a repo
+
+	path, branch := gitRepoContext(dir)
+
+	if path != dir || branch != "" {
+		t.Fatalf("got (%q, %q), want (%q, \"\")", path, branch, dir)
+	}
+}
+
+func TestGitRepoContextTreatsADetachedHEADAsBranchless(t *testing.T) {
+	root := initTestRepo(t)
+	runGit(t, root, "checkout", "--detach", "HEAD")
+
+	path, branch := gitRepoContext(root)
+
+	if path != root {
+		t.Fatalf("got path %q, want %q", path, root)
+	}
+	if branch != "" {
+		t.Fatalf("got branch %q, want \"\" for a detached HEAD", branch)
+	}
+}
+
+// initTestRepo creates a git repo with one commit on branch "main" in a
+// temp dir and returns its root, resolved through any symlinks the way
+// git itself reports it (macOS's /var -> /private/var, notably).
+func initTestRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-q", "-b", "main")
+	runGit(t, dir, "-c", "user.email=test@test", "-c", "user.name=test", "commit", "-q", "--allow-empty", "-m", "init")
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
 
