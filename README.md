@@ -79,7 +79,10 @@ memory transfers between the two dashboards: lowercase keys act on the
 selected row or are reversible (`x`, `c`, `p`), uppercase keys are the
 bulk or stronger form (`X`, `C`, `D`), every destructive action asks for
 confirmation first, and `ctrl+c` always quits: from the table, from a
-confirmation prompt, from the help overlay.
+confirmation prompt, from the help overlay. The full set of shared
+decisions (keybindings, the modal discipline, phrasing, rendering,
+testing, releasing) is written down once in
+[dashkit's CONVENTIONS.md](https://github.com/luiul/dashkit/blob/main/CONVENTIONS.md).
 
 Each internal column border can be dragged with the mouse to widen or
 narrow it: the two columns it sits between trade width between
