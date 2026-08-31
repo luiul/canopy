@@ -47,7 +47,9 @@ func shortenHome(path, home string) string {
 
 // statePriority ranks states by how much attention they need: done
 // (finished, ready to check) ranks highest, then working (busy, nothing
-// for you to do), then idle, then unknown (heuristic couldn't tell). There
+// for you to do), then idle, then stopped (paused via the p keybind —
+// user-deliberate, so it needs no attention, but it shouldn't scatter to
+// the bottom either), then unknown (heuristic couldn't tell). There
 // is deliberately no "blocked" entry: nothing in canopy ever produces that
 // state (see docs/agent-state-machine.md), so it isn't part of the
 // vocabulary here either.
@@ -55,12 +57,13 @@ var statePriority = map[string]int{
 	"done":    0,
 	"working": 1,
 	"idle":    2,
-	"unknown": 3,
+	"stopped": 3,
+	"unknown": 4,
 }
 
 // stateOrder is statePriority's states in display order, used for the
 // header's per-state summary counts too.
-var stateOrder = []string{"done", "working", "idle", "unknown"}
+var stateOrder = []string{"done", "working", "idle", "stopped", "unknown"}
 
 func statePriorityOf(state string) int {
 	if p, ok := statePriority[state]; ok {

@@ -125,6 +125,15 @@ type RegistryEntry struct {
 	// moment a sample reads below threshold.
 	WorkingStreak int
 
+	// Stopped is true when the process itself is currently stopped (SIGSTOP,
+	// ps state "T" — see scan.ProcessInfo.Stopped), e.g. paused via canopy's
+	// own p keybind. The TUI overlays this as a synthetic "stopped" display
+	// state; the raw State field keeps whatever the CPU heuristic/pistatus
+	// last said (a stopped process reads 0% CPU, so that is usually "idle"),
+	// exactly like the done overlay keeps display and raw apart (see
+	// internal/tui's displayState).
+	Stopped bool
+
 	Misses int
 }
 
@@ -165,6 +174,7 @@ func externalEntries(matches []scan.ProcessMatch, table map[int]scan.ProcessInfo
 		var cpuPercent float64
 		var rssKb int
 		var uptime time.Duration
+		var stopped bool
 		if info, ok := table[m.Pid]; ok {
 			v := info.Pcpu
 			pcpu = &v
@@ -172,6 +182,7 @@ func externalEntries(matches []scan.ProcessMatch, table map[int]scan.ProcessInfo
 			cpuPercent = info.Pcpu
 			rssKb = info.RssKb
 			uptime = info.Etime
+			stopped = info.Stopped()
 		}
 		entry := RegistryEntry{
 			Pid:        m.Pid,
@@ -184,6 +195,7 @@ func externalEntries(matches []scan.ProcessMatch, table map[int]scan.ProcessInfo
 			CPUPercent: cpuPercent,
 			RSSKb:      rssKb,
 			Uptime:     uptime,
+			Stopped:    stopped,
 		}
 		// `pi` is the one agent kind canopy can ask directly instead of
 		// guessing from CPU: canopy-status.ts (see internal/pistatus) writes
@@ -277,16 +289,22 @@ func refineExternalStates(previous, fresh []RegistryEntry, now time.Time) []Regi
 
 // stampStateSince sets StateSince on every fresh entry: carried over from
 // the previous entry with the same key when State hasn't changed, or reset
-// to now for a brand new entry or one whose State just flipped. Runs before
-// MergeRegistry so a debounced (momentarily-missing) entry that survives
-// via MergeRegistry keeps whatever StateSince it already had, untouched.
+// to now for a brand new entry or one whose State just flipped. Stopped is
+// part of the comparison too: pausing/resuming a process leaves raw State
+// alone (a stopped process reads 0% CPU, i.e. "idle" either way), but the
+// dashboard displays it as its own synthetic state (see RegistryEntry.
+// Stopped), so the Since column must restart at the pause/resume moment
+// rather than silently inheriting however long the row had already been
+// idle. Runs before MergeRegistry so a debounced (momentarily-missing)
+// entry that survives via MergeRegistry keeps whatever StateSince it
+// already had, untouched.
 func stampStateSince(previous, fresh []RegistryEntry, now time.Time) []RegistryEntry {
 	prevByKey := make(map[string]RegistryEntry, len(previous))
 	for _, p := range previous {
 		prevByKey[p.Key()] = p
 	}
 	for i := range fresh {
-		if prev, ok := prevByKey[fresh[i].Key()]; ok && prev.State == fresh[i].State && !prev.StateSince.IsZero() {
+		if prev, ok := prevByKey[fresh[i].Key()]; ok && prev.State == fresh[i].State && prev.Stopped == fresh[i].Stopped && !prev.StateSince.IsZero() {
 			fresh[i].StateSince = prev.StateSince
 		} else {
 			fresh[i].StateSince = now

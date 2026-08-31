@@ -90,6 +90,31 @@ func TestStampStateSinceResetsOnAStateChange(t *testing.T) {
 	}
 }
 
+func TestStampStateSinceResetsWhenStoppedFlips(t *testing.T) {
+	// Pausing/resuming leaves raw State alone (a stopped process reads 0%
+	// CPU, "idle" either way), but the TUI displays "stopped" as its own
+	// synthetic state — so the Since clock must restart at the flip, not
+	// inherit however long the row had already been idle.
+	now := time.Now()
+	earlier := now.Add(-time.Minute)
+	previous := []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "idle")}
+	previous[0].StateSince = earlier
+	fresh := []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "idle")}
+	fresh[0].Stopped = true
+
+	got := stampStateSince(previous, fresh, now)
+
+	if !got[0].StateSince.Equal(now) {
+		t.Fatalf("got StateSince %v, want %v (now, since Stopped flipped)", got[0].StateSince, now)
+	}
+
+	// ...and back: resuming is the same kind of display-state change.
+	got = stampStateSince(got, []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "idle")}, now)
+	if !got[0].StateSince.Equal(now) {
+		t.Fatalf("got StateSince %v on resume, want %v", got[0].StateSince, now)
+	}
+}
+
 func TestStampStateSinceStampsABrandNewEntry(t *testing.T) {
 	now := time.Now()
 	fresh := []RegistryEntry{entry(2, "pi", ancestry.Ghostty, "idle")}
@@ -299,6 +324,32 @@ func TestExternalEntriesClassifiesFromTheInjectedProcessTable(t *testing.T) {
 	}
 	if e.RealState {
 		t.Fatalf("got RealState true, want false: no pi status was injected")
+	}
+}
+
+func TestExternalEntriesMarksStoppedProcesses(t *testing.T) {
+	withResolveCwds(t, func(pids []int) map[int]string { return map[int]string{} })
+	withPistatusRead(t, func(int) (pistatus.Status, bool) { return pistatus.Status{}, false })
+
+	table := map[int]scan.ProcessInfo{
+		7: {Pid: 7, Pcpu: 0, Etime: time.Hour, State: "T"},  // stopped (SIGSTOP)
+		8: {Pid: 8, Pcpu: 0, Etime: time.Hour, State: "Ss"}, // plain sleeping
+	}
+	matches := []scan.ProcessMatch{
+		{Pid: 7, Tty: "ttys000", Kind: "pi", Args: "pi"},
+		{Pid: 8, Tty: "ttys001", Kind: "pi", Args: "pi"},
+	}
+
+	got := externalEntries(matches, table)
+
+	if len(got) != 2 {
+		t.Fatalf("got %+v, want 2 entries", got)
+	}
+	if !got[0].Stopped {
+		t.Fatalf("got Stopped=false for a T-state process, want true: %+v", got[0])
+	}
+	if got[1].Stopped {
+		t.Fatalf("got Stopped=true for an Ss-state process, want false: %+v", got[1])
 	}
 }
 

@@ -73,17 +73,29 @@ func TestParseLsofCwdOutputEmptyInput(t *testing.T) {
 	}
 }
 
-func TestParseProcessTableOutputParsesPidPpidPcpuRssEtimeTtyTimeComm(t *testing.T) {
-	out := "56621   53610   3.2 40656 04-09:19:45 s017 14:28.08 /Users/luis.aceituno/.local/bin/pi\n"
+func TestParseProcessTableOutputParsesPidPpidPcpuRssEtimeTtyTimeStateComm(t *testing.T) {
+	out := "56621   53610   3.2 40656 04-09:19:45 s017 14:28.08 S+ /Users/luis.aceituno/.local/bin/pi\n"
 	table := ParseProcessTableOutput(out)
 	want := ProcessInfo{
 		Pid: 56621, Ppid: 53610, Pcpu: 3.2, RssKb: 40656,
 		Etime:   4*24*time.Hour + 9*time.Hour + 19*time.Minute + 45*time.Second,
 		CPUTime: 14*time.Minute + 28*time.Second + 80*time.Millisecond,
-		Tty:     "s017", Comm: "/Users/luis.aceituno/.local/bin/pi",
+		Tty:     "s017", State: "S+", Comm: "/Users/luis.aceituno/.local/bin/pi",
 	}
 	if got := table[56621]; got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestProcessInfoStoppedOnlyForALeadingT(t *testing.T) {
+	cases := map[string]bool{
+		"T": true, "Ts": true, // stopped, plain and session-leader
+		"S": false, "Ss": false, "R+": false, "U": false, "": false,
+	}
+	for state, want := range cases {
+		if got := (ProcessInfo{State: state}).Stopped(); got != want {
+			t.Errorf("ProcessInfo{State: %q}.Stopped() = %v, want %v", state, got, want)
+		}
 	}
 }
 
@@ -91,7 +103,7 @@ func TestParseProcessTableOutputPreservesSpacesInComm(t *testing.T) {
 	// macOS `comm` is the full executable path, and paths like VS Code's
 	// helper processes contain literal spaces; comm must stay the last,
 	// greedily-parsed column or this truncates.
-	out := "52562 1350 0.5 15120 00:05 ?? 0:00.00 /Applications/Visual Studio Code.app/Contents/Frameworks/" +
+	out := "52562 1350 0.5 15120 00:05 ?? 0:00.00 S /Applications/Visual Studio Code.app/Contents/Frameworks/" +
 		"Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer) --type=renderer\n"
 	table := ParseProcessTableOutput(out)
 	got := table[52562].Comm
@@ -102,7 +114,7 @@ func TestParseProcessTableOutputPreservesSpacesInComm(t *testing.T) {
 }
 
 func TestParseProcessTableOutputSkipsMalformedLines(t *testing.T) {
-	out := "\nnot enough fields\n1 0 0.0 22528 04-20:12:53 ?? 0:00.01 launchd\n"
+	out := "\nnot enough fields\n1 0 0.0 22528 04-20:12:53 ?? 0:00.01 Ss launchd\n"
 	table := ParseProcessTableOutput(out)
 	if len(table) != 1 {
 		t.Fatalf("got %+v, want only pid 1", table)

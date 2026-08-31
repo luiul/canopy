@@ -166,7 +166,10 @@ func ResolveCwds(pids []int) map[int]string {
 // unit for this field) and Etime (wall-clock time since the process
 // started, not to be confused with CPUTime's accumulated CPU time) back
 // the dashboard's RAM and Uptime columns; both come along for free on the
-// same `ps` snapshot everything else here already needed.
+// same `ps` snapshot everything else here already needed. State is ps's
+// process state code ("S", "R+", "T", ...): a leading "T" means the
+// process is stopped (SIGSTOP), which is how the dashboard's pause keybind
+// (see internal/tui) shows up in a poll.
 type ProcessInfo struct {
 	Pid     int
 	Ppid    int
@@ -175,7 +178,16 @@ type ProcessInfo struct {
 	Etime   time.Duration
 	CPUTime time.Duration
 	Tty     string
+	State   string
 	Comm    string
+}
+
+// Stopped reports whether the process is currently stopped (SIGSTOP): ps's
+// state code for that is "T" (the code's first character carries the base
+// state; any trailing characters are modifiers like "s" for session leader
+// or "+" for foreground).
+func (p ProcessInfo) Stopped() bool {
+	return strings.HasPrefix(p.State, "T")
 }
 
 // parsePsCPUTime parses ps's "time"/"cputime" field: on macOS this is
@@ -279,7 +291,7 @@ func pySplitN(s string, maxSplit int) []string {
 }
 
 // ParseProcessTableOutput is the pure parsing logic for
-// `ps -A -o pid=,ppid=,pcpu=,rss=,etime=,tty=,time=,comm=` output. comm is
+// `ps -A -o pid=,ppid=,pcpu=,rss=,etime=,tty=,time=,state=,comm=` output. comm is
 // the full executable path on macOS and is always last, so it is parsed
 // greedily: paths like `.../Code Helper (Plugin).app/.../Code Helper
 // (Plugin)` contain spaces and would otherwise be truncated. comm is what
@@ -294,11 +306,11 @@ func ParseProcessTableOutput(output string) map[int]ProcessInfo {
 		if line == "" {
 			continue
 		}
-		parts := pySplitN(line, 7)
-		if len(parts) < 8 {
+		parts := pySplitN(line, 8)
+		if len(parts) < 9 {
 			continue
 		}
-		pidStr, ppidStr, pcpuStr, rssStr, etimeStr, tty, timeStr, comm := parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7]
+		pidStr, ppidStr, pcpuStr, rssStr, etimeStr, tty, timeStr, state, comm := parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], parts[7], parts[8]
 		pid, err1 := strconv.Atoi(pidStr)
 		ppid, err2 := strconv.Atoi(ppidStr)
 		pcpu, err3 := strconv.ParseFloat(pcpuStr, 64)
@@ -308,7 +320,7 @@ func ParseProcessTableOutput(output string) map[int]ProcessInfo {
 		if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil || err6 != nil {
 			continue
 		}
-		table[pid] = ProcessInfo{Pid: pid, Ppid: ppid, Pcpu: pcpu, RssKb: rss, Etime: etime, CPUTime: cpuTime, Tty: tty, Comm: comm}
+		table[pid] = ProcessInfo{Pid: pid, Ppid: ppid, Pcpu: pcpu, RssKb: rss, Etime: etime, CPUTime: cpuTime, Tty: tty, State: state, Comm: comm}
 	}
 	return table
 }
@@ -324,7 +336,7 @@ func ParseProcessTableOutput(output string) map[int]ProcessInfo {
 func ScanProcessTable() map[int]ProcessInfo {
 	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "ps", "-A", "-o", "pid=,ppid=,pcpu=,rss=,etime=,tty=,time=,comm=").Output()
+	out, err := exec.CommandContext(ctx, "ps", "-A", "-o", "pid=,ppid=,pcpu=,rss=,etime=,tty=,time=,state=,comm=").Output()
 	if err != nil {
 		return map[int]ProcessInfo{}
 	}

@@ -10,8 +10,11 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"os/user"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -19,10 +22,17 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/luiul/canopy/internal/jump"
+	"github.com/luiul/canopy/internal/kill"
 	"github.com/luiul/canopy/internal/registry"
 	"github.com/luiul/dashkit/loam"
 	"github.com/luiul/dashkit/trellis"
 )
+
+// killProcess is a package-level seam onto kill.Process — the same seam
+// pattern registry.go uses for its scan functions — swapped out in tests
+// so the keybind flows (x/X/p/D) can be exercised without signaling real
+// processes.
+var killProcess = kill.Process
 
 // DefaultInterval is the poll interval used when none is given. Also sets
 // the resolution of refineExternalStates' CPU-time delta: a shorter
@@ -100,7 +110,23 @@ type pollResultMsg struct {
 	warning string
 }
 type jumpResultMsg struct{ result jump.Result }
+type killResultMsg struct {
+	results []kill.Result
+	sig     syscall.Signal
+}
 type clearNotifyMsg struct{ token int }
+
+// killPrompt is an armed, not-yet-confirmed kill action (see the x/X/D
+// keybinds): the entries to signal and the signal to send, held until the
+// user presses y (confirm) or anything else (cancel). Entries are
+// re-stamped from every poll while the prompt is open (see Update's
+// pollResultMsg case), so a row that vanishes mid-prompt drops out of the
+// target set — and the survivors' Uptime samples stay fresh enough for
+// kill.Process's process-identity guard to trust.
+type killPrompt struct {
+	entries []registry.RegistryEntry
+	sig     syscall.Signal
+}
 
 // Model is the bubbletea model backing the dashboard.
 type Model struct {
@@ -162,6 +188,22 @@ type Model struct {
 	// intrusive. Coloring and done's blinking (colorize.go, stateCellText)
 	// happen regardless of this flag.
 	bellEnabled bool
+
+	// pendingKill, when non-nil, is the armed kill confirmation prompt shown
+	// in the footer (see killPrompt): set by x/X/D, resolved by y (confirm)
+	// or any other key (cancel), and pruned/cancelled by polls that no
+	// longer contain its targets. While armed, every keypress is intercepted
+	// before any other binding runs, so an armed prompt can never
+	// accidentally jump, quit, or stack with a second prompt.
+	pendingKill *killPrompt
+
+	// showHelp swaps the table for the full keybinding listing (the ?
+	// overlay, see helpView): the footer only has room for the few most
+	// used bindings, so the rest live there. While open, any keypress
+	// closes it without acting — the same intercept discipline as
+	// pendingKill, so an overlay can never swallow a binding the user
+	// thought they were aiming at the table.
+	showHelp bool
 
 	width, height int
 	quitting      bool
@@ -240,6 +282,30 @@ func jumpCmd(entry registry.RegistryEntry) tea.Cmd {
 	}
 }
 
+// killCmd signals every entry in turn and collects the per-entry results.
+// Sequential on purpose: even a bulk kill is a handful of kill(2) calls,
+// and keeping them in one command keeps their footer summary atomic.
+func killCmd(entries []registry.RegistryEntry, sig syscall.Signal) tea.Cmd {
+	return func() tea.Msg {
+		results := make([]kill.Result, len(entries))
+		for i, e := range entries {
+			results[i] = killProcess(e, sig)
+		}
+		return killResultMsg{results: results, sig: sig}
+	}
+}
+
+// setNotify records a footer notification (see Model.notification) and
+// returns the command that auto-clears it after notifyDuration, the one
+// thing every notification path (jump results, kill results, kill-prompt
+// cancels, empty bulk kills) used to spell out by hand.
+func (m *Model) setNotify(message string, isError bool) tea.Cmd {
+	m.notification = message
+	m.notifyIsError = isError
+	m.notifyToken++
+	return clearNotifyCmd(m.notifyToken)
+}
+
 func clearNotifyCmd(token int) tea.Cmd {
 	return tea.Tick(notifyDuration, func(time.Time) tea.Msg { return clearNotifyMsg{token: token} })
 }
@@ -281,12 +347,76 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// An armed kill prompt intercepts every key before any binding
+		// below runs: y confirms, anything else cancels — the safest
+		// possible default for a destructive action, and impossible to
+		// confirm by accident (see Model.pendingKill).
+		if m.pendingKill != nil {
+			pending := m.pendingKill
+			m.pendingKill = nil
+			if msg.String() != "y" {
+				return m, m.setNotify(fmt.Sprintf("%s cancelled.", kill.Name(pending.sig)), false)
+			}
+			return m, killCmd(pending.entries, pending.sig)
+		}
+		// The help overlay is read-only: any keypress closes it without
+		// acting on the table underneath (see Model.showHelp).
+		if m.showHelp {
+			m.showHelp = false
+			return m, nil
+		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			m.quitting = true
 			return m, tea.Quit
 		case "r":
 			return m, pollCmd(m.user, m.entries)
+		case "?":
+			m.showHelp = true
+			return m, nil
+		case "x", "X":
+			entry, ok := m.selectedEntry()
+			if !ok {
+				return m, nil
+			}
+			// The graceful/forceful ladder: x asks the process to terminate
+			// itself (SIGTERM — pi, for example, persists session state on a
+			// clean exit), X forces it (SIGKILL) for when SIGTERM isn't
+			// enough. Both arm the same confirmation prompt.
+			sig := syscall.SIGTERM
+			if msg.String() == "X" {
+				sig = syscall.SIGKILL
+			}
+			m.pendingKill = &killPrompt{entries: []registry.RegistryEntry{entry}, sig: sig}
+			return m, nil
+		case "p":
+			entry, ok := m.selectedEntry()
+			if !ok {
+				return m, nil
+			}
+			// Pause/resume needs no confirmation: unlike killing it is fully
+			// reversible (SIGCONT undoes SIGSTOP), and the row itself shows
+			// the resulting "stopped" state on the very next poll.
+			sig := syscall.SIGSTOP
+			if entry.Stopped {
+				sig = syscall.SIGCONT
+			}
+			return m, killCmd([]registry.RegistryEntry{entry}, sig)
+		case "D":
+			// Bulk form of x for cleanup: SIGTERM every row currently
+			// reading done (what the user actually sees as finished — the
+			// display state, open episodes included, not the raw State).
+			var targets []registry.RegistryEntry
+			for _, e := range m.entries {
+				if displayState(e, m.done) == "done" {
+					targets = append(targets, e)
+				}
+			}
+			if len(targets) == 0 {
+				return m, m.setNotify("No done sessions to kill.", false)
+			}
+			m.pendingKill = &killPrompt{entries: targets, sig: syscall.SIGTERM}
+			return m, nil
 		case "enter":
 			entry, ok := m.selectedEntry()
 			if !ok {
@@ -331,6 +461,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pollResultMsg:
 		m.scanWarning = msg.warning
 		bell := m.applyEntries(msg.entries)
+		// Keep an armed kill prompt in sync with reality: targets whose key
+		// survived the poll are re-stamped with their fresh copy (a current
+		// Uptime is what kill.Process's identity guard compares against);
+		// targets that vanished exited on their own, so they drop out — and
+		// with none left there is nothing to confirm, cancelling the prompt
+		// rather than leaving a stale one aimed at a row that no longer
+		// means what the user thinks.
+		if m.pendingKill != nil {
+			m.pendingKill.entries = refreshKillTargets(m.pendingKill.entries, msg.entries)
+			if len(m.pendingKill.entries) == 0 {
+				m.pendingKill = nil
+			}
+		}
 		// tickBlinks is unconditional, unlike the bell: blinking is a visual
 		// treatment (like coloring), not an audible one, so --no-bell doesn't
 		// touch it. It starts a fresh burst for any episode newly due (just
@@ -348,10 +491,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.tickBlinks(time.Now())
 
 	case jumpResultMsg:
-		m.notification = msg.result.Message
-		m.notifyIsError = !msg.result.OK
-		m.notifyToken++
-		return m, clearNotifyCmd(m.notifyToken)
+		return m, m.setNotify(msg.result.Message, !msg.result.OK)
+
+	case killResultMsg:
+		clear := m.setNotify(summarizeKillResults(msg.results, msg.sig))
+		// Repoll right away on any success so a killed row drops promptly
+		// (instead of lingering for the MissLimit debounce window) and a
+		// paused/resumed row's "stopped" display catches up immediately.
+		for _, r := range msg.results {
+			if r.OK {
+				return m, tea.Batch(clear, pollCmd(m.user, m.entries))
+			}
+		}
+		return m, clear
 
 	case clearNotifyMsg:
 		if msg.token == m.notifyToken {
@@ -384,6 +536,66 @@ func (m Model) selectedEntry() (registry.RegistryEntry, bool) {
 		return registry.RegistryEntry{}, false
 	}
 	return m.entries[idx], true
+}
+
+// refreshKillTargets re-stamps an armed kill prompt's targets against a
+// fresh poll: every pending entry whose key is still present is replaced
+// by its fresh copy (keeping Uptime current for kill.Process's identity
+// guard), and every entry whose key is gone — the session exited on its
+// own while the prompt was open — drops out of the target set.
+func refreshKillTargets(pending, fresh []registry.RegistryEntry) []registry.RegistryEntry {
+	byKey := make(map[string]registry.RegistryEntry, len(fresh))
+	for _, e := range fresh {
+		byKey[e.Key()] = e
+	}
+	out := make([]registry.RegistryEntry, 0, len(pending))
+	for _, p := range pending {
+		if e, ok := byKey[p.Key()]; ok {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// summarizeKillResults folds per-entry kill results into the single footer
+// notification and its error flag. A single entry (the x/X/p case) shows
+// its own message verbatim; a bulk kill (D) shows a count summary, naming
+// the first failure when not every signal landed.
+func summarizeKillResults(results []kill.Result, sig syscall.Signal) (string, bool) {
+	if len(results) == 1 {
+		return results[0].Message, !results[0].OK
+	}
+	ok := 0
+	firstErr := ""
+	for _, r := range results {
+		if r.OK {
+			ok++
+		} else if firstErr == "" {
+			firstErr = r.Message
+		}
+	}
+	if ok == len(results) {
+		return fmt.Sprintf("%s %d sessions.", kill.Verb(sig), ok), false
+	}
+	return fmt.Sprintf("%s %d of %d sessions; first failure: %s", kill.Verb(sig), ok, len(results), firstErr), true
+}
+
+// killPromptText builds the armed kill prompt's footer line. A single
+// target names kind, pid, and location (the things that disambiguate one
+// pi session from the four others on screen), plus a loud warning when the
+// session is mid-turn; a bulk prompt just names the signal and the count.
+func (m Model) killPromptText() string {
+	p := m.pendingKill
+	name := kill.Name(p.sig)
+	if len(p.entries) == 1 {
+		e := p.entries[0]
+		warn := ""
+		if displayState(e, m.done) == "working" {
+			warn = " — currently WORKING"
+		}
+		return fmt.Sprintf("%s %s (pid %d, %s)%s? [y/N]", name, e.Kind, e.Pid, location(e, m.home), warn)
+	}
+	return fmt.Sprintf("%s %d done sessions? [y/N]", name, len(p.entries))
 }
 
 // applyEntries sorts fresh entries, rebuilds the table's rows, and restores
@@ -551,15 +763,60 @@ func (m Model) renderHeader() (text string, tableOriginY int) {
 	return text, lines + 1 // +1 for the blank separator line View puts before the table
 }
 
+// helpEntry is one row of the ? overlay: the key(s) and what they do.
+// Covers every binding Update's KeyMsg case handles, plus the one
+// mouse-only interaction (column-border drag), since that one has no key
+// to list under.
+var helpEntries = []struct{ keys, desc string }{
+	{"↑/↓, k/j", "move selection"},
+	{"enter", "jump to the session's window (marks a done row seen)"},
+	{"c / C", "mark this done row seen / every done row seen"},
+	{"x / X", "terminate (SIGTERM) / force-kill (SIGKILL) the selected session, with confirmation"},
+	{"p", "pause (SIGSTOP) / resume (SIGCONT) the selected session"},
+	{"D", "terminate every done session (SIGTERM), with confirmation"},
+	{"r", "refresh now"},
+	{"?", "open/close this help"},
+	{"q, ctrl+c", "quit"},
+	{"mouse drag", "resize the two columns a border sits between"},
+}
+
+// helpView renders the ? overlay: the full keybinding list, taking over
+// the whole view while it's open (htop-style) rather than compositing over
+// the table — no transparency ambiguity about what's clickable underneath,
+// and the table keeps polling in the background meanwhile.
+func (m Model) helpView() string {
+	width := 0
+	for _, e := range helpEntries {
+		width = max(width, len(e.keys))
+	}
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("canopy") + subtleStyle.Render(" — keyboard shortcuts"))
+	b.WriteString("\n\n")
+	for _, e := range helpEntries {
+		b.WriteString("  " + fmt.Sprintf("%-*s", width, e.keys) + "  " + subtleStyle.Render(e.desc) + "\n")
+	}
+	b.WriteString("\n" + subtleStyle.Render("press any key to close") + "\n")
+	return b.String()
+}
+
 // View implements tea.Model.
 func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
+	if m.showHelp {
+		return m.helpView()
+	}
 	header, _ := m.renderHeader()
 
-	footer := subtleStyle.Render("↑/↓ move · enter jump · c/C complete row/all · drag column border to resize · r refresh · q quit")
-	if m.notification != "" {
+	// The footer stays to the few most-used bindings so it keeps fitting
+	// one line; ? opens the full list (see helpView).
+	footer := subtleStyle.Render("↑/↓ move · enter jump · c complete · x kill · ? help · q quit")
+	if m.pendingKill != nil {
+		// An armed kill prompt takes precedence over any notification: it
+		// is the one thing the user's next keypress will actually act on.
+		footer = errorStyle.Render(m.killPromptText())
+	} else if m.notification != "" {
 		style := okStyle
 		if m.notifyIsError {
 			style = errorStyle

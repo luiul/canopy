@@ -63,11 +63,14 @@ working    12s     VS Code    ~/projects/personal/canopy                4%    27
 done       3m      VS Code    ~/worktrees/.../isa-orchestration         0%    140M    2h30m   pi       9514
 idle       1h20m   Ghostty    ~/some/other/project                     0%    95M     1d       pi       65834
 
-↑/↓ move · enter jump · c/C complete row/all · drag column border to resize · r refresh · q quit
+↑/↓ move · enter jump · c complete · x kill · ? help · q quit
 ```
 
 (the currently selected row also gets a full-width grey highlight in the
 real terminal output, not shown here since it's just a background color)
+
+The footer only lists the few most-used bindings; `?` opens the full
+keybinding list as an overlay (any key closes it again).
 
 Each internal column border can be dragged with the mouse to widen or
 narrow it: the two columns it sits between trade width between
@@ -108,7 +111,7 @@ shortens a leading home-directory prefix to `~`, same as your shell
 prompt.
 
 State is color-coded (green (bold) for `done`, yellow for `working`, dim
-for `idle`/`unknown`). A row that just went `done` blinks: a trailing `*`
+for `idle`/`unknown`, cyan for `stopped`). A row that just went `done` blinks: a trailing `*`
 plus a reverse-video highlight, toggling on and off a few times right
 away, then again every five minutes for as long as it stays
 unacknowledged — a repeating nudge rather than a one-shot highlight, since
@@ -123,7 +126,8 @@ transition itself, not on every poll a row happens to stay done —
 including the first poll right after canopy starts up, if a session is
 already sitting done at that point (done's first blink burst treats "just
 discovered" the same as "just transitioned", too). Sessions are sorted
-most-actionable first: `done`, then `working`, then `idle`/`unknown`.
+most-actionable first: `done`, then `working`, then `idle`, `stopped`,
+and `unknown`.
 Pass `--no-color` (or set `NO_COLOR`) to disable the color/blink treatment
 and get plain text, and `--no-bell` to disable just the bell.
 
@@ -139,6 +143,34 @@ as `idle`, drops them back down in the sort order, and stops the blinking
 — unacknowledged, blinking again from scratch — the next time it actually
 earns that state again (a fresh turn ending), not on every subsequent
 poll where the underlying session happens to still be sitting done.
+
+## Process control
+canopy can also act on a session, not just watch it. These act on the
+selected row (or, for `D`, on every done row at once):
+
+- `x` terminates the selected session gracefully (SIGTERM), `X` forces it
+  (SIGKILL). Both ask first: the footer shows the target's kind, pid, and
+  location (plus a warning if the session is mid-turn), `y` confirms, and
+  any other key cancels.
+- `D` terminates every session currently reading `done` (SIGTERM), with
+  the same confirmation, for cleaning up a screen full of finished
+  sessions at once.
+- `p` pauses a session (SIGSTOP); pressed again on the same, now
+  `stopped`, row, it resumes it (SIGCONT). No confirmation here: pausing
+  is fully reversible.
+
+(`?` lists these in the app itself, along with every other binding.)
+
+Two safeguards are built in. First, an armed prompt tracks its target
+across polls: if the session exits on its own while the prompt is up, the
+prompt cancels itself rather than dangling (and a bulk prompt sheds
+whichever targets vanished). Second, before any signal is actually sent,
+canopy re-verifies the process's identity (same pid, same lifetime within
+a small slack, read from a fresh `ps` snapshot), so a pid the OS recycled
+between poll and confirmation is never signaled by mistake. Only the
+agent process itself is signaled, never its process group: agents often
+share one with their parent shell. Children (MCP servers and the like)
+may be left behind, exactly as with a manual `kill`.
 
 ## Why Go, not Python
 
@@ -177,6 +209,10 @@ One Go package per concern:
   does. The AppleScript window detection and switch-or-create behavior
   itself lives in mycelium, not here, since understory needs the exact
   same thing for a worktree row with no agent connection of its own.
+- `internal/kill`: delivers signals (SIGTERM/SIGKILL/SIGSTOP/SIGCONT) to a
+  row's process for the `x`/`X`/`p`/`D` keybinds, behind a process
+  identity check (pid plus lifetime, from a fresh `ps` snapshot) so a
+  recycled pid is never signaled by mistake.
 - `internal/registry`: merges a fresh poll against the previous one so a
   single missed `ps`/poll doesn't flicker a row away.
 - `internal/ack`: lets multiple concurrently running canopy instances

@@ -65,7 +65,7 @@ type doneEpisode struct {
 	BurstStart time.Time
 }
 
-// displayState is the state actually shown for e. Three cases, checked in
+// displayState is the state actually shown for e. Four cases, checked in
 // order:
 //
 //  1. e has an open (unacknowledged) episode in done: report "done"
@@ -73,11 +73,19 @@ type doneEpisode struct {
 //     right now. This is the one deliberately sticky case — see
 //     updateDoneTracking's doc comment for why an episode has to survive a
 //     raw source that quietly moves off "done" on its own, with no enter/c
-//     ever happening in canopy.
+//     ever happening in canopy. Sticky enough to outrank even the stopped
+//     overlay below: a done row still needs the user's enter/c, paused or
+//     not.
 //  2. e has an acknowledged episode in done, and e.State is still
 //     literally "done" (the common case: the user acted before the raw
-//     source moved on by itself): report the synthetic "idle".
-//  3. Anything else (no episode at all, or an acknowledged one whose raw
+//     source moved on by itself): report the synthetic "idle" — unless the
+//     process is currently stopped, which is the more informative reading
+//     and falls through to case 3's overlay instead.
+//  3. e.Stopped is set (SIGSTOP, e.g. via the p keybind): report the
+//     synthetic "stopped". The raw State can't express this at all — a
+//     stopped process reads 0% CPU, so the heuristic says "idle" — and
+//     "paused by the user" is exactly what a stopped row should say.
+//  4. Anything else (no episode at all, or an acknowledged one whose raw
 //     source has already independently moved past "done"): report e.State
 //     directly.
 //
@@ -91,9 +99,12 @@ func displayState(e registry.RegistryEntry, done map[string]doneEpisode) string 
 		if ep.Acked.IsZero() {
 			return "done"
 		}
-		if e.State == "done" {
+		if e.State == "done" && !e.Stopped {
 			return "idle"
 		}
+	}
+	if e.Stopped {
+		return "stopped"
 	}
 	return e.State
 }
