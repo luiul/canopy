@@ -72,7 +72,7 @@ func To(entry registry.RegistryEntry) Result {
 	switch entry.Surface {
 	case ancestry.VSCode:
 		if entry.Cwd == "" {
-			return Result{false, "No known working directory to open."}
+			return Result{false, "no known working directory to open"}
 		}
 		// A RegistryEntry knows the agent's cwd but not its branch, and
 		// mycelium needs rootName+branch together to tell same-named
@@ -82,11 +82,11 @@ func To(entry registry.RegistryEntry) Result {
 		return fromMycelium(openVSCode(path, branch))
 	case ancestry.Ghostty:
 		if entry.Cwd == "" {
-			return Result{false, "No known working directory to focus."}
+			return Result{false, "no known working directory to focus"}
 		}
 		return fromMycelium(openGhostty(entry.Cwd))
 	default:
-		return Result{false, "Don't know how to jump to this process's window yet."}
+		return Result{false, "don't know how to jump to this process's window yet"}
 	}
 }
 

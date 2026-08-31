@@ -67,14 +67,24 @@ func TestXArmsASIGTERMPromptAndXArmsSIGKILL(t *testing.T) {
 	}
 
 	// X arms SIGKILL instead. On a fresh model: while a prompt is armed,
-	// any key other than y cancels it rather than re-arming (the intercept
-	// is what makes stacking two prompts impossible).
+	// any key other than an answer is swallowed rather than re-arming (the
+	// intercept is what makes stacking two prompts impossible).
 	m = New(999)
 	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 	updated, _ = m.Update(keyMsg("X"))
 	m = updated.(Model)
 	if m.pendingKill == nil || m.pendingKill.sig != syscall.SIGKILL {
 		t.Fatalf("got %+v, want X to arm SIGKILL", m.pendingKill)
+	}
+}
+
+func TestArmingAPromptSchedulesItsAutoCancelTick(t *testing.T) {
+	m := New(999)
+	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
+
+	_, cmd := m.Update(keyMsg("x"))
+	if cmd == nil {
+		t.Fatal("want arming a prompt to schedule its auto-cancel tick")
 	}
 }
 
@@ -98,8 +108,8 @@ func TestTheArmedPromptRendersInTheFooterWithTargetDetails(t *testing.T) {
 	m = updated.(Model)
 
 	view := m.View()
-	if !strings.Contains(view, "SIGTERM pi (pid 42, /Users/x/dotfiles)? [y/N]") {
-		t.Fatalf("View() = %q, want the armed prompt naming signal, kind, pid, and location", view)
+	if !strings.Contains(view, "Terminate pi (pid 42, /Users/x/dotfiles)? [y/N]") {
+		t.Fatalf("View() = %q, want the armed prompt naming verb, kind, pid, and location", view)
 	}
 }
 
@@ -112,8 +122,8 @@ func TestThePromptWarnsWhenTheTargetIsMidTurn(t *testing.T) {
 	updated, _ := m.Update(keyMsg("X"))
 	m = updated.(Model)
 
-	if !strings.Contains(m.View(), "currently WORKING") {
-		t.Fatalf("View() = %q, want a WORKING warning for a mid-turn target", m.View())
+	if !strings.Contains(m.View(), "Kill pi (pid 42, /Users/x/dotfiles)? Currently working. [y/N]") {
+		t.Fatalf("View() = %q, want the force-kill verb and a mid-turn consequence sentence", m.View())
 	}
 }
 
@@ -145,30 +155,125 @@ func TestYConfirmsAnArmedPrompt(t *testing.T) {
 	}
 }
 
-func TestAnyKeyOtherThanYCancelsAnArmedPrompt(t *testing.T) {
+// TestNEscAndEnterCancelAnArmedPromptSilently pins the one answer set
+// both dashboards share: y confirms; n, esc, or enter cancel (enter
+// honors the prompt's [y/N]). An explicit cancel is silent: only the
+// auto-cancel timeout notifies.
+func TestNEscAndEnterCancelAnArmedPromptSilently(t *testing.T) {
 	calls := withKillProcess(t, true)
 
-	for _, key := range []string{"n", "N", "esc", "enter", "q", "c", "x"} {
+	for _, key := range []string{"n", "esc", "enter"} {
 		m := New(999)
 		m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 		updated, _ := m.Update(keyMsg("x"))
 		m = updated.(Model)
 
-		updated, _ = m.Update(keyMsg(key))
+		updated, cmd := m.Update(keyMsg(key))
 		m = updated.(Model)
 
 		if m.pendingKill != nil {
 			t.Fatalf("key %q: want the prompt cancelled", key)
 		}
-		if m.quitting {
-			t.Fatalf("key %q: want q intercepted, not quitting, while a prompt is armed", key)
+		if cmd != nil {
+			t.Fatalf("key %q: want no command from an explicit cancel", key)
 		}
-		if m.notification != "SIGTERM cancelled." {
-			t.Fatalf("key %q: got notification %q, want a cancellation notice", key, m.notification)
+		if m.notification != "" {
+			t.Fatalf("key %q: got notification %q, want an explicit cancel to stay silent", key, m.notification)
 		}
 	}
 	if len(*calls) != 0 {
 		t.Fatalf("got calls %+v, want no process ever signaled by a cancel", *calls)
+	}
+}
+
+// TestAnArmedPromptSwallowsAnyNonAnswer pins the modal discipline: a key
+// that is neither confirm nor cancel must not act on the table
+// underneath (q quitting, x re-arming, ? opening help) nor cancel the
+// prompt by accident — the state the prompt describes could have shifted
+// by the time the user realizes what happened.
+func TestAnArmedPromptSwallowsAnyNonAnswer(t *testing.T) {
+	calls := withKillProcess(t, true)
+
+	for _, key := range []string{"N", "q", "c", "x", "?", "j"} {
+		m := New(999)
+		m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
+		updated, _ := m.Update(keyMsg("x"))
+		m = updated.(Model)
+
+		updated, cmd := m.Update(keyMsg(key))
+		m = updated.(Model)
+
+		if m.pendingKill == nil {
+			t.Fatalf("key %q: want the prompt still armed (swallowed, not cancelled)", key)
+		}
+		if m.pendingKill.sig != syscall.SIGTERM {
+			t.Fatalf("key %q: got sig %v, want the original SIGTERM prompt untouched", key, m.pendingKill.sig)
+		}
+		if m.quitting {
+			t.Fatalf("key %q: want q swallowed, not quitting, while a prompt is armed", key)
+		}
+		if m.showHelp {
+			t.Fatalf("key %q: want ? swallowed, not opening help, while a prompt is armed", key)
+		}
+		if cmd != nil {
+			t.Fatalf("key %q: want no command from a swallowed key", key)
+		}
+		if m.notification != "" {
+			t.Fatalf("key %q: got notification %q, want none from a swallowed key", key, m.notification)
+		}
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("got calls %+v, want no process ever signaled by a swallowed key", *calls)
+	}
+}
+
+// TestCtrlCQuitsFromAnArmedPrompt pins the one exception to the modal's
+// key swallowing: ctrl+c always quits, from anywhere.
+func TestCtrlCQuitsFromAnArmedPrompt(t *testing.T) {
+	m := New(999)
+	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
+	updated, _ := m.Update(keyMsg("x"))
+	m = updated.(Model)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(Model)
+	if !m.quitting {
+		t.Fatal("want ctrl+c to quit even with a prompt armed")
+	}
+	if cmd == nil {
+		t.Fatal("want tea.Quit returned")
+	}
+}
+
+func TestAnArmedPromptAutoCancelsAfterTheTimeout(t *testing.T) {
+	m := New(999)
+	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
+	updated, _ := m.Update(keyMsg("x"))
+	m = updated.(Model)
+
+	updated, cmd := m.Update(cancelConfirmMsg{token: m.confirmToken})
+	m = updated.(Model)
+	if m.pendingKill != nil {
+		t.Fatal("want the prompt cancelled once its own token fires")
+	}
+	if m.notification != "cancelled: no answer within 10s" || m.notifyIsError {
+		t.Fatalf("got notification %q (err=%v), want the timeout cancellation note", m.notification, m.notifyIsError)
+	}
+	if cmd == nil {
+		t.Fatal("want the notification's clear scheduled")
+	}
+}
+
+func TestAStaleCancelConfirmTokenIsIgnored(t *testing.T) {
+	m := New(999)
+	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
+	updated, _ := m.Update(keyMsg("x"))
+	m = updated.(Model)
+
+	updated, _ = m.Update(cancelConfirmMsg{token: m.confirmToken - 1})
+	m = updated.(Model)
+	if m.pendingKill == nil {
+		t.Fatal("want the prompt to survive a stale cancel token")
 	}
 }
 
@@ -199,7 +304,7 @@ func TestDArmsABulkPromptForDoneRowsOnly(t *testing.T) {
 			t.Fatalf("got targets %+v, want the working row excluded", m.pendingKill.entries)
 		}
 	}
-	if !strings.Contains(m.View(), "SIGTERM 2 done sessions? [y/N]") {
+	if !strings.Contains(m.View(), "Terminate 2 done sessions? [y/N]") {
 		t.Fatalf("View() = %q, want the bulk prompt with the done count", m.View())
 	}
 }
@@ -214,7 +319,7 @@ func TestDWithNoDoneRowsJustNotifies(t *testing.T) {
 	if m.pendingKill != nil {
 		t.Fatal("want no prompt when nothing reads done")
 	}
-	if m.notification != "No done sessions to kill." {
+	if m.notification != "no done sessions to kill" {
 		t.Fatalf("got notification %q", m.notification)
 	}
 }
@@ -265,12 +370,12 @@ func TestPOnThePlaceholderRowIsANoOp(t *testing.T) {
 func TestKillResultMsgShowsASingleEntrysOwnMessage(t *testing.T) {
 	m := New(999)
 	updated, cmd := m.Update(killResultMsg{
-		results: []kill.Result{{OK: true, Message: "Killed pi (pid 42)."}},
+		results: []kill.Result{{OK: true, Message: "killed pi (pid 42)"}},
 		sig:     syscall.SIGKILL,
 	})
 	m = updated.(Model)
 
-	if m.notification != "Killed pi (pid 42)." {
+	if m.notification != "killed pi (pid 42)" {
 		t.Fatalf("got notification %q", m.notification)
 	}
 	if m.notifyIsError {
@@ -287,12 +392,12 @@ func TestKillResultMsgShowsASingleEntrysOwnMessage(t *testing.T) {
 func TestKillResultMsgSummarizesABulkKill(t *testing.T) {
 	m := New(999)
 	updated, _ := m.Update(killResultMsg{
-		results: []kill.Result{{OK: true}, {OK: true}, {OK: false, Message: "pid 3 already exited."}},
+		results: []kill.Result{{OK: true}, {OK: true}, {OK: false, Message: "pid 3 already exited"}},
 		sig:     syscall.SIGTERM,
 	})
 	m = updated.(Model)
 
-	if !strings.Contains(m.notification, "Terminated 2 of 3 sessions") || !strings.Contains(m.notification, "pid 3 already exited.") {
+	if !strings.Contains(m.notification, "terminated 2 of 3 sessions") || !strings.Contains(m.notification, "pid 3 already exited") {
 		t.Fatalf("got notification %q, want a count summary naming the first failure", m.notification)
 	}
 	if !m.notifyIsError {

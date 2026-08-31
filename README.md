@@ -63,7 +63,7 @@ working    12s     VS Code    ~/projects/personal/canopy                4%    27
 done       3m      VS Code    ~/worktrees/.../isa-orchestration         0%    140M    2h30m   pi       9514
 idle       1h20m   Ghostty    ~/some/other/project                     0%    95M     1d       pi       65834
 
-↑/↓ move · enter jump · c complete · x kill · ? help · q quit
+↑/↓ move · enter jump · c dismiss · x kill · ? help · q quit
 ```
 
 (the currently selected row also gets a full-width grey highlight in the
@@ -71,6 +71,15 @@ real terminal output, not shown here since it's just a background color)
 
 The footer only lists the few most-used bindings; `?` opens the full
 keybinding list as an overlay (any key closes it again).
+
+### Conventions
+
+canopy and understory share one set of keybinding conventions, so muscle
+memory transfers between the two dashboards: lowercase keys act on the
+selected row or are reversible (`x`, `c`, `p`), uppercase keys are the
+bulk or stronger form (`X`, `C`, `D`), every destructive action asks for
+confirmation first, and `ctrl+c` always quits: from the table, from a
+confirmation prompt, from the help overlay.
 
 Each internal column border can be dragged with the mouse to widen or
 narrow it: the two columns it sits between trade width between
@@ -134,9 +143,9 @@ and get plain text, and `--no-bell` to disable just the bell.
 A row that's `done` stays `done` (still sorted to the top, still
 colored, still bell-eligible for its own transition, still blinking every
 five minutes) until you actually do something about it: press `enter` to
-jump to it (which also marks it seen right away), or `c` to mark it seen
+jump to it (which also dismisses it right away), or `c` to dismiss it
 in place without jumping at all. To clear a whole screen of done rows at
-once, `C` marks every row seen in place, no jumping, no per-row
+once, `C` dismisses every done row in place, no jumping, no per-row
 selection. Any of these immediately displays the affected rows
 as `idle`, drops them back down in the sort order, and stops the blinking
 — no poll wait required, even mid-burst. It goes back to reading `done`
@@ -150,8 +159,10 @@ selected row (or, for `D`, on every done row at once):
 
 - `x` terminates the selected session gracefully (SIGTERM), `X` forces it
   (SIGKILL). Both ask first: the footer shows the target's kind, pid, and
-  location (plus a warning if the session is mid-turn), `y` confirms, and
-  any other key cancels.
+  location (plus a warning if the session is mid-turn), `y` confirms,
+  `n`/`esc`/`enter` cancels, and an unanswered prompt cancels itself
+  after 10 seconds. The prompt is yellow for a terminate, red for a
+  force-kill.
 - `D` terminates every session currently reading `done` (SIGTERM), with
   the same confirmation, for cleaning up a screen full of finished
   sessions at once.

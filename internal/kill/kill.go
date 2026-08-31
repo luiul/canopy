@@ -71,19 +71,39 @@ func Name(sig syscall.Signal) string {
 	}
 }
 
-// Verb is sig's past-tense verb for result messages ("Terminated", ...).
+// Verb is sig's past-tense verb for result notifications ("terminated",
+// ...), lowercase to match the status line's terse fragment style.
 func Verb(sig syscall.Signal) string {
 	switch sig {
 	case syscall.SIGTERM:
-		return "Terminated"
+		return "terminated"
 	case syscall.SIGKILL:
-		return "Killed"
+		return "killed"
 	case syscall.SIGSTOP:
-		return "Paused"
+		return "paused"
 	case syscall.SIGCONT:
-		return "Resumed"
+		return "resumed"
 	default:
-		return "Signaled"
+		return "signaled"
+	}
+}
+
+// PromptVerb is sig's imperative verb for confirmation prompts
+// ("Terminate", "Kill"). Prompts lead with a plain verb rather than the
+// raw signal name ("Terminate pi (pid 42, ~/path)? [y/N]"); signal names
+// themselves stay in result notifications and the help overlay.
+func PromptVerb(sig syscall.Signal) string {
+	switch sig {
+	case syscall.SIGTERM:
+		return "Terminate"
+	case syscall.SIGKILL:
+		return "Kill"
+	case syscall.SIGSTOP:
+		return "Pause"
+	case syscall.SIGCONT:
+		return "Resume"
+	default:
+		return Name(sig)
 	}
 }
 
@@ -100,13 +120,13 @@ func Verb(sig syscall.Signal) string {
 func Process(entry registry.RegistryEntry, sig syscall.Signal) Result {
 	info, ok := processTable()[entry.Pid]
 	if !ok {
-		return Result{false, fmt.Sprintf("%s (pid %d) already exited.", entry.Kind, entry.Pid)}
+		return Result{false, fmt.Sprintf("%s (pid %d) already exited", entry.Kind, entry.Pid)}
 	}
 	if entry.Uptime > 0 && (info.Etime < entry.Uptime || info.Etime-entry.Uptime > identitySlack) {
-		return Result{false, fmt.Sprintf("pid %d no longer belongs to the %s session it did at the last poll (recycled pid?); not signaling it.", entry.Pid, entry.Kind)}
+		return Result{false, fmt.Sprintf("pid %d no longer belongs to the %s session it did at the last poll (recycled pid?); not signaling it", entry.Pid, entry.Kind)}
 	}
 	if err := signalProcess(entry.Pid, sig); err != nil {
 		return Result{false, fmt.Sprintf("%s %s (pid %d) failed: %v", Name(sig), entry.Kind, entry.Pid, err)}
 	}
-	return Result{true, fmt.Sprintf("%s %s (pid %d).", Verb(sig), entry.Kind, entry.Pid)}
+	return Result{true, fmt.Sprintf("%s %s (pid %d)", Verb(sig), entry.Kind, entry.Pid)}
 }

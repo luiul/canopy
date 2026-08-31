@@ -43,7 +43,7 @@ func TestProcessSignalsAProcessWhoseIdentityChecksOut(t *testing.T) {
 	if len(*sent) != 1 || (*sent)[0] != syscall.SIGTERM {
 		t.Fatalf("got signals %v, want exactly one SIGTERM", *sent)
 	}
-	if !strings.Contains(r.Message, "Terminated pi (pid 123).") {
+	if !strings.Contains(r.Message, "terminated pi (pid 123)") {
 		t.Fatalf("got message %q", r.Message)
 	}
 }
@@ -137,10 +137,10 @@ func TestProcessVerbsFollowTheSignal(t *testing.T) {
 	})
 
 	wants := map[syscall.Signal]string{
-		syscall.SIGSTOP: "Paused",
-		syscall.SIGCONT: "Resumed",
-		syscall.SIGTERM: "Terminated",
-		syscall.SIGKILL: "Killed",
+		syscall.SIGSTOP: "paused",
+		syscall.SIGCONT: "resumed",
+		syscall.SIGTERM: "terminated",
+		syscall.SIGKILL: "killed",
 	}
 	for sig, want := range wants {
 		r := Process(entry(123, time.Hour), sig)
@@ -154,11 +154,11 @@ func TestProcessVerbsFollowTheSignal(t *testing.T) {
 }
 
 func TestNameAndVerbCoverTheWholeSignalVocabulary(t *testing.T) {
-	wants2 := map[syscall.Signal][2]string{
-		syscall.SIGTERM: {"SIGTERM", "Terminated"},
-		syscall.SIGKILL: {"SIGKILL", "Killed"},
-		syscall.SIGSTOP: {"SIGSTOP", "Paused"},
-		syscall.SIGCONT: {"SIGCONT", "Resumed"},
+	wants2 := map[syscall.Signal][3]string{
+		syscall.SIGTERM: {"SIGTERM", "terminated", "Terminate"},
+		syscall.SIGKILL: {"SIGKILL", "killed", "Kill"},
+		syscall.SIGSTOP: {"SIGSTOP", "paused", "Pause"},
+		syscall.SIGCONT: {"SIGCONT", "resumed", "Resume"},
 	}
 	for sig, want := range wants2 {
 		if got := Name(sig); got != want[0] {
@@ -167,8 +167,14 @@ func TestNameAndVerbCoverTheWholeSignalVocabulary(t *testing.T) {
 		if got := Verb(sig); got != want[1] {
 			t.Errorf("Verb(%v) = %q, want %q", sig, got, want[1])
 		}
+		if got := PromptVerb(sig); got != want[2] {
+			t.Errorf("PromptVerb(%v) = %q, want %q", sig, got, want[2])
+		}
 	}
 	if got := Name(syscall.SIGHUP); got != "signal 1" {
 		t.Errorf("Name(SIGHUP) = %q, want a numeric fallback for signals outside the vocabulary", got)
+	}
+	if got := PromptVerb(syscall.SIGHUP); got != "signal 1" {
+		t.Errorf("PromptVerb(SIGHUP) = %q, want the Name fallback for signals outside the vocabulary", got)
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 
 	"github.com/luiul/canopy/internal/jump"
 	"github.com/luiul/canopy/internal/kill"
@@ -74,6 +75,10 @@ var (
 	subtleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	errorStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9"))
 	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	// promptStyle renders an armed confirmation's prompt: yellow for the
+	// ordinary destructive kind (SIGTERM via x/D), while errorStyle's
+	// louder red marks the force tier (SIGKILL via X). See footerView.
+	promptStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))
 )
 
 // cursorSentinel is an alias for loam.Sentinel: the zero-width Unicode
@@ -117,15 +122,31 @@ type killResultMsg struct {
 type clearNotifyMsg struct{ token int }
 
 // killPrompt is an armed, not-yet-confirmed kill action (see the x/X/D
-// keybinds): the entries to signal and the signal to send, held until the
-// user presses y (confirm) or anything else (cancel). Entries are
-// re-stamped from every poll while the prompt is open (see Update's
-// pollResultMsg case), so a row that vanishes mid-prompt drops out of the
-// target set — and the survivors' Uptime samples stay fresh enough for
-// kill.Process's process-identity guard to trust.
+// keybinds): the entries to signal and the signal to send, held until
+// the user answers (y confirms; n, esc, or enter cancel, honoring the
+// prompt's own [y/N]) or the prompt cancels itself (auto-cancel timeout,
+// or every target vanishing from a poll). Entries are re-stamped from
+// every poll while the prompt is open (see Update's pollResultMsg case),
+// so a row that vanishes mid-prompt drops out of the target set — and
+// the survivors' Uptime samples stay fresh enough for kill.Process's
+// process-identity guard to trust.
 type killPrompt struct {
 	entries []registry.RegistryEntry
 	sig     syscall.Signal
+}
+
+// confirmTimeout is how long an armed kill prompt waits for an answer
+// before cancelling itself. An unattended modal would otherwise wedge
+// the dashboard forever (it swallows every other key), and a stale
+// prompt is dangerous anyway: rows keep repolling and reordering
+// underneath it, so a prompt answered long after it appeared may no
+// longer mean what it said when it appeared.
+const confirmTimeout = 10 * time.Second
+
+type cancelConfirmMsg struct{ token int }
+
+func confirmTimeoutCmd(token int) tea.Cmd {
+	return tea.Tick(confirmTimeout, func(time.Time) tea.Msg { return cancelConfirmMsg{token: token} })
 }
 
 // Model is the bubbletea model backing the dashboard.
@@ -191,11 +212,17 @@ type Model struct {
 
 	// pendingKill, when non-nil, is the armed kill confirmation prompt shown
 	// in the footer (see killPrompt): set by x/X/D, resolved by y (confirm)
-	// or any other key (cancel), and pruned/cancelled by polls that no
-	// longer contain its targets. While armed, every keypress is intercepted
-	// before any other binding runs, so an armed prompt can never
-	// accidentally jump, quit, or stack with a second prompt.
-	pendingKill *killPrompt
+	// or n/esc/enter (cancel), and pruned/cancelled by polls that no
+	// longer contain its targets or by the auto-cancel timeout. While
+	// armed, every keypress is intercepted before any other binding runs
+	// and any non-answer is swallowed, so an armed prompt can never
+	// accidentally jump, quit, or stack with a second prompt; ctrl+c is
+	// the one exception, quitting from anywhere as always. confirmToken is
+	// the token the prompt's auto-cancel tick must match (incremented on
+	// every arm/answer/cancel so a stale tick never cancels a newer
+	// prompt; same token pattern as notifyToken/clearNotifyMsg).
+	pendingKill  *killPrompt
+	confirmToken int
 
 	// showHelp swaps the table for the full keybinding listing (the ?
 	// overlay, see helpView): the footer only has room for the few most
@@ -326,6 +353,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMsg:
+		// No column drags while a modal is up: the confirmation prompt
+		// owns the footer and the help overlay replaces the table, so a
+		// drag's target row isn't even on screen.
+		if m.showHelp || m.pendingKill != nil {
+			return m, nil
+		}
 		_, originY := m.renderHeader()
 		cols := m.table.Columns()
 		widths, changed := m.resizer.Handle(msg, cols, columnMinWidths(), 0, originY)
@@ -348,20 +381,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		// An armed kill prompt intercepts every key before any binding
-		// below runs: y confirms, anything else cancels — the safest
-		// possible default for a destructive action, and impossible to
-		// confirm by accident (see Model.pendingKill).
+		// below runs: y confirms, n/esc/enter cancel (honoring the
+		// prompt's own [y/N]), and every other key is swallowed so the
+		// state the prompt describes can't shift under an in-flight
+		// answer — impossible to confirm OR cancel by accident (see
+		// Model.pendingKill). An explicit cancel is silent; only the
+		// auto-cancel timeout notifies. ctrl+c is the one key not
+		// swallowed: it quits, as it does from everywhere.
 		if m.pendingKill != nil {
-			pending := m.pendingKill
-			m.pendingKill = nil
-			if msg.String() != "y" {
-				return m, m.setNotify(fmt.Sprintf("%s cancelled.", kill.Name(pending.sig)), false)
+			switch msg.String() {
+			case "y":
+				pending := m.pendingKill
+				m.pendingKill = nil
+				m.confirmToken++ // invalidate the pending auto-cancel tick
+				return m, killCmd(pending.entries, pending.sig)
+			case "n", "esc", "enter":
+				m.pendingKill = nil
+				m.confirmToken++
+				return m, nil
+			case "ctrl+c":
+				m.quitting = true
+				return m, tea.Quit
+			default:
+				return m, nil
 			}
-			return m, killCmd(pending.entries, pending.sig)
 		}
 		// The help overlay is read-only: any keypress closes it without
-		// acting on the table underneath (see Model.showHelp).
+		// acting on the table underneath (see Model.showHelp), except
+		// ctrl+c, which quits like it does from everywhere.
 		if m.showHelp {
+			if msg.String() == "ctrl+c" {
+				m.quitting = true
+				return m, tea.Quit
+			}
 			m.showHelp = false
 			return m, nil
 		}
@@ -388,7 +440,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				sig = syscall.SIGKILL
 			}
 			m.pendingKill = &killPrompt{entries: []registry.RegistryEntry{entry}, sig: sig}
-			return m, nil
+			m.confirmToken++
+			return m, confirmTimeoutCmd(m.confirmToken)
 		case "p":
 			entry, ok := m.selectedEntry()
 			if !ok {
@@ -413,10 +466,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			if len(targets) == 0 {
-				return m, m.setNotify("No done sessions to kill.", false)
+				return m, m.setNotify("no done sessions to kill", false)
 			}
 			m.pendingKill = &killPrompt{entries: targets, sig: syscall.SIGTERM}
-			return m, nil
+			m.confirmToken++
+			return m, confirmTimeoutCmd(m.confirmToken)
 		case "enter":
 			entry, ok := m.selectedEntry()
 			if !ok {
@@ -472,6 +526,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingKill.entries = refreshKillTargets(m.pendingKill.entries, msg.entries)
 			if len(m.pendingKill.entries) == 0 {
 				m.pendingKill = nil
+				m.confirmToken++ // invalidate the pending auto-cancel tick
 			}
 		}
 		// tickBlinks is unconditional, unlike the bell: blinking is a visual
@@ -504,6 +559,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, clear
+
+	case cancelConfirmMsg:
+		if m.pendingKill != nil && msg.token == m.confirmToken {
+			m.pendingKill = nil
+			return m, m.setNotify("cancelled: no answer within "+confirmTimeout.String(), false)
+		}
+		return m, nil
 
 	case clearNotifyMsg:
 		if msg.token == m.notifyToken {
@@ -575,27 +637,30 @@ func summarizeKillResults(results []kill.Result, sig syscall.Signal) (string, bo
 		}
 	}
 	if ok == len(results) {
-		return fmt.Sprintf("%s %d sessions.", kill.Verb(sig), ok), false
+		return fmt.Sprintf("%s %d sessions", kill.Verb(sig), ok), false
 	}
 	return fmt.Sprintf("%s %d of %d sessions; first failure: %s", kill.Verb(sig), ok, len(results), firstErr), true
 }
 
-// killPromptText builds the armed kill prompt's footer line. A single
-// target names kind, pid, and location (the things that disambiguate one
-// pi session from the four others on screen), plus a loud warning when the
-// session is mid-turn; a bulk prompt just names the signal and the count.
+// killPromptText builds the armed kill prompt's footer line, following
+// the one prompt template both dashboards share: "<Verb> <target>?
+// <consequence sentence>. [y/N]", with a plain verb (Terminate/Kill, see
+// kill.PromptVerb) rather than the raw signal name. A single target names
+// kind, pid, and location (the things that disambiguate one pi session
+// from the four others on screen), plus a consequence sentence when the
+// session is mid-turn; a bulk prompt just names the verb and the count.
 func (m Model) killPromptText() string {
 	p := m.pendingKill
-	name := kill.Name(p.sig)
+	verb := kill.PromptVerb(p.sig)
 	if len(p.entries) == 1 {
 		e := p.entries[0]
-		warn := ""
+		prompt := fmt.Sprintf("%s %s (pid %d, %s)?", verb, e.Kind, e.Pid, location(e, m.home))
 		if displayState(e, m.done) == "working" {
-			warn = " — currently WORKING"
+			prompt += " Currently working."
 		}
-		return fmt.Sprintf("%s %s (pid %d, %s)%s? [y/N]", name, e.Kind, e.Pid, location(e, m.home), warn)
+		return prompt + " [y/N]"
 	}
-	return fmt.Sprintf("%s %d done sessions? [y/N]", name, len(p.entries))
+	return fmt.Sprintf("%s %d done sessions? [y/N]", verb, len(p.entries))
 }
 
 // applyEntries sorts fresh entries, rebuilds the table's rows, and restores
@@ -764,39 +829,74 @@ func (m Model) renderHeader() (text string, tableOriginY int) {
 }
 
 // helpEntry is one row of the ? overlay: the key(s) and what they do.
-// Covers every binding Update's KeyMsg case handles, plus the one
-// mouse-only interaction (column-border drag), since that one has no key
-// to list under.
-var helpEntries = []struct{ keys, desc string }{
-	{"↑/↓, k/j", "move selection"},
-	{"enter", "jump to the session's window (marks a done row seen)"},
-	{"c / C", "mark this done row seen / every done row seen"},
+// Covers every binding Update's KeyMsg case handles, the inherited
+// bubbles/table navigation set, and the one mouse-only interaction
+// (column-border drag), since that one has no key to list under. The
+// navigation entries, the mouse row, the close hint, and the title are
+// deliberately identical to understory's own overlay (the two dashboards
+// share one set of conventions); only the action rows in the middle
+// differ, being domain-specific.
+var helpEntries = []struct{ key, desc string }{
+	{"↑/↓, k/j", "move the selection"},
+	{"pgup/pgdn, b/f", "page up/down"},
+	{"u/d", "half page up/down (lowercase d; the uppercase D below terminates every done session)"},
+	{"g/G, home/end", "jump to the top/bottom"},
+	{"enter", "jump to the session's window (dismisses a done row)"},
+	{"c / C", "dismiss this done row / every done row"},
 	{"x / X", "terminate (SIGTERM) / force-kill (SIGKILL) the selected session, with confirmation"},
 	{"p", "pause (SIGSTOP) / resume (SIGCONT) the selected session"},
 	{"D", "terminate every done session (SIGTERM), with confirmation"},
 	{"r", "refresh now"},
-	{"?", "open/close this help"},
+	{"mouse", "drag a column border on the header row to resize the two columns it joins"},
+	{"?", "this help"},
 	{"q, ctrl+c", "quit"},
-	{"mouse drag", "resize the two columns a border sits between"},
 }
 
-// helpView renders the ? overlay: the full keybinding list, taking over
-// the whole view while it's open (htop-style) rather than compositing over
-// the table — no transparency ambiguity about what's clickable underneath,
-// and the table keeps polling in the background meanwhile.
+// helpView renders the ? overlay's body: the full keybinding list in
+// place of the table, with the header staying visible above it and the
+// footer carrying the close hint below (the same layout understory's own
+// overlay uses). Key-column padding is runewidth-aware so the multi-byte
+// arrow glyphs (↑/↓) don't skew the description column.
 func (m Model) helpView() string {
 	width := 0
 	for _, e := range helpEntries {
-		width = max(width, len(e.keys))
+		if w := runewidth.StringWidth(e.key); w > width {
+			width = w
+		}
 	}
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("canopy") + subtleStyle.Render(" — keyboard shortcuts"))
-	b.WriteString("\n\n")
+	lines := make([]string, 0, len(helpEntries)+1)
+	lines = append(lines, titleStyle.Render("keybindings"))
 	for _, e := range helpEntries {
-		b.WriteString("  " + fmt.Sprintf("%-*s", width, e.keys) + "  " + subtleStyle.Render(e.desc) + "\n")
+		pad := strings.Repeat(" ", width-runewidth.StringWidth(e.key))
+		lines = append(lines, "  "+e.key+pad+"  "+subtleStyle.Render(e.desc))
 	}
-	b.WriteString("\n" + subtleStyle.Render("press any key to close") + "\n")
-	return b.String()
+	return strings.Join(lines, "\n")
+}
+
+// footerView renders the bottom line: the confirmation prompt while one
+// is armed (it's modal and swallows all other keys, so it replaces
+// everything else), else the latest notification, else the help overlay's
+// close hint, else the default keybinding hints, kept to the essentials
+// now that ? opens the full list.
+func (m Model) footerView() string {
+	if m.pendingKill != nil {
+		style := promptStyle
+		if m.pendingKill.sig == syscall.SIGKILL {
+			style = errorStyle
+		}
+		return style.Render(m.killPromptText())
+	}
+	if m.notification != "" {
+		style := okStyle
+		if m.notifyIsError {
+			style = errorStyle
+		}
+		return style.Render(m.notification)
+	}
+	if m.showHelp {
+		return subtleStyle.Render("press any key to close")
+	}
+	return subtleStyle.Render("↑/↓ move · enter jump · c dismiss · x kill · ? help · q quit")
 }
 
 // View implements tea.Model.
@@ -804,38 +904,24 @@ func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
-	if m.showHelp {
-		return m.helpView()
-	}
+
 	header, _ := m.renderHeader()
 
-	// The footer stays to the few most-used bindings so it keeps fitting
-	// one line; ? opens the full list (see helpView).
-	footer := subtleStyle.Render("↑/↓ move · enter jump · c complete · x kill · ? help · q quit")
-	if m.pendingKill != nil {
-		// An armed kill prompt takes precedence over any notification: it
-		// is the one thing the user's next keypress will actually act on.
-		footer = errorStyle.Render(m.killPromptText())
-	} else if m.notification != "" {
-		style := okStyle
-		if m.notifyIsError {
-			style = errorStyle
-		}
-		footer = style.Render(m.notification)
+	body := m.helpView()
+	if !m.showHelp {
+		tableView := colorizeRows(m.table.View(), m.table.Columns(), colState, colSince)
+		// Marks each column border on the header row with a visible divider
+		// (see loam.DrawHeaderBorders' own doc) — otherwise the only cue for
+		// where a mouse drag needs to land is bubbles/table's own blank
+		// 2-space inter-cell gap, which doesn't look any different from the
+		// padding inside a cell. Runs after colorizeRows, not before: the
+		// header line is the one line ColorizeRows never touches at all (see
+		// its own doc), so the two passes can run in either order without
+		// interfering with each other; this order just keeps "recolor first,
+		// mark structure second" consistent regardless.
+		body = loam.DrawHeaderBorders(tableView, m.table.Columns(), subtleStyle)
 	}
-
-	tableView := colorizeRows(m.table.View(), m.table.Columns(), colState, colSince)
-	// Marks each column border on the header row with a visible divider
-	// (see loam.DrawHeaderBorders' own doc) — otherwise the only cue for
-	// where a mouse drag needs to land is bubbles/table's own blank
-	// 2-space inter-cell gap, which doesn't look any different from the
-	// padding inside a cell. Runs after colorizeRows, not before: the
-	// header line is the one line ColorizeRows never touches at all (see
-	// its own doc), so the two passes can run in either order without
-	// interfering with each other; this order just keeps "recolor first,
-	// mark structure second" consistent regardless.
-	tableView = loam.DrawHeaderBorders(tableView, m.table.Columns(), subtleStyle)
-	return header + "\n\n" + tableView + "\n\n" + footer + "\n"
+	return header + "\n\n" + body + "\n\n" + m.footerView() + "\n"
 }
 
 // Run starts the dashboard program and blocks until the user quits.

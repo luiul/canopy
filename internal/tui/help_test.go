@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/luiul/canopy/internal/ancestry"
 	"github.com/luiul/canopy/internal/registry"
 )
@@ -23,8 +25,9 @@ func TestQuestionMarkOpensAHelpOverlayListingEveryKeybinding(t *testing.T) {
 	}
 	view := m.View()
 	for _, want := range []string{
-		"keyboard shortcuts",
-		"enter", "c / C", "x / X", "p", "D", "r", "?", "q, ctrl+c", "mouse drag",
+		"keybindings",
+		"↑/↓, k/j", "pgup/pgdn, b/f", "u/d", "g/G, home/end",
+		"enter", "c / C", "x / X", "p", "D", "r", "?", "q, ctrl+c", "mouse",
 		"SIGTERM", "SIGKILL", "SIGSTOP", "SIGCONT",
 		"press any key to close",
 	} {
@@ -32,7 +35,11 @@ func TestQuestionMarkOpensAHelpOverlayListingEveryKeybinding(t *testing.T) {
 			t.Fatalf("help view = %q, want it to contain %q", view, want)
 		}
 	}
-	// The table is swapped out entirely while the overlay is open.
+	// The header (app identity) stays visible above the overlay, and the
+	// table is swapped out entirely while the overlay is open.
+	if !strings.Contains(view, "canopy") {
+		t.Fatalf("help view = %q, want the header to stay visible", view)
+	}
 	if strings.Contains(view, "Location") {
 		t.Fatalf("help view = %q, want the table itself replaced, not overlaid", view)
 	}
@@ -60,7 +67,25 @@ func TestAnyKeyClosesTheHelpOverlayWithoutActing(t *testing.T) {
 	}
 }
 
-func TestKillPromptInterceptsQuestionMarkBeforeHelpCanOpen(t *testing.T) {
+// TestCtrlCQuitsFromTheHelpOverlay pins the one exception to "any key
+// closes": ctrl+c always quits, from anywhere.
+func TestCtrlCQuitsFromTheHelpOverlay(t *testing.T) {
+	m := New(999)
+	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
+	updated, _ := m.Update(keyMsg("?"))
+	m = updated.(Model)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(Model)
+	if !m.quitting {
+		t.Fatal("want ctrl+c to quit even with the help overlay open")
+	}
+	if cmd == nil {
+		t.Fatal("want tea.Quit returned")
+	}
+}
+
+func TestKillPromptSwallowsQuestionMarkBeforeHelpCanOpen(t *testing.T) {
 	m := New(999)
 	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 
@@ -70,13 +95,13 @@ func TestKillPromptInterceptsQuestionMarkBeforeHelpCanOpen(t *testing.T) {
 	m = updated.(Model)
 
 	if m.showHelp {
-		t.Fatal("want the kill prompt's any-key-cancels intercept to win over the help overlay")
+		t.Fatal("want the kill prompt's modal intercept to win over the help overlay")
 	}
-	if m.pendingKill != nil {
-		t.Fatal("want ? to have cancelled the armed prompt")
+	if m.pendingKill == nil {
+		t.Fatal("want ? swallowed, leaving the armed prompt untouched")
 	}
-	if m.notification != "SIGTERM cancelled." {
-		t.Fatalf("got notification %q, want the cancellation notice", m.notification)
+	if m.notification != "" {
+		t.Fatalf("got notification %q, want none from a swallowed key", m.notification)
 	}
 }
 

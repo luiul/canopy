@@ -1188,6 +1188,38 @@ func TestMouseClickOffTheHeaderRowDoesNotStartADrag(t *testing.T) {
 	}
 }
 
+// TestMouseDragIsIgnoredWhileAModalIsUp pins the guard both dashboards
+// share: while a confirmation prompt or the help overlay owns the screen,
+// a stray drag must not resize columns underneath it.
+func TestMouseDragIsIgnoredWhileAModalIsUp(t *testing.T) {
+	for _, modal := range []string{"prompt", "help"} {
+		m := New(999 * time.Second)
+		m.width, m.height = 120, 40
+		m.resizeColumns()
+		m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
+
+		var updated tea.Model
+		if modal == "prompt" {
+			updated, _ = m.Update(keyMsg("x"))
+		} else {
+			updated, _ = m.Update(keyMsg("?"))
+		}
+		m = updated.(Model)
+
+		cols := m.table.Columns()
+		_, originY := m.renderHeader()
+		borderX := surfaceBorderX(cols)
+		updated, _ = m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+		m = updated.(Model)
+		updated, _ = m.Update(tea.MouseMsg{X: borderX + 4, Y: originY, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+		m = updated.(Model)
+
+		if got := m.table.Columns()[colSurface].Width; got != cols[colSurface].Width {
+			t.Fatalf("%s open: Surface width = %d, want unchanged %d", modal, got, cols[colSurface].Width)
+		}
+	}
+}
+
 func TestColumnTitlesNeverTouchTheirRightBorder(t *testing.T) {
 	// The header's column-border glyph (loam.DrawHeaderBorders) sits
 	// immediately right of each column's content area, so a column

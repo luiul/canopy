@@ -27,11 +27,9 @@ var version = "0.1.0-dev"
 const helpText = `canopy: interactive dashboard for every pi/claude/codex/... session on
 this machine: VS Code integrated terminals and bare Ghostty tabs alike.
 
-Arrow keys to move, Enter to jump to a window (and mark it as seen), c to
-mark a done row as seen without jumping, x/X to terminate/kill the selected
-session (with a confirmation prompt), p to pause/resume it, D to terminate
-every done session at once, q to quit, r to refresh. Press ? in the app for
-the full keybinding list.
+Arrow keys to move, Enter to jump to the selected session's window, x to
+terminate it (with confirmation), ? for every keybinding, r to refresh,
+q to quit.
 
 Usage:
   canopy [flags]
