@@ -486,6 +486,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		return m, tea.Batch(pollCmd(m.user, m.entries), tickCmd(m.interval))
 
+	case tea.FocusMsg:
+		// The user just switched to this window, which is almost always
+		// the moment they read the table — and the typical flow is
+		// starting a session in another window and then switching here to
+		// check it showed up. Poll immediately rather than leaving even
+		// one interval's staleness on screen (the same fix understory got
+		// after a freshly created worktree read as "not listed" until the
+		// next tick). Passing m.entries like the tick does keeps the
+		// poll-to-poll diffing (done detection, bell, blink) on the same
+		// raw-state baseline; this is an extra poll on top of the tick
+		// chain, which keeps its own cadence either way.
+		return m, pollCmd(m.user, m.entries)
+
 	case pollResultMsg:
 		m.scanWarning = msg.warning
 		bell := m.applyEntries(msg.entries)
@@ -873,7 +886,11 @@ func (m Model) View() string {
 
 // Run starts the dashboard program and blocks until the user quits.
 func Run(interval time.Duration, bellEnabled bool) error {
-	p := tea.NewProgram(New(interval).WithBell(bellEnabled), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// WithReportFocus so the tea.FocusMsg case in Update ever fires at all:
+	// without it the terminal never sends focus-in events. Terminals that
+	// don't support focus reporting simply never deliver the message, which
+	// degrades to tick-only behavior.
+	p := tea.NewProgram(New(interval).WithBell(bellEnabled), tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus())
 	_, err := p.Run()
 	return err
 }

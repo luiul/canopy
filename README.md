@@ -72,6 +72,11 @@ real terminal output, not shown here since it's just a background color)
 The footer only lists the few most-used bindings; `?` opens the full
 keybinding list as an overlay (any key closes it again).
 
+The view polls on a short interval, but also refreshes the moment the
+terminal window regains focus: the typical flow is starting a session in
+another window and then switching to canopy to check on it, and a session
+started a moment ago shouldn't be invisible until the next tick.
+
 ### Conventions
 
 canopy and understory share one set of keybinding conventions, so muscle

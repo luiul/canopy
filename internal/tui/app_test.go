@@ -31,6 +31,17 @@ func pistatusEntry(pid int, surface ancestry.Surface, reportedAt time.Time) regi
 	return e
 }
 
+func TestFocusMsgTriggersAnImmediatePoll(t *testing.T) {
+	// Switching to canopy's window must refresh right away (see the
+	// tea.FocusMsg case in Update): a session started in another window
+	// can't wait for the next tick to show up.
+	m := New(999)
+	_, cmd := m.Update(tea.FocusMsg{})
+	if cmd == nil {
+		t.Fatal("want a poll command on focus")
+	}
+}
+
 func TestSortEntriesRanksDoneAboveWorking(t *testing.T) {
 	entries := []registry.RegistryEntry{
 		entry(1, ancestry.Ghostty, "working"),
