@@ -24,24 +24,23 @@ func entry(surface ancestry.Surface, mutate func(*registry.RegistryEntry)) regis
 // to osascript or the real `code` CLI. mycelium's own test suite already
 // covers the window-detection logic these fakes stand in for; these tests
 // only need to verify that To() dispatches to the right one, with the
-// right argument, and maps its Result straight through. repoContext is
-// stubbed to the identity (cwd, "") so dispatch tests never shell out to
-// git either; a test that cares about the resolution overrides
-// repoContext itself afterward.
+// right argument, and maps its Result straight through. branchOf is
+// stubbed to "" so dispatch tests never shell out to git either; a test
+// that cares about the resolution overrides branchOf itself afterward.
 func withFakes(t *testing.T, vscode func(path, branch string) mycelium.Result, ghostty func(path string) mycelium.Result) {
 	t.Helper()
-	origVSCode, origGhostty, origRepoContext := openVSCode, openGhostty, repoContext
+	origVSCode, origGhostty, origBranchOf := openVSCode, openGhostty, branchOf
 	if vscode != nil {
 		openVSCode = vscode
 	}
 	if ghostty != nil {
 		openGhostty = ghostty
 	}
-	repoContext = func(cwd string) (string, string) { return cwd, "" }
+	branchOf = func(cwd string) string { return "" }
 	t.Cleanup(func() {
 		openVSCode = origVSCode
 		openGhostty = origGhostty
-		repoContext = origRepoContext
+		branchOf = origBranchOf
 	})
 }
 
@@ -68,72 +67,61 @@ func TestJumpToVSCodeDelegatesToMyceliumWithTheEntrysCwd(t *testing.T) {
 	}
 }
 
-func TestJumpToVSCodeResolvesTheRepoRootAndBranchBeforeJumping(t *testing.T) {
-	// The whole point of repoContext: mycelium's rootName+branch matching
-	// can only tell same-named worktree windows apart when it gets the
-	// branch, and only matches titles (which carry the repo root's folder
-	// name) when it gets the root, not a subdirectory of it.
+func TestJumpToVSCodePassesTheCwdThroughWithTheResolvedBranch(t *testing.T) {
+	// The cwd goes to mycelium unmodified — the window to reuse may be
+	// open on exactly that folder (a monorepo package the agent runs in),
+	// and mycelium falls back to the work-tree root on its own — while
+	// the branch still comes from git, since a RegistryEntry doesn't
+	// record it and mycelium's rootName+branch matching needs it.
 	var gotPath, gotBranch string
 	withFakes(t, func(path, branch string) mycelium.Result {
 		gotPath, gotBranch = path, branch
 		return mycelium.Result{OK: true}
 	}, nil)
-	repoContext = func(cwd string) (string, string) {
+	branchOf = func(cwd string) string {
 		if cwd != "/x/worktrees/ISA-18436/global-ops/pipelines" {
-			t.Fatalf("got repoContext cwd %q, want the entry's own cwd", cwd)
+			t.Fatalf("got branchOf cwd %q, want the entry's own cwd", cwd)
 		}
-		return "/x/worktrees/ISA-18436/global-ops", "ISA-18436"
+		return "ISA-18436"
 	}
 
 	To(entry(ancestry.VSCode, func(e *registry.RegistryEntry) {
 		e.Cwd = "/x/worktrees/ISA-18436/global-ops/pipelines"
 	}))
 
-	if gotPath != "/x/worktrees/ISA-18436/global-ops" {
-		t.Fatalf("got path %q, want the resolved repo root", gotPath)
+	if gotPath != "/x/worktrees/ISA-18436/global-ops/pipelines" {
+		t.Fatalf("got path %q, want the entry's cwd passed through unmodified", gotPath)
 	}
 	if gotBranch != "ISA-18436" {
 		t.Fatalf("got branch %q, want %q", gotBranch, "ISA-18436")
 	}
 }
 
-func TestGitRepoContextResolvesASubdirToItsRepoRootAndBranch(t *testing.T) {
+func TestGitBranchResolvesASubdirToItsCheckedOutBranch(t *testing.T) {
 	root := initTestRepo(t)
 	sub := filepath.Join(root, "a", "b")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	path, branch := gitRepoContext(sub)
-
-	if path != root {
-		t.Fatalf("got path %q, want %q", path, root)
-	}
-	if branch != "main" {
+	if branch := gitBranch(sub); branch != "main" {
 		t.Fatalf("got branch %q, want %q", branch, "main")
 	}
 }
 
-func TestGitRepoContextFallsBackOutsideAWorkTree(t *testing.T) {
+func TestGitBranchIsEmptyOutsideAWorkTree(t *testing.T) {
 	dir := t.TempDir() // no git init: not a repo
 
-	path, branch := gitRepoContext(dir)
-
-	if path != dir || branch != "" {
-		t.Fatalf("got (%q, %q), want (%q, \"\")", path, branch, dir)
+	if branch := gitBranch(dir); branch != "" {
+		t.Fatalf("got branch %q, want \"\" outside a work tree", branch)
 	}
 }
 
-func TestGitRepoContextTreatsADetachedHEADAsBranchless(t *testing.T) {
+func TestGitBranchTreatsADetachedHEADAsBranchless(t *testing.T) {
 	root := initTestRepo(t)
 	runGit(t, root, "checkout", "--detach", "HEAD")
 
-	path, branch := gitRepoContext(root)
-
-	if path != root {
-		t.Fatalf("got path %q, want %q", path, root)
-	}
-	if branch != "" {
+	if branch := gitBranch(root); branch != "" {
 		t.Fatalf("got branch %q, want \"\" for a detached HEAD", branch)
 	}
 }
