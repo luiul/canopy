@@ -58,10 +58,10 @@ canopy's scope could stay exactly "agent sessions," nothing else.
 canopy — agent sessions on this machine
 3 sessions: 1 done · 1 working · 1 idle
 
-State      Since   Surface    Location                                  CPU   RAM     Uptime  Kind     PID
-working    12s     VS Code    ~/projects/personal/canopy                4%    278M    1h      pi       86872
-done       3m      VS Code    ~/worktrees/.../isa-orchestration         0%    140M    2h30m   pi       9514
-idle       1h20m   Ghostty    ~/some/other/project                     0%    95M     1d       pi       65834
+State      Since   Surface    VS Code  Location                                  CPU   RAM     Uptime  Kind     PID
+working    12s     VS Code    open     ~/projects/personal/canopy                4%    278M    1h      pi       86872
+done       3m      VS Code    open     ~/worktrees/.../isa-orchestration         0%    140M    2h30m   pi       9514
+idle       1h20m   Ghostty    -        ~/some/other/project                     0%    95M     1d       pi       65834
 
 ↑/↓ move · enter jump · c dismiss · x kill · ? help · q quit
 ```
@@ -71,6 +71,19 @@ real terminal output, not shown here since it's just a background color)
 
 The footer only lists the few most-used bindings; `?` opens the full
 keybinding list as an overlay (any key closes it again).
+
+The VS Code column answers "is a VS Code window already open on this
+session's working directory?" (`open`, `-`, or `?` when that couldn't
+be determined — no known cwd, or macOS hasn't granted the Automation
+permission the window listing needs yet). It runs the exact same
+already-open check Enter's jump-to-window runs (via
+[`github.com/luiul/dashkit/mycelium`](https://github.com/luiul/dashkit/tree/main/mycelium),
+with the branch resolved from git and cached for a minute), so `open`
+means Enter would focus that window rather than open a new one. Note
+it answers a different question than Surface: Surface says which app
+hosts the session's *terminal*, while VS Code says whether an *editor
+window* is open on its directory — a Ghostty-hosted session can have
+one too.
 
 The view polls on a short interval, but also refreshes the moment the
 terminal window regains focus: the typical flow is starting a session in

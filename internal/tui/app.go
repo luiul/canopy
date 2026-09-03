@@ -48,7 +48,8 @@ const notifyDuration = 4 * time.Second
 //
 // Order is deliberately urgency-first: State and Since (what needs you, and
 // for how long) come first, matching the top-to-bottom state-priority sort.
-// Surface and Location (where a session lives) follow. CPU/RAM/Uptime (how a
+// Surface, VS Code, and Location (where a session lives, and whether an
+// editor window is already open on it) follow. CPU/RAM/Uptime (how a
 // session is doing, resource-wise) come next: useful for spotting a runaway
 // or forgotten session, but not the first thing anyone scans for, so they sit
 // to the right of Location rather than competing with State/Since for
@@ -61,6 +62,7 @@ const (
 	colState = iota
 	colSince
 	colSurface
+	colVSCode
 	colLocation
 	colCPU
 	colRAM
@@ -231,6 +233,7 @@ func New(interval time.Duration) Model {
 		{Title: "State", Width: 8},
 		{Title: "Since", Width: 6},
 		{Title: "Surface", Width: 9},
+		{Title: "VS Code", Width: 8},
 		{Title: "Location", Width: 40},
 		{Title: "CPU", Width: 4},
 		{Title: "RAM", Width: 6},
@@ -684,10 +687,11 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 	return bell
 }
 
-// stateContentWidth, surfaceContentWidth, ramContentWidth,
-// uptimeContentWidth, and pidContentWidth are the widest values those
-// columns ever display: the states top out at "working"/"unknown", the
-// surfaces at "VS Code"/"Ghostty"/"unknown", RAM at "1023M"/"99.9G"
+// stateContentWidth, surfaceContentWidth, vscodeContentWidth,
+// ramContentWidth, uptimeContentWidth, and pidContentWidth are the
+// widest values those columns ever display: the states top out at
+// "working"/"unknown", the surfaces at "VS Code"/"Ghostty"/"unknown",
+// the VS Code column at "open" (4), RAM at "1023M"/"99.9G"
 // (see ramCellText), Uptime at "23h59m" (humanizeSince's longest form
 // before it switches to "%dd"), and PIDs at five digits. kindDragFloor
 // is the exception: Kind's default already truncates long kinds on
@@ -696,6 +700,7 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 const (
 	stateContentWidth   = 7
 	surfaceContentWidth = 7
+	vscodeContentWidth  = 4
 	ramContentWidth     = 5
 	uptimeContentWidth  = 6
 	kindDragFloor       = 4
@@ -725,6 +730,7 @@ func columnMinWidths() []int {
 		stateContentWidth,
 		6, // Since: its default is already its content width ("23h59m")
 		surfaceContentWidth,
+		vscodeContentWidth,
 		20,
 		4, // CPU: its default is already its content width ("100%")
 		ramContentWidth,
@@ -750,11 +756,11 @@ func columnMinWidths() []int {
 // 8) rather than pushing the table past the terminal's right edge — a
 // wider-than-terminal table just gets its rightmost columns (Kind, PID)
 // clipped away entirely, which is worse than a truncated Location. Past
-// 8 the terminal is simply too narrow for nine columns; the remaining
+// 8 the terminal is simply too narrow for ten columns; the remaining
 // overflow is accepted.
 func (m *Model) resizeColumns() {
 	cols := m.table.Columns()
-	if len(cols) != 9 {
+	if len(cols) != 10 {
 		return
 	}
 	fixed := 0
@@ -767,7 +773,7 @@ func (m *Model) resizeColumns() {
 		}
 		fixed += cols[i].Width
 	}
-	remaining := m.width - fixed - 18 // 2 chars of padding per cell, 9 cells
+	remaining := m.width - fixed - 20 // 2 chars of padding per cell, 10 cells
 	if remaining < 20 {
 		remaining = max(remaining, 8)
 	}

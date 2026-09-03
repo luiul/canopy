@@ -407,6 +407,7 @@ func TestPollOnceSurfacesAWarningWhenTheAgentScanFails(t *testing.T) {
 		return nil, fmt.Errorf("ps: exit status 1")
 	}
 	scanProcessTable = func() map[int]scan.ProcessInfo { return map[int]scan.ProcessInfo{} }
+	withSnapshotVSCode(t, fakeVSCodeSnapshot{err: fmt.Errorf("not authorized"), noCall: true})
 
 	result := PollOnce("someuser", nil)
 
@@ -425,6 +426,7 @@ func TestPollOnceHasNoWarningWhenTheAgentScanSucceedsWithZeroMatches(t *testing.
 	t.Cleanup(func() { scanAgentProcesses, scanProcessTable = previousScan, previousTable })
 	scanAgentProcesses = func(string) ([]scan.ProcessMatch, error) { return nil, nil }
 	scanProcessTable = func() map[int]scan.ProcessInfo { return map[int]scan.ProcessInfo{} }
+	withSnapshotVSCode(t, fakeVSCodeSnapshot{})
 
 	result := PollOnce("someuser", nil)
 
