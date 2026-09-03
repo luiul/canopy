@@ -134,24 +134,6 @@ type RegistryEntry struct {
 	// internal/tui's displayState).
 	Stopped bool
 
-	// Branch is the branch checked out in the git work tree containing Cwd
-	// ("" for a cwd outside any work tree, or a detached HEAD), resolved by
-	// stampBranches and carried across polls while fresh (see
-	// BranchResolvedAt). The VS Code column's window match keys on it to
-	// tell same-named worktree folders apart — the same disambiguation
-	// jump.To's branch resolution gives Enter.
-	Branch string
-	// BranchResolvedAt is when Branch was last resolved from git; the
-	// carry-over in stampBranches expires after branchTTL, since a
-	// checkout changes the branch without any signal the poll would
-	// otherwise notice.
-	BranchResolvedAt time.Time
-	// VSCode is the poll's answer to "is a VS Code window open on this
-	// entry's cwd?" (see markVSCodeWindows), for the TUI's VS Code
-	// column. Zero value VSCodeUnknown until a poll with a successful
-	// window listing stamps it.
-	VSCode VSCodeState
-
 	Misses int
 }
 
@@ -371,23 +353,21 @@ type PollResult struct {
 // merged against the previous snapshot so a single transient miss doesn't
 // flicker a row away.
 //
-// The agent-kind scan (scan.ScanAgentProcesses), the whole-machine
-// process table (scan.ScanProcessTable), and the VS Code window listing
-// (snapshotVSCode, for the VS Code column) are independent subprocess
-// calls — none's output feeds another — so they run concurrently rather
-// than back to back; only scan.ResolveCwds (inside externalEntries) has
-// to wait for the agent-kind scan's pids first.
+// The agent-kind scan (scan.ScanAgentProcesses) and the whole-machine
+// process table (scan.ScanProcessTable) are independent `ps` invocations —
+// neither's output feeds the other — so they run concurrently rather than
+// back to back; only scan.ResolveCwds (inside externalEntries) has to wait
+// for the agent-kind scan's pids first.
 func PollOnce(user string, previous []RegistryEntry) PollResult {
 	now := time.Now()
 
 	var (
-		matches  []scan.ProcessMatch
-		scanErr  error
-		table    map[int]scan.ProcessInfo
-		snapshot vscodeSnapshot
+		matches []scan.ProcessMatch
+		scanErr error
+		table   map[int]scan.ProcessInfo
 	)
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		matches, scanErr = scanAgentProcesses(user)
@@ -395,10 +375,6 @@ func PollOnce(user string, previous []RegistryEntry) PollResult {
 	go func() {
 		defer wg.Done()
 		table = scanProcessTable()
-	}()
-	go func() {
-		defer wg.Done()
-		snapshot = snapshotVSCode()
 	}()
 	wg.Wait()
 
@@ -408,9 +384,7 @@ func PollOnce(user string, previous []RegistryEntry) PollResult {
 	}
 
 	rows := externalEntries(matches, table)
-	rows = stampBranches(previous, rows, now)
 	rows = refineExternalStates(previous, rows, now)
 	rows = stampStateSince(previous, rows, now)
-	rows = markVSCodeWindows(rows, snapshot)
 	return PollResult{Entries: MergeRegistry(previous, rows), Warning: warning}
 }

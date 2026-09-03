@@ -115,7 +115,7 @@ func buildRows(entries []registry.RegistryEntry, cursor int, home string, now ti
 	if len(entries) == 0 {
 		// Placeholder message goes in Location: the widest column, and the
 		// only one guaranteed to have room for it regardless of terminal width.
-		placeholder := table.Row{"", "", "", "", "", "", "", "", "", ""}
+		placeholder := table.Row{"", "", "", "", "", "", "", "", ""}
 		placeholder[colLocation] = "no known agent-kind processes found on this machine"
 		return []table.Row{placeholder}
 	}
@@ -125,7 +125,6 @@ func buildRows(entries []registry.RegistryEntry, cursor int, home string, now ti
 			stateCellText(e, now, done),
 			loam.Tag(sinceCellText(e, now, done), i == cursor),
 			surfaceLabel(e.Surface),
-			vscodeCellText(e),
 			location(e, home),
 			cpuCellText(e),
 			ramCellText(e),
@@ -226,22 +225,4 @@ func surfaceLabel(s ancestry.Surface) string {
 		return label
 	}
 	return string(s)
-}
-
-// vscodeCellText is the VS Code column's plain-text cell value: "open"
-// when a VS Code window is open on the session's cwd (see registry's
-// markVSCodeWindows), "-" when checked and none is (the Merge column's
-// own none-word in understory), "?" when the poll couldn't tell (no
-// known cwd, or the window listing failed — Location's own "?"
-// convention for unknown). The cell deliberately never claims "no" off
-// a failed listing.
-func vscodeCellText(e registry.RegistryEntry) string {
-	switch e.VSCode {
-	case registry.VSCodeOpen:
-		return "open"
-	case registry.VSCodeClosed:
-		return "-"
-	default:
-		return "?"
-	}
 }

@@ -285,9 +285,9 @@ func TestViewMarksColumnBordersOnTheHeaderRowSoThereIsSomethingToDrag(t *testing
 	if headerLine == "" {
 		t.Fatalf("View() = %q, want a header line containing \"State\"", m.View())
 	}
-	// 10 columns, so 9 internal borders.
-	if n := strings.Count(headerLine, loam.BorderGlyph); n != 9 {
-		t.Fatalf("header line has %d border glyphs, want 9 (one per internal column border): %q", n, headerLine)
+	// 9 columns, so 8 internal borders.
+	if n := strings.Count(headerLine, loam.BorderGlyph); n != 8 {
+		t.Fatalf("header line has %d border glyphs, want 8 (one per internal column border): %q", n, headerLine)
 	}
 }
 
@@ -1016,9 +1016,8 @@ func TestMouseDragOnlyResizesTheTwoColumnsStraddlingTheDraggedBorder(t *testing.
 	cols := m.table.Columns()
 	_, originY := m.renderHeader()
 	borderX := surfaceBorderX(cols)
-	oldSurfaceWidth, oldVSCodeWidth := cols[colSurface].Width, cols[colVSCode].Width
+	oldSurfaceWidth, oldLocationWidth := cols[colSurface].Width, cols[colLocation].Width
 	oldStateWidth, oldCPUWidth := cols[colState].Width, cols[colCPU].Width
-	oldLocationWidth := cols[colLocation].Width
 
 	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	m = updated.(Model)
@@ -1029,8 +1028,8 @@ func TestMouseDragOnlyResizesTheTwoColumnsStraddlingTheDraggedBorder(t *testing.
 	if got, want := gotCols[colSurface].Width, oldSurfaceWidth+4; got != want {
 		t.Fatalf("Surface width = %d, want %d", got, want)
 	}
-	if got, want := gotCols[colVSCode].Width, oldVSCodeWidth-4; got != want {
-		t.Fatalf("VS Code width = %d, want %d (its own left-hand neighbor absorbs the drag)", got, want)
+	if got, want := gotCols[colLocation].Width, oldLocationWidth-4; got != want {
+		t.Fatalf("Location width = %d, want %d (its own left-hand neighbor absorbs the drag)", got, want)
 	}
 	// Every column not touching the dragged border must stay put — unlike
 	// the old flex-column design, where *any* drag anywhere in the table
@@ -1041,9 +1040,6 @@ func TestMouseDragOnlyResizesTheTwoColumnsStraddlingTheDraggedBorder(t *testing.
 	}
 	if got := gotCols[colCPU].Width; got != oldCPUWidth {
 		t.Fatalf("CPU width = %d, want unchanged %d", got, oldCPUWidth)
-	}
-	if got := gotCols[colLocation].Width; got != oldLocationWidth {
-		t.Fatalf("Location width = %d, want unchanged %d (it isn't this border's neighbor)", got, oldLocationWidth)
 	}
 }
 
@@ -1106,12 +1102,12 @@ func TestMouseDragBetweenTwoAlreadyMinimalColumnsIsANoOp(t *testing.T) {
 }
 
 func TestResizeColumnsNeverOverflowsTheTerminal(t *testing.T) {
-	// The fixed columns sum to 61, plus 20 of cell padding: below a
-	// terminal width of 101, flooring Location at 20 used to push the
+	// The fixed columns sum to 53, plus 18 of cell padding: below a
+	// terminal width of 91, flooring Location at 20 used to push the
 	// table past the terminal's right edge, clipping Kind/PID entirely.
 	// Location dips below its floor instead, down to the hard floor of 8.
 	m := New(999 * time.Second)
-	m.width, m.height = 91, 40
+	m.width, m.height = 80, 40
 	m.resizeColumns()
 
 	cols := m.table.Columns()
@@ -1122,7 +1118,7 @@ func TestResizeColumnsNeverOverflowsTheTerminal(t *testing.T) {
 	if total > m.width {
 		t.Fatalf("got total table width %d, want <= terminal width %d", total, m.width)
 	}
-	if got, want := cols[colLocation].Width, 10; got != want {
+	if got, want := cols[colLocation].Width, 9; got != want {
 		t.Fatalf("Location width = %d, want %d (below its floor of 20, but the table fits)", got, want)
 	}
 
