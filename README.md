@@ -355,11 +355,13 @@ the filesystem, the same as everything else canopy reads.
   two tabs share a cwd. If no open tab matches anymore (e.g. it was closed),
   Enter opens a brand-new Ghostty window at that cwd instead, same
   reuse-or-create behavior as VS Code's own title-based window match.
-- VS Code jump-to matches by window title (folder basename), the same weak
-  key as Ghostty's cwd match: two open windows on differently-located repos
-  that happen to share a leaf folder name are indistinguishable by title
-  alone. Raises the right window but not necessarily the specific
-  integrated-terminal tab within it.
+- VS Code jump-to matches by exact folder path against the window
+  registry (`~/.local/state/vscode-windows/`, written by dashkit's
+  vscode-window-registry extension), so same-named worktrees are no
+  longer indistinguishable. Without the extension it falls back to the
+  old window-title match (folder basename), the same weak key as
+  Ghostty's cwd match. Either way it raises the right window but not
+  necessarily the specific integrated-terminal tab within it.
 - Mouse click-to-jump/acknowledge isn't implemented (keyboard only: arrow
   keys, Enter, c); Bubble Tea's table widget doesn't ship row-click
   handling out of the box the way Textual's `DataTable` does.
