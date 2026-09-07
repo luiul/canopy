@@ -358,10 +358,10 @@ the filesystem, the same as everything else canopy reads.
 - VS Code jump-to matches by exact folder path against the window
   registry (`~/.local/state/vscode-windows/`, written by dashkit's
   vscode-window-registry extension), so same-named worktrees are no
-  longer indistinguishable. Without the extension it falls back to the
-  old window-title match (folder basename), the same weak key as
-  Ghostty's cwd match. Either way it raises the right window but not
-  necessarily the specific integrated-terminal tab within it.
+  longer indistinguishable. Without the extension there is no window
+  detection: jump-to degrades to the `code` CLI's best effort. Either
+  way it raises the right window but not necessarily the specific
+  integrated-terminal tab within it.
 - Mouse click-to-jump/acknowledge isn't implemented (keyboard only: arrow
   keys, Enter, c); Bubble Tea's table widget doesn't ship row-click
   handling out of the box the way Textual's `DataTable` does.
