@@ -39,7 +39,7 @@
  *     frontmost/window-title check) couldn't change what canopy displays
  *     either way, so it was pure complexity with no payoff — dropped.
  *
- * macOS only (matches canopy's own AppleScript-based jump-to); a no-op
+ * macOS only (same as canopy itself); a no-op
  * everywhere else, same as before.
  */
 

@@ -225,8 +225,8 @@ One Go package per concern:
   shared open-or-focus logic (`code --reuse-window`/`-n` for VS Code, Ghostty
   AppleScript for a bare tab), switching to an already-open window when one
   matches the row's working directory, or opening a brand-new one when none
-  does. The AppleScript window detection and switch-or-create behavior
-  itself lives in mycelium, not here, since understory needs the exact
+  does. The window detection and switch-or-create behavior itself
+  lives in mycelium, not here, since understory needs the exact
   same thing for a worktree row with no agent connection of its own.
 - `internal/kill`: delivers signals (SIGTERM/SIGKILL/SIGSTOP/SIGCONT) to a
   row's process for the `x`/`X`/`p`/`D` keybinds, behind a process
@@ -256,17 +256,17 @@ One Go package per concern:
 ```bash
 cd canopy
 scripts/install.sh   # builds, installs to ~/.local/bin, code-signs with a
-                     # stable local identity so macOS Accessibility/
-                     # Automation permission (needed by mycelium's
-                     # window-detection AppleScript) survives future
-                     # rebuilds instead of resetting every time -- see
-                     # the script's own comment for why and how to set
-                     # up that signing identity once
+                     # stable local identity so the macOS Automation
+                     # permission for Ghostty (needed by mycelium's
+                     # jump-to for terminal rows; VS Code rows go through
+                     # the window registry and need no permission)
+                     # survives future rebuilds instead of resetting
+                     # every time -- see the script's own comment for
+                     # why and how to set up that signing identity once
 ```
 
 Or, without the stable signature (fine for a one-off build, but expect
-to re-grant Accessibility/Automation to VS Code/Ghostty + System Events
-after every rebuild):
+to re-grant Automation for Ghostty after every rebuild):
 
 ```bash
 cd canopy
@@ -354,7 +354,7 @@ the filesystem, the same as everything else canopy reads.
 - Ghostty jump-to matches by working directory, not tty/pid; ambiguous if
   two tabs share a cwd. If no open tab matches anymore (e.g. it was closed),
   Enter opens a brand-new Ghostty window at that cwd instead, same
-  reuse-or-create behavior as VS Code's own title-based window match.
+  reuse-or-create behavior as VS Code's.
 - VS Code jump-to matches by exact folder path against the window
   registry (`~/.local/state/vscode-windows/`, written by dashkit's
   vscode-window-registry extension), so same-named worktrees are no
