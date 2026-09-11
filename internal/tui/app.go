@@ -366,8 +366,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// below runs; the answer discipline itself (y confirms,
 		// n/esc/enter cancel, everything else swallowed, ctrl+c quits)
 		// lives in dashkit's confirm package, shared with understory so
-		// the two can't drift apart. An explicit cancel is silent; only
-		// the auto-cancel timeout notifies.
+		// the two can't drift apart. Every resolved prompt notifies,
+		// an explicit cancel included: a quiet cancel reads exactly like
+		// a swallowed keypress, since every other key is swallowed.
 		if m.pendingKill.Active() {
 			switch confirm.Classify(msg) {
 			case confirm.Confirm:
@@ -376,7 +377,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, killCmd(pending.entries, pending.sig)
 			case confirm.Cancel:
 				m.pendingKill.Resolve()
-				return m, nil
+				return m, m.setNotify(confirm.CancelText(), false)
 			case confirm.Quit:
 				m.quitting = true
 				return m, tea.Quit

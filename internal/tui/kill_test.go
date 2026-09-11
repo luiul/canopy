@@ -158,9 +158,9 @@ func TestYConfirmsAnArmedPrompt(t *testing.T) {
 
 // TestNEscAndEnterCancelAnArmedPromptSilently pins the one answer set
 // both dashboards share: y confirms; n, esc, or enter cancel (enter
-// honors the prompt's [y/N]). An explicit cancel is silent: only the
-// auto-cancel timeout notifies.
-func TestNEscAndEnterCancelAnArmedPromptSilently(t *testing.T) {
+// honors the prompt's [y/N]). Every resolved prompt notifies, an
+// explicit cancel included: it answers with the shared CancelText.
+func TestNEscAndEnterCancelAnArmedPromptNotifying(t *testing.T) {
 	calls := withKillProcess(t, true)
 
 	for _, key := range []string{"n", "esc", "enter"} {
@@ -169,17 +169,14 @@ func TestNEscAndEnterCancelAnArmedPromptSilently(t *testing.T) {
 		updated, _ := m.Update(keyMsg("x"))
 		m = updated.(Model)
 
-		updated, cmd := m.Update(keyMsg(key))
+		updated, _ = m.Update(keyMsg(key))
 		m = updated.(Model)
 
 		if m.pendingKill.Active() {
 			t.Fatalf("key %q: want the prompt cancelled", key)
 		}
-		if cmd != nil {
-			t.Fatalf("key %q: want no command from an explicit cancel", key)
-		}
-		if m.notification != "" {
-			t.Fatalf("key %q: got notification %q, want an explicit cancel to stay silent", key, m.notification)
+		if m.notification != confirm.CancelText() || m.notifyIsError {
+			t.Fatalf("key %q: got notification %q (err=%v), want %q", key, m.notification, m.notifyIsError, confirm.CancelText())
 		}
 	}
 	if len(*calls) != 0 {
