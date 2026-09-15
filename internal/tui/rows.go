@@ -98,10 +98,28 @@ func sortEntries(entries []registry.RegistryEntry, done map[string]doneEpisode) 
 // (done.go) to reflect a dismissal immediately, for the same reason: don't
 // wait for the next poll to show it.
 func (m *Model) refreshCursorTag() {
-	if len(m.entries) == 0 {
+	displayed := m.displayedEntries()
+	if len(displayed) == 0 {
 		return
 	}
-	m.table.SetRows(buildRows(m.entries, m.table.Cursor(), m.home, time.Now(), m.done))
+	m.table.SetRows(buildRows(displayed, m.table.Cursor(), m.home, time.Now(), m.done, m.filterQuery))
+}
+
+// filterCells are the cell strings a filterQuery is matched against (see
+// github.com/luiul/dashkit/sieve): the row's stable text columns, which
+// are State's display word, Surface, Location, Kind, and PID. The
+// volatile columns (Since, CPU, RAM, Uptime) are deliberately excluded:
+// their values tick over under the user's fingers, so a row would
+// match-or-not from one poll to the next for reasons invisible in the
+// query.
+func filterCells(e registry.RegistryEntry, home string, done map[string]doneEpisode) []string {
+	return []string{
+		displayState(e, done),
+		surfaceLabel(e.Surface),
+		location(e, home),
+		e.Kind,
+		fmt.Sprintf("%d", e.Pid),
+	}
 }
 
 // buildRows constructs the table's rows from already-sorted entries.
@@ -111,12 +129,20 @@ func (m *Model) refreshCursorTag() {
 // (applyEntries) and on every cursor move in between polls (refreshCursorTag),
 // so the tag tracks the highlighted row immediately rather than only once
 // every poll interval.
-func buildRows(entries []registry.RegistryEntry, cursor int, home string, now time.Time, done map[string]doneEpisode) []table.Row {
+func buildRows(entries []registry.RegistryEntry, cursor int, home string, now time.Time, done map[string]doneEpisode, filterQuery string) []table.Row {
 	if len(entries) == 0 {
 		// Placeholder message goes in Location: the widest column, and the
-		// only one guaranteed to have room for it regardless of terminal width.
+		// only one guaranteed to have room for it regardless of terminal
+		// width. An active filter with zero matches says so (and how to
+		// back out) rather than claiming the machine has no sessions at
+		// all — the unfiltered message would be a lie about why the table
+		// is empty.
 		placeholder := table.Row{"", "", "", "", "", "", "", "", ""}
-		placeholder[colLocation] = "no known agent-kind processes found on this machine"
+		if filterQuery != "" {
+			placeholder[colLocation] = fmt.Sprintf("no sessions match filter %q (esc clears)", filterQuery)
+		} else {
+			placeholder[colLocation] = "no known agent-kind processes found on this machine"
+		}
 		return []table.Row{placeholder}
 	}
 	rows := make([]table.Row, len(entries))

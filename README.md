@@ -63,7 +63,7 @@ working    12s     VS Code    ~/projects/personal/canopy                4%    27
 done       3m      VS Code    ~/worktrees/.../isa-orchestration         0%    140M    2h30m   pi       9514
 idle       1h20m   Ghostty    ~/some/other/project                     0%    95M     1d       pi       65834
 
-↑/↓ move · enter jump · c dismiss · x kill · ? help · q quit
+↑/↓ move · enter jump · c dismiss · x kill · / filter · ? help · q quit
 ```
 
 (the currently selected row also gets a full-width grey highlight in the
@@ -71,6 +71,14 @@ real terminal output, not shown here since it's just a background color)
 
 The footer only lists the few most-used bindings; `?` opens the full
 keybinding list as an overlay (any key closes it again).
+
+`/` filters the rows, the same gesture jira-today's fzf picker uses:
+typing narrows the table fuzzily (a subsequence match over the row's
+state, surface, location, kind, and pid), `enter` still jumps while the
+input is focused, and `esc` leaves the input with the filter still
+applied. A second `esc`, now back in normal mode, clears it. While the
+input is focused every letter is query text, not a binding, so typing
+`x` filters instead of killing.
 
 The view polls on a short interval, but also refreshes the moment the
 terminal window regains focus: the typical flow is starting a session in

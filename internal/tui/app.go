@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/luiul/canopy/internal/registry"
 	"github.com/luiul/dashkit/confirm"
 	"github.com/luiul/dashkit/loam"
+	"github.com/luiul/dashkit/sieve"
 	"github.com/luiul/dashkit/trellis"
 )
 
@@ -214,6 +216,20 @@ type Model struct {
 	// thought they were aiming at the table.
 	showHelp bool
 
+	// filterQuery is the applied row filter (fuzzy subsequence, see
+	// github.com/luiul/dashkit/sieve), matched against each row's stable
+	// text columns (see filterCells in rows.go). filtering is true while
+	// the /-entered filter input owns the keyboard: every printable key
+	// is query text then, not a binding (typing "x" must never arm a
+	// kill), the same modal discipline pendingKill has. esc leaves the
+	// input with the query still applied; esc in normal mode clears it.
+	// The semantics mirror the jira-today fzf picker, minus its
+	// c-to-clear: c is dismiss here, and one key meaning two things
+	// across the two dashboards is the worst kind of inconsistency.
+	filterQuery string
+	filtering   bool
+	filterInput textinput.Model
+
 	width, height int
 	quitting      bool
 }
@@ -249,6 +265,9 @@ func New(interval time.Duration) Model {
 	styles.Selected = lipgloss.NewStyle()
 	t.SetStyles(styles)
 
+	fi := textinput.New()
+	fi.Prompt = "filter> "
+
 	return Model{
 		interval:    interval,
 		user:        currentUser(),
@@ -256,6 +275,7 @@ func New(interval time.Duration) Model {
 		table:       t,
 		bellEnabled: true,
 		resizer:     trellis.New(),
+		filterInput: fi,
 	}
 }
 
@@ -385,6 +405,59 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		// The filter input is modal too: while it's focused, every
+		// printable key is query text, not a binding (typing "x" must
+		// never arm a kill, typing "q" must never quit). esc leaves the
+		// input with the query still applied (jira-today's picker
+		// semantics); enter keeps its row action, the same way
+		// jira-today keeps enter bound mid-filter, and leaves the input
+		// since the jump is the end of the filtering flow; arrows keep
+		// moving the table's cursor, since the query text itself never
+		// wants them; ctrl+c quits, as it does from everywhere.
+		if m.filtering {
+			switch msg.String() {
+			case "esc":
+				m.filtering = false
+				m.filterInput.Blur()
+				return m, nil
+			case "ctrl+c":
+				m.quitting = true
+				return m, tea.Quit
+			case "enter":
+				m.filtering = false
+				m.filterInput.Blur()
+				entry, ok := m.selectedEntry()
+				if !ok {
+					return m, nil
+				}
+				m.acknowledge(entry)
+				return m, jumpCmd(entry)
+			case "up", "down", "pgup", "pgdown":
+				var cmd tea.Cmd
+				m.table, cmd = m.table.Update(msg)
+				m.refreshCursorTag()
+				return m, cmd
+			case "ctrl+u":
+				// The shell's kill-line: clear the whole query in one
+				// keystroke (jira-today's c does the same mid-filter).
+				m.filterInput.SetValue("")
+			}
+			var cmd tea.Cmd
+			m.filterInput, cmd = m.filterInput.Update(msg)
+			if v := m.filterInput.Value(); v != m.filterQuery {
+				// The selection to preserve must be read BEFORE the query
+				// changes: displayedEntries is about to start answering
+				// against the new query, but the table's cursor still
+				// indexes into the old one.
+				previousKey := ""
+				if e, ok := m.selectedEntry(); ok {
+					previousKey = e.Key()
+				}
+				m.filterQuery = v
+				m.resetRows(previousKey)
+			}
+			return m, cmd
+		}
 		// The help overlay is read-only: any keypress closes it without
 		// acting on the table underneath (see Model.showHelp), except
 		// ctrl+c, which quits like it does from everywhere.
@@ -402,6 +475,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "r":
 			return m, pollCmd(m.user, m.entries)
+		case "/":
+			// Enter filter mode with the current query ready to edit
+			// (cursor at its end), so refining an applied filter is /
+			// then typing, not / then retyping.
+			m.filtering = true
+			m.filterInput.SetValue(m.filterQuery)
+			m.filterInput.CursorEnd()
+			return m, m.filterInput.Focus()
+		case "esc":
+			// Not mid-filter (that esc is intercepted above): clear an
+			// applied filter. A no-op when there is nothing to clear, so
+			// esc always just backs out one layer.
+			if m.filterQuery != "" {
+				previousKey := ""
+				if e, ok := m.selectedEntry(); ok {
+					previousKey = e.Key()
+				}
+				m.filterQuery = ""
+				m.filterInput.SetValue("")
+				m.resetRows(previousKey)
+			}
+			return m, nil
 		case "?":
 			m.showHelp = true
 			return m, nil
@@ -580,17 +675,37 @@ func clampInt(v, lo, hi int) int {
 }
 
 // selectedEntry returns the RegistryEntry backing the currently highlighted
-// row, or ok=false if there are no real entries (e.g. only the placeholder
-// row is showing).
+// row, or ok=false if there are no displayed entries (e.g. only the
+// placeholder row is showing).
 func (m Model) selectedEntry() (registry.RegistryEntry, bool) {
-	if len(m.entries) == 0 {
+	displayed := m.displayedEntries()
+	if len(displayed) == 0 {
 		return registry.RegistryEntry{}, false
 	}
 	idx := m.table.Cursor()
-	if idx < 0 || idx >= len(m.entries) {
+	if idx < 0 || idx >= len(displayed) {
 		return registry.RegistryEntry{}, false
 	}
-	return m.entries[idx], true
+	return displayed[idx], true
+}
+
+// displayedEntries is the view's current row set: every polled entry, or
+// just the ones fuzzy-matching filterQuery while a filter is applied
+// (sieve.Match over filterCells). m.entries itself always holds the full
+// set, so poll-to-poll diffing (needsBell, updateDoneTracking) and the D
+// bulk kill never see the filter at all; only what renders and what the
+// cursor can land on is filtered.
+func (m Model) displayedEntries() []registry.RegistryEntry {
+	if m.filterQuery == "" {
+		return m.entries
+	}
+	out := make([]registry.RegistryEntry, 0, len(m.entries))
+	for _, e := range m.entries {
+		if sieve.Match(m.filterQuery, filterCells(e, m.home, m.done)...) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // summarizeKillResults folds per-entry kill results into the single footer
@@ -665,24 +780,36 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 	sortEntries(fresh, m.done)
 	m.entries = fresh
 
+	m.resetRows(previousKey)
+	return bell
+}
+
+// resetRows rebuilds the table's rows from the current (possibly
+// filtered) displayed set, restoring the cursor to previousKey's row when
+// that entry is still displayed and otherwise keeping it roughly where it
+// was, clamped. This is the shared tail of applyEntries (the entry set
+// changed) and the filter editing paths (only the query changed): the two
+// differ only in who mutated what before calling it.
+func (m *Model) resetRows(previousKey string) {
+	displayed := m.displayedEntries()
+
 	cursor := m.table.Cursor()
 	if previousKey != "" {
-		for i, e := range fresh {
+		for i, e := range displayed {
 			if e.Key() == previousKey {
 				cursor = i
 				break
 			}
 		}
 	}
-	if len(fresh) == 0 {
+	if len(displayed) == 0 {
 		cursor = 0
 	} else {
-		cursor = clampInt(cursor, 0, len(fresh)-1)
+		cursor = clampInt(cursor, 0, len(displayed)-1)
 	}
 
-	m.table.SetRows(buildRows(fresh, cursor, m.home, time.Now(), m.done))
+	m.table.SetRows(buildRows(displayed, cursor, m.home, time.Now(), m.done, m.filterQuery))
 	m.table.SetCursor(cursor)
-	return bell
 }
 
 // stateContentWidth, surfaceContentWidth, ramContentWidth,
@@ -788,7 +915,10 @@ func (m *Model) resizeColumns() {
 func (m Model) renderHeader() (text string, tableOriginY int) {
 	text = titleStyle.Render("canopy") + subtleStyle.Render(" — agent sessions on this machine")
 	lines := 1
-	if summary := summaryLine(m.entries, m.done); summary != "" {
+	// The summary describes the rows actually on screen: while a filter
+	// is applied it counts the matching sessions, and the footer's
+	// filter readout says why the total shrank (see footerView).
+	if summary := summaryLine(m.displayedEntries(), m.done); summary != "" {
 		text += "\n" + summary
 		lines++
 	}
@@ -821,6 +951,8 @@ var helpEntries = []loam.HelpBinding{
 	{Key: "p", Desc: "pause (SIGSTOP) / resume (SIGCONT) the selected session"},
 	{Key: "D", Desc: "terminate every done session (SIGTERM), with confirmation"},
 	{Key: "r", Desc: "refresh now"},
+	{Key: "/", Desc: "filter the rows (fuzzy); enter still jumps while typing, esc applies the filter and leaves the input"},
+	{Key: "esc", Desc: "clear the applied filter (mid-filter: leave the input, filter stays applied)"},
 	{Key: "mouse", Desc: "drag a column border on the header row to resize the two columns it joins"},
 	{Key: "?", Desc: "this help"},
 	{Key: "q, ctrl+c", Desc: "quit"},
@@ -836,9 +968,13 @@ func (m Model) helpView() string {
 
 // footerView renders the bottom line: the confirmation prompt while one
 // is armed (it's modal and swallows all other keys, so it replaces
-// everything else), else the latest notification, else the help overlay's
-// close hint, else the default keybinding hints, kept to the essentials
-// now that ? opens the full list.
+// everything else), else the filter input while it's focused (also
+// modal, see Update), else the latest notification, else the help
+// overlay's close hint, else the default keybinding hints — with an
+// applied filter's readout in place of the hints, so a filtered view
+// always says so. Kept to one line in every state, so the table's
+// height math (Update's WindowSizeMsg case) never has to care which
+// footer is showing.
 func (m Model) footerView() string {
 	if m.pendingKill.Active() {
 		style := promptStyle
@@ -846,6 +982,9 @@ func (m Model) footerView() string {
 			style = errorStyle
 		}
 		return style.Render(m.killPromptText())
+	}
+	if m.filtering {
+		return m.filterInput.View()
 	}
 	if m.notification != "" {
 		style := okStyle
@@ -857,7 +996,10 @@ func (m Model) footerView() string {
 	if m.showHelp {
 		return subtleStyle.Render("press any key to close")
 	}
-	return subtleStyle.Render("↑/↓ move · enter jump · c dismiss · x kill · ? help · q quit")
+	if m.filterQuery != "" {
+		return subtleStyle.Render(fmt.Sprintf("filter: %s · esc clear · / edit", m.filterQuery))
+	}
+	return subtleStyle.Render("↑/↓ move · enter jump · c dismiss · x kill · / filter · ? help · q quit")
 }
 
 // View implements tea.Model.

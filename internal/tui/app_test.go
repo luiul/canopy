@@ -394,7 +394,7 @@ func TestBuildRowsTagsOnlyTheCursorRowsSinceCell(t *testing.T) {
 		entry(2, ancestry.Ghostty, "working"),
 	}
 
-	rows := buildRows(entries, 1, "", time.Now(), nil)
+	rows := buildRows(entries, 1, "", time.Now(), nil, "")
 
 	if strings.Contains(rows[0][colSince], cursorSentinel) {
 		t.Fatalf("got cursorSentinel on non-cursor row 0's Since cell %q, want it absent", rows[0][colSince])
