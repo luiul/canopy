@@ -265,12 +265,12 @@ One Go package per concern:
 cd canopy
 scripts/install.sh   # builds, installs to ~/.local/bin, code-signs with a
                      # stable local identity so the macOS Automation
-                     # permission for Ghostty (needed by mycelium's
-                     # jump-to for terminal rows; VS Code rows go through
-                     # the window registry and need no permission)
-                     # survives future rebuilds instead of resetting
-                     # every time -- see the script's own comment for
-                     # why and how to set up that signing identity once
+                     # permission (needed by mycelium's jump-to on every
+                     # run: System Events for VS Code windows, Ghostty's
+                     # scripting bridge for terminal rows) survives future
+                     # rebuilds instead of resetting every time -- see the
+                     # script's own comment for why and how to set up that
+                     # signing identity once
 ```
 
 Or, without the stable signature (fine for a one-off build, but expect
@@ -364,12 +364,11 @@ the filesystem, the same as everything else canopy reads.
   Enter opens a brand-new Ghostty window at that cwd instead, same
   reuse-or-create behavior as VS Code's.
 - VS Code jump-to matches by exact folder path against the window
-  registry (`~/.local/state/vscode-windows/`, written by dashkit's
-  vscode-window-registry extension), so same-named worktrees are no
-  longer indistinguishable. Without the extension there is no window
-  detection: jump-to degrades to the `code` CLI's best effort. Either
-  way it raises the right window but not necessarily the specific
-  integrated-terminal tab within it.
+  titles (the dotfiles `window.title` setting renders each title as the
+  opened folder's full path), so same-named worktrees are no longer
+  indistinguishable. The matched window is raised directly with an
+  AXRaise: the right window comes to front, but not necessarily the
+  specific integrated-terminal tab within it.
 - Mouse click-to-jump/acknowledge isn't implemented (keyboard only: arrow
   keys, Enter, c); Bubble Tea's table widget doesn't ship row-click
   handling out of the box the way Textual's `DataTable` does.

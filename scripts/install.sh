@@ -10,11 +10,11 @@ set -euo pipefail
 # itself keyed to that exact binary's content hash (cdhash). Rebuilding
 # changes the hash, so macOS treats the new binary as a brand-new,
 # never-before-seen app and drops any Automation permission already
-# granted to the old one. canopy needs it (for mycelium's Ghostty
-# AppleScript, backing jump's open-or-focus for terminal rows; VS Code
-# rows go through the window registry and need no permission) on every
-# run, so without a stable signature it'd need re-approving after every
-# single rebuild.
+# granted to the old one. canopy needs it (for mycelium's AppleScript,
+# backing jump's open-or-focus on every run: System Events for the VS
+# Code window listing and raise, Ghostty's scripting bridge for
+# terminal rows) on every run, so without a stable signature it'd need
+# re-approving after every single rebuild.
 #
 # Signing with a real certificate (self-signed is fine for local dev)
 # anchors the permission to that certificate + a fixed --identifier
@@ -42,8 +42,8 @@ if security find-identity -v -p codesigning 2>/dev/null | grep -q "\"$CERT_NAME\
 	echo "Installed and signed $DEST as $IDENTIFIER."
 else
 	echo "warning: no codesigning identity named \"$CERT_NAME\" found in the login keychain." >&2
-	echo "warning: $DEST is only ad-hoc signed; macOS will likely need Automation" >&2
-	echo "warning: (Ghostty) permission re-granted after every future rebuild. See scripts/install.sh's" >&2
+	echo "warning: $DEST is only ad-hoc signed; macOS will likely need the Automation" >&2
+	echo "warning: permission re-granted after every future rebuild. See scripts/install.sh's" >&2
 	echo "warning: own comment for why, and how to set up a stable local signing identity." >&2
 	echo "Installed (unsigned) $DEST." >&2
 fi
