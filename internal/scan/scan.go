@@ -4,6 +4,7 @@ package scan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -17,8 +18,33 @@ import (
 // an unusually loaded machine) would block that poll's goroutine
 // indefinitely. Comfortably above a normal ps/lsof call (which returns in
 // milliseconds) but still short enough that a hung one can't pile up
-// unbounded across repeated poll ticks.
-const execTimeout = 5 * time.Second
+// unbounded across repeated poll ticks. A var, not a const, so tests can
+// shrink it: exercising the timeout path against the real 5s deadline
+// would make every such test take seconds.
+var execTimeout = 5 * time.Second
+
+// ErrScanTimeout marks a ps/lsof invocation that hung past execTimeout and
+// had to be killed by the context deadline (ps normally returns in
+// milliseconds, so a hang means transient system pressure: memory
+// pressure, a spawn storm, a wedged process stalling the process-table
+// walk), as opposed to ps failing on its own (missing binary, sandbox,
+// permissions). registry.PollOnce words its user-facing warning
+// differently for the two, since "signal: killed" (what an unwrapped
+// deadline kill surfaces as) reads like canopy itself crashed.
+var ErrScanTimeout = errors.New("timed out")
+
+// retryBackoff pauses between ScanAgentProcesses' single failed attempt
+// and its one retry: long enough for a momentary pressure blip to pass,
+// short enough to add no visible latency to a poll. A var so tests don't
+// pay the real delay.
+var retryBackoff = 250 * time.Millisecond
+
+// runCommand is the package's single exec seam, swapped out in tests so
+// hang/timeout/retry behavior is exercisable without a real process table
+// (mirroring the registry package's seams for this package's scanners).
+var runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).Output()
+}
 
 // KnownKinds is the set of recognized agent CLI kinds that canopy tracks.
 var KnownKinds = map[string]bool{
@@ -98,14 +124,40 @@ func ParsePsOutput(output string) []ProcessMatch {
 // environment, permissions, or the execTimeout above expiring) is a
 // meaningfully different situation from a `ps` that ran fine and simply
 // found zero matching processes.
+//
+// A failed first attempt is retried once before the error is returned: a
+// hung `ps` is almost always a momentary system-pressure blip, and a
+// failed scan is costly upstream (registry surfaces it as a visible
+// warning). A genuinely broken invocation (missing binary, permissions)
+// fails fast both times, so the retry costs nothing there.
 func ScanAgentProcesses(user string) ([]ProcessMatch, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "ps", "-u", user, "-o", "pid=,tty=,args=").Output()
+	out, err := scanAgentProcessesOnce(user)
 	if err != nil {
-		return nil, fmt.Errorf("ps: %w", err)
+		time.Sleep(retryBackoff)
+		out, err = scanAgentProcessesOnce(user)
+	}
+	if err != nil {
+		return nil, err
 	}
 	return ParsePsOutput(string(out)), nil
+}
+
+// scanAgentProcessesOnce is one attempt of ScanAgentProcesses' ps call,
+// under execTimeout. A deadline kill wraps ErrScanTimeout so callers can
+// tell "our timeout killed a hung ps" apart from ps failing on its own or
+// being killed externally (an external SIGKILL also surfaces as "signal:
+// killed", but leaves the context unexpired).
+func scanAgentProcessesOnce(user string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+	out, err := runCommand(ctx, "ps", "-u", user, "-o", "pid=,tty=,args=")
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("ps: %w after %s (killed the hung process)", ErrScanTimeout, execTimeout)
+		}
+		return nil, fmt.Errorf("ps: %w", err)
+	}
+	return out, nil
 }
 
 // ParseLsofCwdOutput is the pure parsing logic for `lsof -a -d cwd -Fn`
@@ -149,7 +201,7 @@ func ResolveCwds(pids []int) map[int]string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "lsof", "-a", "-p", strings.Join(pidStrs, ","), "-d", "cwd", "-Fn").Output()
+	out, err := runCommand(ctx, "lsof", "-a", "-p", strings.Join(pidStrs, ","), "-d", "cwd", "-Fn")
 	if err != nil {
 		return map[int]string{}
 	}
@@ -336,7 +388,7 @@ func ParseProcessTableOutput(output string) map[int]ProcessInfo {
 func ScanProcessTable() map[int]ProcessInfo {
 	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "ps", "-A", "-o", "pid=,ppid=,pcpu=,rss=,etime=,tty=,time=,state=,comm=").Output()
+	out, err := runCommand(ctx, "ps", "-A", "-o", "pid=,ppid=,pcpu=,rss=,etime=,tty=,time=,state=,comm=")
 	if err != nil {
 		return map[int]ProcessInfo{}
 	}

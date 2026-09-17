@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -408,13 +409,63 @@ func TestPollOnceSurfacesAWarningWhenTheAgentScanFails(t *testing.T) {
 	}
 	scanProcessTable = func() map[int]scan.ProcessInfo { return map[int]scan.ProcessInfo{} }
 
-	result := PollOnce("someuser", nil)
+	prev := entry(1, "pi", ancestry.Ghostty, "idle")
+	result := PollOnce("someuser", []RegistryEntry{prev})
 
 	if result.Warning == "" {
 		t.Fatalf("got empty Warning, want a non-empty one when the agent scan itself failed")
 	}
-	if len(result.Entries) != 0 {
-		t.Fatalf("got %+v, want no entries", result.Entries)
+	// A failed scan is no evidence the agent exited: the previous entry
+	// comes back verbatim, not aged toward MissLimit eviction.
+	if len(result.Entries) != 1 || result.Entries[0].Pid != 1 || result.Entries[0].Misses != 0 {
+		t.Fatalf("got %+v, want the previous entry preserved with Misses untouched", result.Entries)
+	}
+}
+
+func TestPollOnceWordsATimeoutWarningWithoutTheRawKillSignal(t *testing.T) {
+	// A deadline-killed `ps` surfaces as "signal: killed", which reads
+	// like canopy itself crashed; the banner should say what happened.
+	previousScan, previousTable := scanAgentProcesses, scanProcessTable
+	t.Cleanup(func() { scanAgentProcesses, scanProcessTable = previousScan, previousTable })
+	scanAgentProcesses = func(string) ([]scan.ProcessMatch, error) {
+		return nil, fmt.Errorf("ps: %w after 5s (killed the hung process)", scan.ErrScanTimeout)
+	}
+	scanProcessTable = func() map[int]scan.ProcessInfo { return map[int]scan.ProcessInfo{} }
+
+	result := PollOnce("someuser", nil)
+
+	if !strings.Contains(result.Warning, "timed out") || strings.Contains(result.Warning, "signal: killed") {
+		t.Fatalf("got Warning %q, want a plain timeout message without the raw kill signal", result.Warning)
+	}
+}
+
+func TestPollOnceRebaselinesFromPreservedEntriesAfterTheScanRecovers(t *testing.T) {
+	previousScan, previousTable, previousCwds := scanAgentProcesses, scanProcessTable, resolveCwds
+	t.Cleanup(func() { scanAgentProcesses, scanProcessTable, resolveCwds = previousScan, previousTable, previousCwds })
+
+	failing := func(string) ([]scan.ProcessMatch, error) { return nil, fmt.Errorf("ps: exit status 1") }
+	scanAgentProcesses = failing
+	scanProcessTable = func() map[int]scan.ProcessInfo { return map[int]scan.ProcessInfo{} }
+	resolveCwds = func([]int) map[int]string { return map[int]string{} }
+
+	prev := entry(1, "pi", ancestry.Ghostty, "idle")
+	failed := PollOnce("someuser", []RegistryEntry{prev})
+	if len(failed.Entries) != 1 {
+		t.Fatalf("got %+v, want the previous entry preserved through the outage", failed.Entries)
+	}
+
+	// The scan recovers and finds only a different agent: the preserved
+	// entry is merged against the fresh snapshot like any other previous
+	// entry, so it gets its first genuine miss, not an eviction.
+	scanAgentProcesses = func(string) ([]scan.ProcessMatch, error) {
+		return []scan.ProcessMatch{{Pid: 2, Tty: "s001", Kind: "claude", Args: "claude"}}, nil
+	}
+	recovered := PollOnce("someuser", failed.Entries)
+	if recovered.Warning != "" {
+		t.Fatalf("got Warning %q, want empty once the scan recovers", recovered.Warning)
+	}
+	if len(recovered.Entries) != 2 || recovered.Entries[0].Pid != 1 || recovered.Entries[0].Misses != 1 || recovered.Entries[1].Pid != 2 {
+		t.Fatalf("got %+v, want the preserved entry with one miss plus the fresh one", recovered.Entries)
 	}
 }
 

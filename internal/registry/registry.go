@@ -13,6 +13,7 @@
 package registry
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -341,9 +342,9 @@ func MergeRegistry(previous, fresh []RegistryEntry) []RegistryEntry {
 // ScanAgentProcesses) itself failed to run at all — missing binary,
 // sandboxed environment, permissions, a hung `ps` past scan.execTimeout —
 // as opposed to running fine and simply finding zero matching processes.
-// Those two situations render identically in Entries (nil either way);
-// Warning is what lets the tui package tell them apart instead of
-// silently showing the same empty-table placeholder for both.
+// On a failure Entries is the previous snapshot verbatim (see PollOnce),
+// and Warning is what tells the user the table is stale rather than
+// silently looking identical to "no sessions".
 type PollResult struct {
 	Entries []RegistryEntry
 	Warning string
@@ -351,7 +352,9 @@ type PollResult struct {
 
 // PollOnce takes one full snapshot of every known-kind agent process,
 // merged against the previous snapshot so a single transient miss doesn't
-// flicker a row away.
+// flicker a row away. If the scan itself fails, the previous snapshot is
+// returned verbatim instead (with a Warning): a failed scan is no
+// evidence anything exited, so nothing is aged toward MissLimit eviction.
 //
 // The agent-kind scan (scan.ScanAgentProcesses) and the whole-machine
 // process table (scan.ScanProcessTable) are independent `ps` invocations —
@@ -378,13 +381,26 @@ func PollOnce(user string, previous []RegistryEntry) PollResult {
 	}()
 	wg.Wait()
 
-	var warning string
 	if scanErr != nil {
-		warning = fmt.Sprintf("agent process scan failed: %v", scanErr)
+		// A failed scan says nothing about whether the agents exited: they
+		// may be perfectly alive, we simply don't know. Return the
+		// previous snapshot verbatim — no MergeRegistry, no Misses aging —
+		// so a transient `ps` hang doesn't evict rows that MissLimit
+		// would otherwise drop after two failed polls (4s at the default
+		// interval). The warning banner is the signal that the table is
+		// stale; the next successful poll re-baselines from these
+		// preserved entries as usual.
+		var warning string
+		if errors.Is(scanErr, scan.ErrScanTimeout) {
+			warning = "agent process scan timed out (system overloaded?); showing last known sessions"
+		} else {
+			warning = fmt.Sprintf("agent process scan failed: %v", scanErr)
+		}
+		return PollResult{Entries: previous, Warning: warning}
 	}
 
 	rows := externalEntries(matches, table)
 	rows = refineExternalStates(previous, rows, now)
 	rows = stampStateSince(previous, rows, now)
-	return PollResult{Entries: MergeRegistry(previous, rows), Warning: warning}
+	return PollResult{Entries: MergeRegistry(previous, rows)}
 }

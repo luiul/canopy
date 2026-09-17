@@ -357,8 +357,11 @@ the filesystem, the same as everything else canopy reads.
 - Idle/working for non-`pi` surfaces (and `pi` itself without the extension
   above installed) is a CPU% heuristic, not a real status.
 - If the underlying agent-process scan itself fails to run (as opposed to
-  running fine and finding zero matches), canopy shows a warning banner in
-  the header instead of silently looking identical to "no sessions."
+  running fine and finding zero matches, e.g. a `ps` hung past its 5s
+  deadline under system load), canopy keeps the last known sessions on
+  screen (a failed scan is no evidence anything exited) and shows a
+  warning banner in the header, instead of silently looking identical to
+  "no sessions."
 - Ghostty jump-to matches by working directory, not tty/pid; ambiguous if
   two tabs share a cwd. If no open tab matches anymore (e.g. it was closed),
   Enter opens a brand-new Ghostty window at that cwd instead, same

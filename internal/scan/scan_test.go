@@ -1,6 +1,9 @@
 package scan
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"reflect"
 	"sort"
 	"testing"
@@ -183,5 +186,70 @@ func TestParsePsCPUTime(t *testing.T) {
 		if _, err := parsePsCPUTime(bad); err == nil {
 			t.Errorf("parsePsCPUTime(%q): want an error, got none", bad)
 		}
+	}
+}
+
+// stubExec swaps in a fake runCommand (and shrunk timing knobs) for the
+// duration of a test. The real execTimeout is 5s; exercising the timeout
+// path against it would take seconds per test.
+func stubExec(t *testing.T, fn func(ctx context.Context, name string, args ...string) ([]byte, error)) {
+	t.Helper()
+	previousRun, previousTimeout, previousBackoff := runCommand, execTimeout, retryBackoff
+	runCommand = fn
+	execTimeout, retryBackoff = 20*time.Millisecond, time.Millisecond
+	t.Cleanup(func() { runCommand, execTimeout, retryBackoff = previousRun, previousTimeout, previousBackoff })
+}
+
+func TestScanAgentProcessesRetriesOnceAndRecovers(t *testing.T) {
+	calls := 0
+	stubExec(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calls++
+		if calls == 1 {
+			return nil, fmt.Errorf("ps: boom")
+		}
+		return []byte("  123 ttys000 pi\n"), nil
+	})
+
+	matches, err := ScanAgentProcesses("someuser")
+	if err != nil {
+		t.Fatalf("got error %v, want the retry to recover", err)
+	}
+	if len(matches) != 1 || matches[0].Pid != 123 {
+		t.Fatalf("got %+v, want the retried ps output parsed", matches)
+	}
+	if calls != 2 {
+		t.Fatalf("got %d calls, want exactly 2 (fail, retry)", calls)
+	}
+}
+
+func TestScanAgentProcessesReportsATypedTimeoutWhenPsHangs(t *testing.T) {
+	calls := 0
+	stubExec(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calls++
+		<-ctx.Done() // hang until the deadline kills us, like a wedged ps
+		return nil, ctx.Err()
+	})
+
+	_, err := ScanAgentProcesses("someuser")
+	if !errors.Is(err, ErrScanTimeout) {
+		t.Fatalf("got error %v, want it to wrap ErrScanTimeout", err)
+	}
+	if calls != 2 {
+		t.Fatalf("got %d calls, want exactly 2 (hang, retried hang)", calls)
+	}
+}
+
+func TestScanAgentProcessesDoesNotRetryASuccess(t *testing.T) {
+	calls := 0
+	stubExec(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calls++
+		return []byte(""), nil
+	})
+
+	if _, err := ScanAgentProcesses("someuser"); err != nil {
+		t.Fatalf("got error %v, want none", err)
+	}
+	if calls != 1 {
+		t.Fatalf("got %d calls, want exactly 1 (no retry on success)", calls)
 	}
 }
