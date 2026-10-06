@@ -17,6 +17,10 @@ jobs:
       - run: go vet ./...
       - run: go build ./...
       - run: go test -race ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: make test-extension
 
   lint:
     runs-on: macos-latest

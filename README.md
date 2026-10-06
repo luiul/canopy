@@ -55,10 +55,10 @@ canopy's scope could stay exactly "agent sessions," nothing else.
 canopy — agent sessions on this machine
 3 sessions: 1 done · 1 working · 1 idle
 
-State      Since   Surface    Location                                  CPU   RAM     Uptime  Model                         Kind     PID
-working    12s     VS Code    ~/projects/personal/canopy                4%    278M    1h      GPT-6 Sol [ai-model-router]   pi       86872
-done       3m      VS Code    ~/worktrees/.../isa-orchestration         0%    140M    2h30m   —                             pi       9514
-idle       1h20m   Ghostty    ~/some/other/project                      0%    95M     1d      —                             pi       65834
+State      Since   Kind    Model                               Surface   Location                                  CPU   RAM    Uptime   PID
+working    12s     pi      GPT-6.1 Sol (US) [amazon-bedrock]    VS Code   ~/projects/personal/canopy                 4%    278M   1h       86872
+done       3m      pi      —                                   VS Code   ~/worktrees/.../isa-orchestration          0%    140M   2h30m    9514
+idle       1h20m   pi      —                                   Ghostty   ~/some/other/project                       0%    95M    1d       65834
 
 ↑/↓ move · enter jump · c dismiss · x kill · / filter · ? help · q quit
 ```
@@ -94,46 +94,15 @@ decisions (keybindings, the modal discipline, phrasing, rendering,
 testing, releasing) is written down once in
 [dashkit's CONVENTIONS.md](https://github.com/luiul/dashkit/blob/main/CONVENTIONS.md).
 
-Each internal column border can be dragged with the mouse to widen or
-narrow it: the two columns it sits between trade width between
-themselves, so the table's own total width never changes, only how it's
-divided up between whichever two columns you actually grabbed (see
-[`github.com/luiul/dashkit/trellis`](https://github.com/luiul/dashkit/tree/main/trellis)
-below, the same package understory uses for its own table). A visible
-divider marks each border on the header row (see
-[`github.com/luiul/dashkit/loam`](https://github.com/luiul/dashkit/tree/main/loam)'s
-`DrawHeaderBorders`) so there's something to aim the drag at, rather than
-an invisible 2-space gap. Each column can shrink down to the width its
-values still fit (State/Surface/RAM/Uptime/PID their widest value, Kind
-its short kinds, Model the example `GPT-6 Sol [ai-model-router]`,
-Location its own floor of 20; Since and CPU's defaults already ARE their
-widest values, so their borders move only via their neighbors) — a
-narrower drag truncates only the header title for these typical values.
-Very long model names may be cut off. A resize sticks across the next poll,
-but resets on a terminal resize, since that already recomputes Location's
-own width from scratch against the new terminal width anyway.
+Each internal column border can be dragged with the mouse. The two columns beside it trade width, so a drag does not change the table's total width. Canopy shares this behavior with understory through [`github.com/luiul/dashkit/trellis`](https://github.com/luiul/dashkit/tree/main/trellis). Header dividers mark the borders through [`loam.DrawHeaderBorders`](https://github.com/luiul/dashkit/tree/main/loam).
 
-The currently selected row is highlighted with a subtle grey background
-spanning the full width of the table, rather than a leading marker glyph
-(the muted highlight sits comfortably alongside State's own color coding
-on that row, rather than replacing it — see github.com/luiul/dashkit/loam,
-which both canopy and understory share for exactly this). Columns are ordered by urgency,
-left to right: State and Since (what needs you, and for how long) come
-first, then Surface and Location (where the session lives). CPU/RAM/Uptime
-(how the session is doing, resource-wise) come next: %cpu and resident
-memory straight from `ps`, and total wall-clock time the process has been
-running (distinct from Since, which is time in the *current* state) —
-useful for spotting a runaway or long-forgotten session, but secondary to
-State/Since so they sit to the right of Location rather than competing for
-leftmost attention. Model shows the selected name and provider for `pi`
-when its companion extension reports one; other kinds (or a missing
-report) show `—`. It sits after Uptime, before Kind and PID. Kind and PID
-are last and deliberately narrow: useful context, but rarely what you're
-scanning for. Location absorbs whatever width the terminal leaves after
-the fixed columns, dipping below its preferred floor on a tight terminal
-rather than letting the table overflow and clip the rightmost columns.
-Location shortens a leading home-directory prefix to `~`, same as your
-shell prompt.
+Drag floors keep usual values readable. Model floors at 27 cells and Location at 20 cells. Mouse widths survive polls, even when they exceed the automatic caps. A terminal resize resets them to the automatic layout.
+
+The selected row has a subtle grey background across the table. State keeps its own color on that row. Canopy shares this rendering with understory through [`github.com/luiul/dashkit/loam`](https://github.com/luiul/dashkit/tree/main/loam).
+
+Columns follow the scan order: State and Since show what needs attention, then Kind and Model identify the agent. Surface and Location show where it lives. CPU, RAM, Uptime, and PID provide secondary details at the right. CPU and RAM come from `ps`. Uptime is the process age, not its time in the current state.
+
+Model shows the selected name and provider when the companion extension reports them. Missing reports show `—`. Its width follows the longest reported label, up to 60 cells. Location takes the remaining space, up to 40 cells, and shortens the home-directory prefix to `~`. On tight terminals, Model loses extra space and Location can shrink to eight cells to keep PID visible. Very long model labels and paths can still truncate.
 
 State is color-coded (green (bold) for `done`, yellow for `working`, dim
 for `idle`/`unknown`, cyan for `stopped`). A row that just went `done` blinks: a trailing `*`
@@ -356,7 +325,7 @@ pi is idle, without updating the state timestamp or ringing the `done`
 bell. Selecting another model updates it at once. When the record is
 missing or stale, Model shows `—` and state polling still works. Existing
 pi sessions must reload their extensions or restart to begin writing the
-new record.
+new record. Only interactive pi sessions publish these records. SDK subagents and print, JSON, or RPC sessions cannot overwrite or delete the interactive session's status files.
 
 Install it by symlinking (or copying) it into pi's global extensions
 directory:

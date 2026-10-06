@@ -42,6 +42,10 @@
  *     frontmost/window-title check) couldn't change what canopy displays
  *     either way, so it was pure complexity with no payoff — dropped.
  *
+ * Only interactive sessions report. SDK subagents share process.pid with
+ * their parent, so letting them write would replace the parent's records.
+ * Print, JSON, and RPC sessions must not write or remove those files.
+ *
  * macOS only (same as canopy itself); a no-op
  * everywhere else, same as before.
  */
@@ -133,6 +137,7 @@ export default function (pi: ExtensionAPI) {
 	if (process.platform !== "darwin") return;
 
 	let enabled = true;
+	let ownsStatus = false;
 	let workingWatch: ReturnType<typeof setInterval> | undefined;
 	let modelWatch: ReturnType<typeof setInterval> | undefined;
 	let selectedModel: SelectedModel | undefined;
@@ -157,9 +162,19 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
+	const cleanup = () => {
+		if (!ownsStatus) return;
+		stopWorkingWatch();
+		stopModelWatch();
+		removeStatus();
+		removeModel();
+		ownsStatus = false;
+		process.off("exit", cleanup);
+	};
+
 	const working = (ctx: ExtensionContext) => {
 		stopWorkingWatch();
-		if (!enabled) return;
+		if (!ownsStatus || !enabled) return;
 		writeStatus(ctx.cwd, "working");
 		// See WORKING_HEARTBEAT_MS: before_agent_start/agent_start/
 		// tool_execution_start each fire once, not repeatedly, so without this
@@ -172,11 +187,17 @@ export default function (pi: ExtensionAPI) {
 
 	const settled = (ctx: ExtensionContext) => {
 		stopWorkingWatch();
-		if (!enabled) return;
+		if (!ownsStatus || !enabled) return;
 		writeStatus(ctx.cwd, "done");
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
+		// Older hosts may omit mode; hasUI still excludes SDK subagents.
+		if (!ctx.hasUI || (ctx.mode !== undefined && ctx.mode !== "tui")) return;
+		if (!ownsStatus) {
+			ownsStatus = true;
+			process.once("exit", cleanup);
+		}
 		if (!enabled) return;
 		writeStatus(ctx.cwd, "idle");
 		selectedModel = ctx.model;
@@ -184,6 +205,7 @@ export default function (pi: ExtensionAPI) {
 		startModelWatch();
 	});
 	pi.on("model_select", async (event) => {
+		if (!ownsStatus) return;
 		selectedModel = event.model;
 		if (enabled) writeModel(selectedModel);
 	});
@@ -192,20 +214,15 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_execution_start", async (_event, ctx) => working(ctx));
 	pi.on("agent_settled", async (_event, ctx) => settled(ctx));
 
-	pi.on("session_shutdown", async () => {
-		stopWorkingWatch();
-		stopModelWatch();
-		removeStatus();
-		removeModel();
-	});
-	process.on("exit", () => {
-		removeStatus();
-		removeModel();
-	});
+	pi.on("session_shutdown", async () => cleanup());
 
 	pi.registerCommand("canopy-status", {
 		description: "Toggle writing canopy's ~/.pi/agent/canopy-status/<pid>.json status file",
 		handler: async (_args, ctx) => {
+			if (!ownsStatus) {
+				ctx.ui.notify("canopy-status is available only in interactive sessions", "info");
+				return;
+			}
 			enabled = !enabled;
 			if (!enabled) {
 				stopWorkingWatch();

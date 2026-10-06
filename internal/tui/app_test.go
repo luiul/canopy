@@ -977,8 +977,8 @@ func locationBorderX(cols []table.Column) int {
 	return off.Start + off.Width
 }
 
-func sinceBorderX(cols []table.Column) int {
-	off := loam.ColumnOffsets(cols)[colSince]
+func modelBorderX(cols []table.Column) int {
+	off := loam.ColumnOffsets(cols)[colModel]
 	return off.Start + off.Width
 }
 
@@ -1153,8 +1153,7 @@ func TestMouseDragBetweenTwoAlreadyMinimalColumnsIsANoOp(t *testing.T) {
 }
 
 func TestResizeColumnsNeverOverflowsTheTerminal(t *testing.T) {
-	// At 121 cells, the fixed columns and a 20-cell Location floor fit;
-	// below that Location absorbs the deficit without losing Model/Kind/PID.
+	// At 110 cells Location absorbs the deficit without hiding PID.
 	m := New(999*time.Second, nil)
 	m.width, m.height = 110, 40
 	m.resizeColumns()
@@ -1167,7 +1166,7 @@ func TestResizeColumnsNeverOverflowsTheTerminal(t *testing.T) {
 	if total > m.width {
 		t.Fatalf("got total table width %d, want <= terminal width %d", total, m.width)
 	}
-	if got, want := cols[colLocation].Width, 9; got != want {
+	if got, want := cols[colLocation].Width, 13; got != want {
 		t.Fatalf("Location width = %d, want %d (below its floor of 20, but the table fits)", got, want)
 	}
 
@@ -1296,18 +1295,15 @@ func TestColumnTitlesNeverTouchTheirRightBorder(t *testing.T) {
 }
 
 func TestMouseDragSurfaceBorderNarrowsToItsContentFloor(t *testing.T) {
-	// Surface's default (9) only adds title room over its content floor
-	// ("VS Code"/"Ghostty", 7), so dragging the Since/Surface border
-	// right narrows Surface down to that floor — truncating only its
-	// title, never a value — and hands the width to Since. (Since itself
-	// can't narrow: its default is already its content width.)
+	// Surface's default (8) adds one cell over its content floor (7).
+	// Dragging Model/Surface right gives that cell to Model.
 	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 
 	cols := m.table.Columns()
 	_, originY := m.renderHeader()
-	borderX := sinceBorderX(cols)
+	borderX := modelBorderX(cols)
 
 	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	m = updated.(Model)
@@ -1318,15 +1314,15 @@ func TestMouseDragSurfaceBorderNarrowsToItsContentFloor(t *testing.T) {
 	if got, want := gotCols[colSurface].Width, surfaceContentWidth; got != want {
 		t.Fatalf("Surface width = %d, want %d (clamped at its content floor)", got, want)
 	}
-	if got, want := gotCols[colSince].Width, 6+(9-surfaceContentWidth); got != want {
-		t.Fatalf("Since width = %d, want %d (it absorbed exactly what Surface gave up)", got, want)
+	if got, want := gotCols[colModel].Width, modelContentWidth+1+(8-surfaceContentWidth); got != want {
+		t.Fatalf("Model width = %d, want %d (it absorbed exactly what Surface gave up)", got, want)
 	}
 }
 
 func TestMouseDragUptimeBorderNarrowsToItsContentFloor(t *testing.T) {
 	// Uptime's default (7) is its title's width plus one; its content
-	// ("23h59m", 6) is one narrower, so the Uptime/Model border can move
-	// left exactly one before Uptime floors; Model absorbs that cell.
+	// ("23h59m", 6) is one narrower, so the Uptime/PID border can move
+	// left exactly one before Uptime floors; PID absorbs that cell.
 	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
@@ -1344,17 +1340,14 @@ func TestMouseDragUptimeBorderNarrowsToItsContentFloor(t *testing.T) {
 	if got, want := gotCols[colUptime].Width, uptimeContentWidth; got != want {
 		t.Fatalf("Uptime width = %d, want %d (clamped at its content floor)", got, want)
 	}
-	if got, want := gotCols[colModel].Width, modelContentWidth+2; got != want {
-		t.Fatalf("Model width = %d, want %d (it absorbed exactly what Uptime gave up)", got, want)
+	if got, want := gotCols[colPID].Width, pidContentWidth+1; got != want {
+		t.Fatalf("PID width = %d, want %d (it absorbed exactly what Uptime gave up)", got, want)
 	}
 }
 
 func TestMouseDragKindBorderNarrowsToItsDragFloor(t *testing.T) {
-	// Kind's default (7) already truncates long kinds on purpose
-	// ("mastracode"), so its drag floor sits below every value at 4 —
-	// enough to keep the short kinds ("pi", "grok", "kimi") fully
-	// visible — and dragging the Kind/PID border left narrows it down to
-	// exactly that floor, no further.
+	// Kind fits the configured short kinds at 6 cells. Its drag floor
+	// remains 4, so dragging Kind/Model left gives two cells to Model.
 	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
@@ -1372,7 +1365,7 @@ func TestMouseDragKindBorderNarrowsToItsDragFloor(t *testing.T) {
 	if got, want := gotCols[colKind].Width, kindDragFloor; got != want {
 		t.Fatalf("Kind width = %d, want %d (clamped at its drag floor)", got, want)
 	}
-	if got, want := gotCols[colPID].Width, 6+(7-kindDragFloor); got != want {
-		t.Fatalf("PID width = %d, want %d (it absorbed exactly what Kind gave up)", got, want)
+	if got, want := gotCols[colModel].Width, modelContentWidth+1+(6-kindDragFloor); got != want {
+		t.Fatalf("Model width = %d, want %d (it absorbed exactly what Kind gave up)", got, want)
 	}
 }

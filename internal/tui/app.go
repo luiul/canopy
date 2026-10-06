@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 
 	"github.com/luiul/canopy/internal/jump"
 	"github.com/luiul/canopy/internal/kill"
@@ -50,22 +51,22 @@ const notifyDuration = 4 * time.Second
 //
 // Order is deliberately urgency-first: State and Since (what needs you, and
 // for how long) come first, matching the top-to-bottom state-priority sort.
-// Surface and Location (where a session lives) follow. CPU/RAM/Uptime (how a
-// session is doing, resource-wise) and Model (pi's selected model/provider)
-// come next; Kind and PID are last and narrow. Location remains the only
-// flex column, giving up space first on smaller terminals.
+// Kind and Model identify the agent next, followed by Surface and Location
+// (where it lives). CPU/RAM/Uptime and PID are secondary context at the right.
+// Model fits the reported names; Location uses the remaining space, capped
+// at 40 cells so a wide terminal does not turn it into a large empty gap.
 // Note: there is no leading cursor column. Selected rows are highlighted
 // via loam.ColorizeRows' post-render row highlight; see loam's doc.
 const (
 	colState = iota
 	colSince
+	colKind
+	colModel
 	colSurface
 	colLocation
 	colCPU
 	colRAM
 	colUptime
-	colModel
-	colKind
 	colPID
 )
 
@@ -237,10 +238,10 @@ type Model struct {
 	quitting      bool
 }
 
-// New builds the dashboard model, polling at interval and tracking the
-// agent kinds in kinds.
-func New(interval time.Duration, kinds map[string]bool) Model {
-	columns := []table.Column{
+// defaultColumns is also the starting point for terminal resizes, so a
+// previous mouse drag cannot become the next resize's default.
+func defaultColumns() []table.Column {
+	return []table.Column{
 		// Every fixed column's default fits its widest value without
 		// truncating and is at least its title's width plus one: the
 		// header's column-border glyph (loam.DrawHeaderBorders) sits
@@ -250,17 +251,22 @@ func New(interval time.Duration, kinds map[string]bool) Model {
 		// question — see the content-floor constants by columnMinWidths.
 		{Title: "State", Width: 8},
 		{Title: "Since", Width: 6},
-		{Title: "Surface", Width: 9},
-		{Title: "Location", Width: 40},
-		{Title: "CPU", Width: 4},
-		{Title: "RAM", Width: 6},
-		{Title: "Uptime", Width: 7},
+		{Title: "Kind", Width: 6}, // fits pi, pig, and claude
 		{Title: "Model", Width: modelContentWidth + 1},
-		{Title: "Kind", Width: 7}, // narrow on purpose; truncates long kinds (e.g. "mastracode")
-		{Title: "PID", Width: 6},  // narrow on purpose; truncates rare 6+ digit pids
+		{Title: "Surface", Width: 8},
+		{Title: "Location", Width: locationMaxWidth},
+		{Title: "CPU", Width: 4},
+		{Title: "RAM", Width: ramContentWidth},
+		{Title: "Uptime", Width: 7},
+		{Title: "PID", Width: pidContentWidth},
 	}
+}
+
+// New builds the dashboard model, polling at interval and tracking the
+// agent kinds in kinds.
+func New(interval time.Duration, kinds map[string]bool) Model {
 	t := table.New(
-		table.WithColumns(columns),
+		table.WithColumns(defaultColumns()),
 		table.WithFocused(true),
 		table.WithHeight(15),
 	)
@@ -797,6 +803,9 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 // changed) and the filter editing paths (only the query changed): the two
 // differ only in who mutated what before calling it.
 func (m *Model) resetRows(previousKey string) {
+	if m.width > 0 {
+		m.resizeColumns()
+	}
 	displayed := m.displayedEntries()
 
 	cursor := m.table.Cursor()
@@ -819,9 +828,8 @@ func (m *Model) resetRows(previousKey string) {
 }
 
 // State, Surface, RAM, Uptime, and PID floors fit their usual values.
-// Model fits "GPT-6 Sol [ai-model-router]". Longer names may truncate,
-// like long Kind values: a wider Model would squeeze Location on an
-// ordinary 120-cell terminal.
+// Model starts at the width of "GPT-6 Sol [ai-model-router]" and grows
+// to fit reported names, up to modelMaxWidth or the terminal's budget.
 const (
 	stateContentWidth   = 7
 	surfaceContentWidth = 7
@@ -830,6 +838,10 @@ const (
 	modelContentWidth   = 27
 	kindDragFloor       = 4
 	pidContentWidth     = 5
+	modelMaxWidth       = 60
+	locationMaxWidth    = 40
+	locationDragFloor   = 20
+	locationHardFloor   = 8
 )
 
 // columnMinWidths returns each column's own minimum width, in the same
@@ -839,13 +851,13 @@ const (
 // not their defaults: usual values fit there, while the defaults add
 // room for titles. A drag can narrow past the default (truncating the
 // title) to make room for a neighbor. Long Model and Kind values may
-// already truncate at their defaults, since their lengths are unbounded.
+// still truncate on tight terminals, since their lengths are unbounded.
 // Flooring at the defaults instead would freeze every fixed column in
 // place, with no room to trade in either direction. Since and CPU are the
 // exceptions: their defaults ARE their content widths ("23h59m",
 // "100%"), so they have nothing to give and their borders move only via
-// their neighbors. Location floors at 20, the same floor resizeColumns'
-// own leftover-space computation already respects. Trellis itself treats
+// their neighbors. Location's drag floor is 20, while terminal resizes
+// can narrow it further to keep the rightmost columns visible. Trellis treats
 // every column, Location included, identically — there's no column
 // singled out as a drag sink any more (see the trellis package's own
 // doc); this slice only says how far each one may shrink.
@@ -853,43 +865,31 @@ func columnMinWidths() []int {
 	return []int{
 		stateContentWidth,
 		6, // Since: its default is already its content width ("23h59m")
+		kindDragFloor,
+		modelContentWidth,
 		surfaceContentWidth,
-		20,
+		locationDragFloor,
 		4, // CPU: its default is already its content width ("100%")
 		ramContentWidth,
 		uptimeContentWidth,
-		modelContentWidth,
-		kindDragFloor,
 		pidContentWidth,
 	}
 }
 
-// resizeColumns rebuilds Location's width (the only one that depends on
-// terminal width) against m.width, applying any of colOverrides first —
-// see Model.colOverrides' own doc for why a fixed column might carry one
-// — to whichever fixed columns have one, then giving Location whatever's
-// left after every other column's own effective (possibly overridden)
-// width is accounted for. This, not trellis, is where Location's role as
-// the one column that absorbs a *terminal* resize's leftover space
-// actually lives — a policy entirely separate from how a mouse drag
-// divides width between two columns (trellis.Model.Handle's own doc),
-// which no longer treats Location specially in any way.
-//
-// Location's floor is 20 whenever there's genuinely room for it, but on
-// a terminal too narrow for even that it dips below the floor (down to
-// 8) rather than pushing the table past the terminal's right edge — a
-// wider-than-terminal table just gets its rightmost columns (Kind, PID)
-// clipped away entirely, which is worse than a truncated Location. Past
-// 8 the terminal is simply too narrow for ten columns; the remaining
-// overflow is accepted.
+// resizeColumns gives Model enough room for the longest reported label,
+// then gives Location the remaining space, capped at 40 cells. Both use
+// display-cell widths, not byte lengths. On tight terminals Model can
+// lose its extra space and Location can fall below its 20-cell drag floor.
+// Below the combined hard floors the remaining overflow is accepted.
+// Mouse overrides win over automatic sizing until the terminal resizes.
 func (m *Model) resizeColumns() {
-	cols := m.table.Columns()
-	if len(cols) != colPID+1 {
+	if len(m.table.Columns()) != colPID+1 {
 		return
 	}
+	cols := defaultColumns()
 	fixed := 0
 	for i := range cols {
-		if i == colLocation {
+		if i == colLocation || i == colModel {
 			continue
 		}
 		if w, ok := m.colOverrides[i]; ok {
@@ -897,11 +897,24 @@ func (m *Model) resizeColumns() {
 		}
 		fixed += cols[i].Width
 	}
-	remaining := m.width - fixed - 2*len(cols) // 2 chars of padding per cell
-	if remaining < 20 {
-		remaining = max(remaining, 8)
+	available := m.width - fixed - 2*len(cols) // 2 cells of padding per column
+	locationFloor := locationHardFloor
+	if w, ok := m.colOverrides[colLocation]; ok {
+		locationFloor = w
 	}
-	cols[colLocation].Width = remaining
+	modelWidth := cols[colModel].Width
+	for _, e := range m.entries {
+		modelWidth = max(modelWidth, runewidth.StringWidth(modelCellText(e))+1)
+	}
+	modelWidth = min(modelWidth, modelMaxWidth)
+	cols[colModel].Width = min(modelWidth, max(modelContentWidth, available-locationFloor))
+	if w, ok := m.colOverrides[colModel]; ok {
+		cols[colModel].Width = w
+	}
+	cols[colLocation].Width = clampInt(available-cols[colModel].Width, locationHardFloor, locationMaxWidth)
+	if w, ok := m.colOverrides[colLocation]; ok {
+		cols[colLocation].Width = w
+	}
 	m.table.SetColumns(cols)
 }
 

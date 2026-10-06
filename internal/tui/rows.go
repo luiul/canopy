@@ -131,12 +131,8 @@ func filterCells(e registry.RegistryEntry, home string, done map[string]doneEpis
 // every poll interval.
 func buildRows(entries []registry.RegistryEntry, cursor int, home string, now time.Time, done map[string]doneEpisode, filterQuery string) []table.Row {
 	if len(entries) == 0 {
-		// Placeholder message goes in Location: the widest column, and the
-		// only one guaranteed to have room for it regardless of terminal
-		// width. An active filter with zero matches says so (and how to
-		// back out) rather than claiming the machine has no sessions at
-		// all — the unfiltered message would be a lie about why the table
-		// is empty.
+		// Keep empty-state messages in Location, next to the session paths.
+		// An active filter says why no rows remain and how to clear it.
 		placeholder := table.Row{"", "", "", "", "", "", "", "", "", ""}
 		if filterQuery != "" {
 			placeholder[colLocation] = fmt.Sprintf("no sessions match filter %q (esc clears)", filterQuery)
@@ -150,13 +146,13 @@ func buildRows(entries []registry.RegistryEntry, cursor int, home string, now ti
 		rows[i] = table.Row{
 			stateCellText(e, now, done),
 			loam.Tag(sinceCellText(e, now, done), i == cursor),
+			e.Kind,
+			modelCellText(e),
 			surfaceLabel(e.Surface),
 			location(e, home),
 			cpuCellText(e),
 			ramCellText(e),
 			uptimeCellText(e),
-			modelCellText(e),
-			e.Kind,
 			fmt.Sprintf("%d", e.Pid),
 		}
 	}
