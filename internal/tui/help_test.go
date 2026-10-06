@@ -12,7 +12,7 @@ import (
 )
 
 func TestQuestionMarkOpensAHelpOverlayListingEveryKeybinding(t *testing.T) {
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 	m.applyEntries(nil)
@@ -47,7 +47,7 @@ func TestQuestionMarkOpensAHelpOverlayListingEveryKeybinding(t *testing.T) {
 
 func TestAnyKeyClosesTheHelpOverlayWithoutActing(t *testing.T) {
 	for _, key := range []string{"?", "esc", "enter", "q", "x", "j"} {
-		m := New(999)
+		m := New(999, nil)
 		m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 		updated, _ := m.Update(keyMsg("?"))
 		m = updated.(Model)
@@ -70,7 +70,7 @@ func TestAnyKeyClosesTheHelpOverlayWithoutActing(t *testing.T) {
 // TestCtrlCQuitsFromTheHelpOverlay pins the one exception to "any key
 // closes": ctrl+c always quits, from anywhere.
 func TestCtrlCQuitsFromTheHelpOverlay(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 	updated, _ := m.Update(keyMsg("?"))
 	m = updated.(Model)
@@ -86,7 +86,7 @@ func TestCtrlCQuitsFromTheHelpOverlay(t *testing.T) {
 }
 
 func TestKillPromptSwallowsQuestionMarkBeforeHelpCanOpen(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 
 	updated, _ := m.Update(keyMsg("x"))
@@ -106,7 +106,7 @@ func TestKillPromptSwallowsQuestionMarkBeforeHelpCanOpen(t *testing.T) {
 }
 
 func TestFooterPointsAtTheHelpOverlay(t *testing.T) {
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 	m.applyEntries(nil)

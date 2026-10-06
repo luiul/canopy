@@ -1,4 +1,4 @@
-// Package registry holds the in-memory model of every known-kind agent
+// Package registry holds the in-memory model of every tracked agent-kind
 // process on the machine right now: which app surface is actually hosting
 // it (VS Code / a bare Ghostty tab / unknown), and its state
 // (canopy-status.ts's real working/idle/done, straight from pi's own
@@ -350,18 +350,20 @@ type PollResult struct {
 	Warning string
 }
 
-// PollOnce takes one full snapshot of every known-kind agent process,
+// PollOnce takes one full snapshot of every tracked agent-kind process,
 // merged against the previous snapshot so a single transient miss doesn't
 // flicker a row away. If the scan itself fails, the previous snapshot is
 // returned verbatim instead (with a Warning): a failed scan is no
 // evidence anything exited, so nothing is aged toward MissLimit eviction.
+// kinds is the complete tracked set of executable basenames (see
+// internal/config), threaded straight through to scan.ScanAgentProcesses.
 //
 // The agent-kind scan (scan.ScanAgentProcesses) and the whole-machine
 // process table (scan.ScanProcessTable) are independent `ps` invocations —
 // neither's output feeds the other — so they run concurrently rather than
 // back to back; only scan.ResolveCwds (inside externalEntries) has to wait
 // for the agent-kind scan's pids first.
-func PollOnce(user string, previous []RegistryEntry) PollResult {
+func PollOnce(user string, kinds map[string]bool, previous []RegistryEntry) PollResult {
 	now := time.Now()
 
 	var (
@@ -373,7 +375,7 @@ func PollOnce(user string, previous []RegistryEntry) PollResult {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		matches, scanErr = scanAgentProcesses(user)
+		matches, scanErr = scanAgentProcesses(user, kinds)
 	}()
 	go func() {
 		defer wg.Done()

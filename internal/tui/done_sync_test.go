@@ -23,8 +23,8 @@ func TestAcknowledgeInOneModelSyncsToAnotherModelOnItsNextPoll(t *testing.T) {
 	withAckStore(t)
 	settledAt := time.Now()
 
-	a := New(999)
-	b := New(999)
+	a := New(999, nil)
+	b := New(999, nil)
 	a.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, settledAt)})
 	b.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, settledAt)})
 	if got := a.table.Rows()[0][colState]; got != "done" {
@@ -59,7 +59,7 @@ func TestSyncDoesNotApplyAStaleAckToAGenuinelyNewEpisode(t *testing.T) {
 	store := withAckStore(t)
 	firstSettle := time.Now()
 
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, firstSettle)})
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	m = updated.(Model)
@@ -88,7 +88,7 @@ func TestSyncIgnoresAnAckRecordForADifferentStillOpenEpisode(t *testing.T) {
 	store := withAckStore(t)
 	settledAt := time.Now()
 
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, settledAt)})
 
 	store["1:pi"] = ack.Record{Key: "1:pi", RawAt: settledAt.Add(-time.Minute), At: time.Now()}
@@ -107,7 +107,7 @@ func TestUpdateDoneTrackingRemovesTheAckRecordOnceTheEpisodeCloses(t *testing.T)
 	store := withAckStore(t)
 	settledAt := time.Now()
 
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, settledAt)})
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	m = updated.(Model)
@@ -133,7 +133,7 @@ func TestUpdateDoneTrackingRemovesTheAckRecordWhenTheSessionEnds(t *testing.T) {
 	settledAt := time.Now()
 	store["1:pi"] = ack.Record{Key: "1:pi", RawAt: settledAt, At: time.Now()}
 
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, settledAt)})
 	if got := m.table.Rows()[0][colState]; got != "idle" {
 		t.Fatalf("got %q, want the episode synced in as acknowledged from the pre-seeded ack record", got)

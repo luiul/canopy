@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -31,11 +32,21 @@ func pistatusEntry(pid int, surface ancestry.Surface, reportedAt time.Time) regi
 	return e
 }
 
+func TestNewStoresTheKindSetForPolls(t *testing.T) {
+	// The kind set resolved from config in cmd/canopy must be the one
+	// every pollCmd threads into registry.PollOnce.
+	kinds := map[string]bool{"myagent": true}
+	m := New(999, kinds)
+	if !reflect.DeepEqual(m.kinds, kinds) {
+		t.Fatalf("got kinds %v, want %v", m.kinds, kinds)
+	}
+}
+
 func TestFocusMsgTriggersAnImmediatePoll(t *testing.T) {
 	// Switching to canopy's window must refresh right away (see the
 	// tea.FocusMsg case in Update): a session started in another window
 	// can't wait for the next tick to show up.
-	m := New(999)
+	m := New(999, nil)
 	_, cmd := m.Update(tea.FocusMsg{})
 	if cmd == nil {
 		t.Fatal("want a poll command on focus")
@@ -146,7 +157,7 @@ func TestBlinkActiveIsFalseOnceAcknowledgedEvenMidBurst(t *testing.T) {
 
 func TestAdvanceBlinksStartsABurstImmediatelyAndReschedulesFiveMinutesOut(t *testing.T) {
 	now := time.Now()
-	m := New(999)
+	m := New(999, nil)
 	m.done = map[string]doneEpisode{"k": {Since: now, NextBlinkAt: now}}
 
 	m.advanceBlinks(now)
@@ -162,7 +173,7 @@ func TestAdvanceBlinksStartsABurstImmediatelyAndReschedulesFiveMinutesOut(t *tes
 
 func TestAdvanceBlinksLeavesAnEpisodeAloneBeforeItsNextBlinkAtArrives(t *testing.T) {
 	now := time.Now()
-	m := New(999)
+	m := New(999, nil)
 	notYet := doneEpisode{Since: now, NextBlinkAt: now.Add(time.Minute)}
 	m.done = map[string]doneEpisode{"k": notYet}
 
@@ -175,7 +186,7 @@ func TestAdvanceBlinksLeavesAnEpisodeAloneBeforeItsNextBlinkAtArrives(t *testing
 
 func TestAdvanceBlinksSkipsAcknowledgedEpisodesEvenIfNextBlinkAtHasArrived(t *testing.T) {
 	now := time.Now()
-	m := New(999)
+	m := New(999, nil)
 	acked := doneEpisode{Since: now.Add(-time.Hour), Acked: now.Add(-time.Minute), NextBlinkAt: now.Add(-time.Second)}
 	m.done = map[string]doneEpisode{"k": acked}
 
@@ -188,7 +199,7 @@ func TestAdvanceBlinksSkipsAcknowledgedEpisodesEvenIfNextBlinkAtHasArrived(t *te
 
 func TestAnyBlinkActiveReportsTrueOnlyWhileSomeEpisodeIsMidBurst(t *testing.T) {
 	now := time.Now()
-	m := New(999)
+	m := New(999, nil)
 	if m.anyBlinkActive(now) {
 		t.Fatal("want no active blink with an empty done map")
 	}
@@ -245,7 +256,7 @@ func TestSummaryLineIsEmptyWhenThereAreNoEntries(t *testing.T) {
 }
 
 func TestDashboardRendersARowPerEntry(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{
 		entry(1, ancestry.Ghostty, "working"),
 		entry(2, ancestry.VSCode, "idle"),
@@ -257,7 +268,7 @@ func TestDashboardRendersARowPerEntry(t *testing.T) {
 }
 
 func TestDashboardShowsAPlaceholderRowWhenNothingIsFound(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries(nil)
 
 	if got := len(m.table.Rows()); got != 1 {
@@ -269,7 +280,7 @@ func TestDashboardShowsAPlaceholderRowWhenNothingIsFound(t *testing.T) {
 }
 
 func TestViewMarksColumnBordersOnTheHeaderRowSoThereIsSomethingToDrag(t *testing.T) {
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
@@ -293,7 +304,7 @@ func TestViewMarksColumnBordersOnTheHeaderRowSoThereIsSomethingToDrag(t *testing
 
 func TestEnterOnARowTriggersJumpToTheSelectedEntry(t *testing.T) {
 	target := entry(42, ancestry.Ghostty, "working")
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{target})
 	m.table.SetCursor(0)
 
@@ -307,7 +318,7 @@ func TestEnterOnARowTriggersJumpToTheSelectedEntry(t *testing.T) {
 }
 
 func TestApplyEntriesPreservesCursorOnTheSameKeyAfterAReorder(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{
 		entry(1, ancestry.Ghostty, "idle"),
 		entry(2, ancestry.Ghostty, "idle"),
@@ -327,7 +338,7 @@ func TestApplyEntriesPreservesCursorOnTheSameKeyAfterAReorder(t *testing.T) {
 }
 
 func TestJumpResultMsgSetsNotificationAndSchedulesClear(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	updated, cmd := m.Update(jumpResultMsg{result: jump.Result{OK: true, Message: "Focused in Ghostty."}})
 	mm := updated.(Model)
 
@@ -349,7 +360,7 @@ func TestJumpResultMsgSetsNotificationAndSchedulesClear(t *testing.T) {
 }
 
 func TestStaleClearNotifyMsgIsIgnored(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	updated, _ := m.Update(jumpResultMsg{result: jump.Result{OK: false, Message: "nope"}})
 	mm := updated.(Model)
 
@@ -362,7 +373,7 @@ func TestStaleClearNotifyMsgIsIgnored(t *testing.T) {
 }
 
 func TestQuitKeyStopsTheProgram(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	if !updated.(Model).quitting {
 		t.Fatal("want quitting=true after q")
@@ -405,7 +416,7 @@ func TestBuildRowsTagsOnlyTheCursorRowsSinceCell(t *testing.T) {
 }
 
 func TestCursorSentinelFollowsArrowKeysBetweenPolls(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{
 		entry(1, ancestry.Ghostty, "idle"),
 		entry(2, ancestry.Ghostty, "idle"),
@@ -480,7 +491,7 @@ func TestNeedsBellFiresOnlyOnATransitionIntoDone(t *testing.T) {
 }
 
 func TestApplyEntriesReportsBellOnlyOnANewAttentionTransition(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	if bell := m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")}); bell {
 		t.Fatal("want no bell on the first poll landing on working")
 	}
@@ -496,7 +507,7 @@ func TestApplyEntriesReportsBellOnlyOnANewAttentionTransition(t *testing.T) {
 }
 
 func TestPollResultMsgReturnsBellCmdOnlyWhenBellIsEnabledAndNeeded(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
 
 	// bellEnabled defaults to true (see New): a fresh done row must batch a
@@ -528,7 +539,7 @@ func TestPollResultMsgReturnsBellCmdOnlyWhenBellIsEnabledAndNeeded(t *testing.T)
 }
 
 func TestPollResultMsgStartsABlinkBurstAndKeepsTickingUntilItSettles(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	updated, cmd := m.Update(pollResultMsg{entries: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}})
 	m = updated.(Model)
 	if cmd == nil {
@@ -560,7 +571,7 @@ func TestPollResultMsgStartsABlinkBurstAndKeepsTickingUntilItSettles(t *testing.
 }
 
 func TestAcknowledgingStopsAnInProgressBlinkBurstImmediately(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	updated, _ := m.Update(pollResultMsg{entries: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}})
 	m = updated.(Model)
 	if got := m.table.Rows()[0][colState]; got != "done"+blinkMarker {
@@ -575,7 +586,7 @@ func TestAcknowledgingStopsAnInProgressBlinkBurstImmediately(t *testing.T) {
 }
 
 func TestDoneRowBlinksAgainAfterTheReminderIntervalIfStillUnacknowledged(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	updated, _ := m.Update(pollResultMsg{entries: []registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")}})
 	m = updated.(Model)
 
@@ -603,7 +614,7 @@ func TestDoneRowBlinksAgainAfterTheReminderIntervalIfStillUnacknowledged(t *test
 }
 
 func TestCKeyAcknowledgesADoneRowWithoutJumping(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")})
 
 	if got := m.table.Rows()[0][colState]; got != "done" {
@@ -626,7 +637,7 @@ func TestCKeyAcknowledgesADoneRowWithoutJumping(t *testing.T) {
 }
 
 func TestEnterAcknowledgesADoneRowAndStillJumps(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")})
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -641,7 +652,7 @@ func TestEnterAcknowledgesADoneRowAndStillJumps(t *testing.T) {
 }
 
 func TestAcknowledgingANonDoneRowIsANoOp(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
@@ -653,7 +664,7 @@ func TestAcknowledgingANonDoneRowIsANoOp(t *testing.T) {
 }
 
 func TestAcknowledgedDoneStaysAcknowledgedAcrossPollsUntilTheRawStateMovesOn(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")})
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	m = updated.(Model)
@@ -689,7 +700,7 @@ func TestAcknowledgedDoneStaysAcknowledgedAcrossPollsUntilTheRawStateMovesOn(t *
 // look like a fresh settle just because RealState is now populated.
 func TestAcknowledgedRealStateDoneStaysAcknowledgedForTheSameStillFreshWrite(t *testing.T) {
 	settledAt := time.Now()
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, settledAt)})
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	m = updated.(Model)
@@ -718,7 +729,7 @@ func TestAcknowledgedRealStateDoneStaysAcknowledgedForTheSameStillFreshWrite(t *
 // finished at all.
 func TestAcknowledgedRealStateDoneReopensForAGenuinelyNewSettleWithNoInterveningPoll(t *testing.T) {
 	firstSettle := time.Now()
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, firstSettle)})
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	m = updated.(Model)
@@ -753,7 +764,7 @@ func TestAcknowledgedRealStateDoneReopensForAGenuinelyNewSettleWithNoIntervening
 // still must.
 func TestASecondSettleWhileTheEpisodeIsStillOpenDoesNotRingTwice(t *testing.T) {
 	t1 := time.Now()
-	m := New(999)
+	m := New(999, nil)
 
 	if bell := m.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, t1)}); !bell {
 		t.Fatal("want a bell for the first settle")
@@ -801,7 +812,7 @@ func TestDoneStaysDisplayedUntilTheUserActsEvenIfTheRawSourceQuietlyDropsToIdleO
 	// detection"), but the dashboard must keep enforcing this defensively
 	// regardless of what any given raw source does. The dashboard must still
 	// show done until the user actually acts on it here.
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")})
 	if got := m.table.Rows()[0][colState]; got != "done" {
 		t.Fatalf("got %q, want done on the first poll", got)
@@ -836,7 +847,7 @@ func TestDoneStaysDisplayedUntilTheUserActsEvenIfTheRawSourceQuietlyDropsToIdleO
 }
 
 func TestEnterAcknowledgesAnOpenDoneEpisodeEvenAfterRawStateAlreadyMovedToIdle(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "done")})
 	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "idle")}) // moved on its own
 
@@ -881,7 +892,7 @@ func TestDisplayStateKeepsReportingDoneForAnOpenEpisodeEvenIfRawStateMovesToIdle
 }
 
 func TestPollResultMsgWarningIsShownInTheHeaderAndPersistsAcrossPolls(t *testing.T) {
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 
 	updated, _ := m.Update(pollResultMsg{entries: nil, warning: "agent process scan failed: ps: exit status 1"})
@@ -954,7 +965,7 @@ func kindBorderX(cols []table.Column) int {
 // the table's own header row — a drag can never even start, with no
 // error or other symptom besides "nothing happens".
 func TestRenderHeaderOriginYMatchesTheTablesActualHeaderRow(t *testing.T) {
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
@@ -984,7 +995,7 @@ func TestRenderHeaderOriginYMatchesTheTablesActualHeaderRow(t *testing.T) {
 // scan warning), so a fix that only special-cases the common 1-or-2-line
 // case can't sneak back in undetected.
 func TestRenderHeaderOriginYMatchesTheTablesActualHeaderRowWithAWarningLine(t *testing.T) {
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
@@ -1009,7 +1020,7 @@ func TestRenderHeaderOriginYMatchesTheTablesActualHeaderRowWithAWarningLine(t *t
 }
 
 func TestMouseDragOnlyResizesTheTwoColumnsStraddlingTheDraggedBorder(t *testing.T) {
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 
@@ -1044,7 +1055,7 @@ func TestMouseDragOnlyResizesTheTwoColumnsStraddlingTheDraggedBorder(t *testing.
 }
 
 func TestMouseDragNowWorksOnLocationsOwnRightHandBorder(t *testing.T) {
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 
@@ -1075,7 +1086,7 @@ func TestMouseDragBetweenTwoAlreadyMinimalColumnsIsANoOp(t *testing.T) {
 	// and, crucially, no longer silently resizes Location instead the way
 	// the old flex-column design did for every border that wasn't already
 	// adjacent to it.
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 
@@ -1106,7 +1117,7 @@ func TestResizeColumnsNeverOverflowsTheTerminal(t *testing.T) {
 	// terminal width of 91, flooring Location at 20 used to push the
 	// table past the terminal's right edge, clipping Kind/PID entirely.
 	// Location dips below its floor instead, down to the hard floor of 8.
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 80, 40
 	m.resizeColumns()
 
@@ -1132,7 +1143,7 @@ func TestResizeColumnsNeverOverflowsTheTerminal(t *testing.T) {
 }
 
 func TestMouseDragSurvivesTheNextTerminalResizeAtTheSameWidth(t *testing.T) {
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 
@@ -1156,7 +1167,7 @@ func TestMouseDragSurvivesTheNextTerminalResizeAtTheSameWidth(t *testing.T) {
 }
 
 func TestWindowSizeMsgClearsColumnOverrides(t *testing.T) {
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 
@@ -1180,7 +1191,7 @@ func TestWindowSizeMsgClearsColumnOverrides(t *testing.T) {
 }
 
 func TestMouseClickOffTheHeaderRowDoesNotStartADrag(t *testing.T) {
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 
@@ -1204,7 +1215,7 @@ func TestMouseClickOffTheHeaderRowDoesNotStartADrag(t *testing.T) {
 // a stray drag must not resize columns underneath it.
 func TestMouseDragIsIgnoredWhileAModalIsUp(t *testing.T) {
 	for _, modal := range []string{"prompt", "help"} {
-		m := New(999 * time.Second)
+		m := New(999*time.Second, nil)
 		m.width, m.height = 120, 40
 		m.resizeColumns()
 		m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
@@ -1238,7 +1249,7 @@ func TestColumnTitlesNeverTouchTheirRightBorder(t *testing.T) {
 	// touching the text. Every column's default must be at least
 	// title+1 wide. (Drag minimums may go lower — a user dragging a
 	// column narrow has chosen to truncate its title.)
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	for _, c := range m.table.Columns() {
 		if got, need := c.Width, runewidth.StringWidth(c.Title)+1; got < need {
 			t.Errorf("column %q width %d, want at least %d (title + 1 space before the border)", c.Title, got, need)
@@ -1252,7 +1263,7 @@ func TestMouseDragSurfaceBorderNarrowsToItsContentFloor(t *testing.T) {
 	// right narrows Surface down to that floor — truncating only its
 	// title, never a value — and hands the width to Since. (Since itself
 	// can't narrow: its default is already its content width.)
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 
@@ -1279,7 +1290,7 @@ func TestMouseDragUptimeBorderNarrowsToItsContentFloor(t *testing.T) {
 	// ("23h59m", 6) is one narrower, so the Uptime/Kind border can move
 	// left exactly one before Uptime floors — the same clamp understory's
 	// Merge column has.
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 
@@ -1307,7 +1318,7 @@ func TestMouseDragKindBorderNarrowsToItsDragFloor(t *testing.T) {
 	// enough to keep the short kinds ("pi", "grok", "kimi") fully
 	// visible — and dragging the Kind/PID border left narrows it down to
 	// exactly that floor, no further.
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 

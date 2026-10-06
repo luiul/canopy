@@ -1,9 +1,6 @@
 # canopy
 
-An interactive dashboard for every agent CLI session (`pi`, `claude`,
-`codex`, ...) running on this machine, wherever it actually is: a VS Code
-integrated terminal or a bare Ghostty tab, with its live state and
-jump-to-window on Enter.
+An interactive dashboard for every agent CLI session on this machine (`pi` tracked by default; the set is yours to configure, see [Configuration](#configuration)), wherever it actually is: a VS Code integrated terminal or a bare Ghostty tab, with its live state and jump-to-window on Enter.
 
 This is the Go implementation, and the one actively developed going
 forward. An earlier Python/Textual prototype lives at `../canopy-python`
@@ -169,6 +166,34 @@ as `idle`, drops them back down in the sort order, and stops the blinking
 earns that state again (a fresh turn ending), not on every subsequent
 poll where the underlying session happens to still be sitting done.
 
+## Configuration
+
+canopy decides which processes are agent sessions by matching the executable basename in `ps` output against a tracked set of kind names. That set comes from `$XDG_CONFIG_HOME/canopy/config.toml` (usually `~/.config/canopy/config.toml`), which holds one key:
+
+```toml
+# The complete set of tracked agent CLI kinds. Replace semantics: this
+# list is everything canopy tracks, there is no merge with the defaults.
+agents = ["pi", "pig", "claude"]
+```
+
+With no file, canopy tracks the built-in default: `pi`. The moment the file exists, its `agents` list is the complete tracked set: to track one more kind, add it to the list, and to stop tracking a kind, remove it. Delete the file to go back to the default.
+
+Matching rules are the same for every kind, default or configured:
+
+- Exact match on the executable basename. `.../bin/pig` matches `pig`; the npm launcher `node /opt/homebrew/bin/pig` has basename `node` and correctly never matches.
+- A controlling terminal is required.
+- The second token must not be a denylisted subcommand (`mcp`, `serve`, `--version`, ...), so `claude mcp` and `claude --version` never show up as sessions.
+
+Validation is strict, and any problem exits with a clear startup error instead of silently tracking the wrong thing: names must be plausible argv0 basenames (non-empty, no slashes, no whitespace), duplicates are deduplicated, unknown TOML keys are rejected, malformed TOML fails fast, and an existing file with a missing or empty `agents` list is an error.
+
+To track everything the old built-in list did (21 kinds), plus `pig`:
+
+```toml
+agents = ["pi", "pig", "claude", "codex", "gemini", "cursor", "devin", "agy", "cline", "omp", "mastracode", "opencode", "copilot", "kimi", "kiro", "droid", "amp", "grok", "hermes", "kilo", "qodercli", "maki"]
+```
+
+TOML rather than JSON because the file is hand-edited and comments matter (the same convention as worktrunk's `~/.config/worktrunk/config.toml`).
+
 ## Process control
 canopy can also act on a session, not just watch it. These act on the
 selected row (or, for `D`, on every done row at once):
@@ -219,7 +244,12 @@ that a `done` row only ever leaves `done` via `enter` or `c`.
 One Go package per concern:
 
 - `internal/scan`: shells out to `ps`/`lsof`, parses their output into
-  typed rows.
+  typed rows, and filters processes against the tracked kind set it is
+  given.
+- `internal/config`: loads the optional `$XDG_CONFIG_HOME/canopy/config.toml`
+  that sets which agent CLI kinds canopy tracks (see
+  [Configuration](#configuration)); no file means the built-in default of
+  `pi`.
 - `internal/state`: CPU%-based idle/working heuristic for processes not
   running in VS Code or Ghostty.
 - `internal/pistatus`: reads the small status file the optional
@@ -257,7 +287,7 @@ One Go package per concern:
   and
   [`github.com/luiul/dashkit/loam`](https://github.com/luiul/dashkit/tree/main/loam)'s
   `HelpView`).
-- `cmd/canopy`: the CLI entry point (flags, version).
+- `cmd/canopy`: the CLI entry point (flags, config load, version).
 
 ## Install
 
@@ -350,6 +380,11 @@ the filesystem, the same as everything else canopy reads.
 ## Limitations
 
 - Same machine, same user only.
+- Tracking matches the executable basename exactly (no globbing): an agent
+  launched through a differently named wrapper does not show up. `pig`'s
+  own process tree is the example: its npm launcher runs as `node` and is
+  ignored, while the real `pig` binary underneath it is the row canopy
+  tracks.
 - macOS only: canopy checks this at startup and exits with a clear error
   on any other OS, rather than silently reporting zero sessions (its
   process discovery relies on macOS-specific `ps`/`lsof` output and

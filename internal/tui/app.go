@@ -1,4 +1,4 @@
-// Package tui is canopy's interactive dashboard: a table of every known
+// Package tui is canopy's interactive dashboard: a table of every tracked
 // agent-kind process on this machine, polled on a timer, with jump-to-window
 // on Enter.
 //
@@ -141,6 +141,11 @@ type Model struct {
 	user     string
 	home     string
 
+	// kinds is the complete tracked set of agent CLI executable basenames
+	// (resolved by cmd/canopy from internal/config), threaded through
+	// every pollCmd into registry.PollOnce and on to the scan.
+	kinds map[string]bool
+
 	entries []registry.RegistryEntry // sorted, parallel to the table's real rows
 	table   table.Model
 
@@ -234,8 +239,9 @@ type Model struct {
 	quitting      bool
 }
 
-// New builds the dashboard model, polling at interval.
-func New(interval time.Duration) Model {
+// New builds the dashboard model, polling at interval and tracking the
+// agent kinds in kinds.
+func New(interval time.Duration, kinds map[string]bool) Model {
 	columns := []table.Column{
 		// Every fixed column's default fits its widest value without
 		// truncating and is at least its title's width plus one: the
@@ -272,6 +278,7 @@ func New(interval time.Duration) Model {
 		interval:    interval,
 		user:        currentUser(),
 		home:        homeDir(),
+		kinds:       kinds,
 		table:       t,
 		bellEnabled: true,
 		resizer:     trellis.New(),
@@ -291,16 +298,16 @@ func (m Model) WithBell(enabled bool) Model {
 
 // Init kicks off the first poll and the recurring timer.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(pollCmd(m.user, nil), tickCmd(m.interval))
+	return tea.Batch(pollCmd(m.user, m.kinds, nil), tickCmd(m.interval))
 }
 
 func tickCmd(interval time.Duration) tea.Cmd {
 	return tea.Tick(interval, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-func pollCmd(user string, previous []registry.RegistryEntry) tea.Cmd {
+func pollCmd(user string, kinds map[string]bool, previous []registry.RegistryEntry) tea.Cmd {
 	return func() tea.Msg {
-		result := registry.PollOnce(user, previous)
+		result := registry.PollOnce(user, kinds, previous)
 		return pollResultMsg{entries: result.Entries, warning: result.Warning}
 	}
 }
@@ -474,7 +481,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		case "r":
-			return m, pollCmd(m.user, m.entries)
+			return m, pollCmd(m.user, m.kinds, m.entries)
 		case "/":
 			// Enter filter mode with the current query ready to edit
 			// (cursor at its end), so refining an applied filter is /
@@ -580,7 +587,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tickMsg:
-		return m, tea.Batch(pollCmd(m.user, m.entries), tickCmd(m.interval))
+		return m, tea.Batch(pollCmd(m.user, m.kinds, m.entries), tickCmd(m.interval))
 
 	case tea.FocusMsg:
 		// The user just switched to this window, which is almost always
@@ -593,7 +600,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// poll-to-poll diffing (done detection, bell, blink) on the same
 		// raw-state baseline; this is an extra poll on top of the tick
 		// chain, which keeps its own cadence either way.
-		return m, pollCmd(m.user, m.entries)
+		return m, pollCmd(m.user, m.kinds, m.entries)
 
 	case pollResultMsg:
 		m.scanWarning = msg.warning
@@ -644,7 +651,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// paused/resumed row's "stopped" display catches up immediately.
 		for _, r := range msg.results {
 			if r.OK {
-				return m, tea.Batch(clear, pollCmd(m.user, m.entries))
+				return m, tea.Batch(clear, pollCmd(m.user, m.kinds, m.entries))
 			}
 		}
 		return m, clear
@@ -1028,12 +1035,12 @@ func (m Model) View() string {
 }
 
 // Run starts the dashboard program and blocks until the user quits.
-func Run(interval time.Duration, bellEnabled bool) error {
+func Run(interval time.Duration, kinds map[string]bool, bellEnabled bool) error {
 	// WithReportFocus so the tea.FocusMsg case in Update ever fires at all:
 	// without it the terminal never sends focus-in events. Terminals that
 	// don't support focus reporting simply never deliver the message, which
 	// degrades to tick-only behavior.
-	p := tea.NewProgram(New(interval).WithBell(bellEnabled), tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus())
+	p := tea.NewProgram(New(interval, kinds).WithBell(bellEnabled), tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus())
 	_, err := p.Run()
 	return err
 }

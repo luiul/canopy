@@ -23,7 +23,7 @@ func TestAcknowledgeAllClosesEveryOpenEpisode(t *testing.T) {
 	withAckStore(t)
 	settledAt := time.Now()
 
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{
 		pistatusEntry(1, ancestry.Ghostty, settledAt),
 		pistatusEntry(2, ancestry.Ghostty, settledAt),
@@ -59,7 +59,7 @@ func TestAcknowledgeAllLeavesAlreadyAcknowledgedEpisodesUntouched(t *testing.T) 
 	withAckStore(t)
 	settledAt := time.Now()
 
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{
 		pistatusEntry(1, ancestry.Ghostty, settledAt),
 		pistatusEntry(2, ancestry.Ghostty, settledAt),
@@ -95,7 +95,7 @@ func TestAcknowledgeAllWritesAnAckRecordPerOpenEpisode(t *testing.T) {
 	first := time.Now()
 	second := first.Add(time.Second)
 
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{
 		pistatusEntry(1, ancestry.Ghostty, first),
 		pistatusEntry(2, ancestry.Ghostty, second),
@@ -124,12 +124,12 @@ func TestAcknowledgeAllWritesAnAckRecordPerOpenEpisode(t *testing.T) {
 func TestAcknowledgeAllWithNothingDoneIsANoOp(t *testing.T) {
 	withAckStore(t)
 
-	empty := New(999) // no poll at all: nil done map, placeholder row
+	empty := New(999, nil) // no poll at all: nil done map, placeholder row
 	if updated, _ := empty.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("C")}); updated.(Model).done != nil {
 		t.Fatal("want C with no entries to leave the done map nil, not allocate one")
 	}
 
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{
 		entry(1, ancestry.Ghostty, "working"),
 		entry(2, ancestry.Ghostty, "idle"),
@@ -152,7 +152,7 @@ func TestAcknowledgeAllStopsAMidBurstBlink(t *testing.T) {
 	withAckStore(t)
 	settledAt := time.Now()
 
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{pistatusEntry(1, ancestry.Ghostty, settledAt)})
 	// What a poll does after opening the episode: start its first burst.
 	m.tickBlinks(time.Now())
@@ -184,8 +184,8 @@ func TestAcknowledgeAllInOneModelSyncsToAnotherModel(t *testing.T) {
 		pistatusEntry(2, ancestry.Ghostty, settledAt),
 	}
 
-	a := New(999)
-	b := New(999)
+	a := New(999, nil)
+	b := New(999, nil)
 	a.applyEntries(fresh)
 	b.applyEntries(fresh)
 

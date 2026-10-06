@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -404,13 +405,13 @@ func TestExternalEntriesLeavesNonPiKindsUntouchedByPistatus(t *testing.T) {
 func TestPollOnceSurfacesAWarningWhenTheAgentScanFails(t *testing.T) {
 	previousScan, previousTable := scanAgentProcesses, scanProcessTable
 	t.Cleanup(func() { scanAgentProcesses, scanProcessTable = previousScan, previousTable })
-	scanAgentProcesses = func(string) ([]scan.ProcessMatch, error) {
+	scanAgentProcesses = func(string, map[string]bool) ([]scan.ProcessMatch, error) {
 		return nil, fmt.Errorf("ps: exit status 1")
 	}
 	scanProcessTable = func() map[int]scan.ProcessInfo { return map[int]scan.ProcessInfo{} }
 
 	prev := entry(1, "pi", ancestry.Ghostty, "idle")
-	result := PollOnce("someuser", []RegistryEntry{prev})
+	result := PollOnce("someuser", nil, []RegistryEntry{prev})
 
 	if result.Warning == "" {
 		t.Fatalf("got empty Warning, want a non-empty one when the agent scan itself failed")
@@ -427,12 +428,12 @@ func TestPollOnceWordsATimeoutWarningWithoutTheRawKillSignal(t *testing.T) {
 	// like canopy itself crashed; the banner should say what happened.
 	previousScan, previousTable := scanAgentProcesses, scanProcessTable
 	t.Cleanup(func() { scanAgentProcesses, scanProcessTable = previousScan, previousTable })
-	scanAgentProcesses = func(string) ([]scan.ProcessMatch, error) {
+	scanAgentProcesses = func(string, map[string]bool) ([]scan.ProcessMatch, error) {
 		return nil, fmt.Errorf("ps: %w after 5s (killed the hung process)", scan.ErrScanTimeout)
 	}
 	scanProcessTable = func() map[int]scan.ProcessInfo { return map[int]scan.ProcessInfo{} }
 
-	result := PollOnce("someuser", nil)
+	result := PollOnce("someuser", nil, nil)
 
 	if !strings.Contains(result.Warning, "timed out") || strings.Contains(result.Warning, "signal: killed") {
 		t.Fatalf("got Warning %q, want a plain timeout message without the raw kill signal", result.Warning)
@@ -443,13 +444,15 @@ func TestPollOnceRebaselinesFromPreservedEntriesAfterTheScanRecovers(t *testing.
 	previousScan, previousTable, previousCwds := scanAgentProcesses, scanProcessTable, resolveCwds
 	t.Cleanup(func() { scanAgentProcesses, scanProcessTable, resolveCwds = previousScan, previousTable, previousCwds })
 
-	failing := func(string) ([]scan.ProcessMatch, error) { return nil, fmt.Errorf("ps: exit status 1") }
+	failing := func(string, map[string]bool) ([]scan.ProcessMatch, error) {
+		return nil, fmt.Errorf("ps: exit status 1")
+	}
 	scanAgentProcesses = failing
 	scanProcessTable = func() map[int]scan.ProcessInfo { return map[int]scan.ProcessInfo{} }
 	resolveCwds = func([]int) map[int]string { return map[int]string{} }
 
 	prev := entry(1, "pi", ancestry.Ghostty, "idle")
-	failed := PollOnce("someuser", []RegistryEntry{prev})
+	failed := PollOnce("someuser", nil, []RegistryEntry{prev})
 	if len(failed.Entries) != 1 {
 		t.Fatalf("got %+v, want the previous entry preserved through the outage", failed.Entries)
 	}
@@ -457,10 +460,10 @@ func TestPollOnceRebaselinesFromPreservedEntriesAfterTheScanRecovers(t *testing.
 	// The scan recovers and finds only a different agent: the preserved
 	// entry is merged against the fresh snapshot like any other previous
 	// entry, so it gets its first genuine miss, not an eviction.
-	scanAgentProcesses = func(string) ([]scan.ProcessMatch, error) {
+	scanAgentProcesses = func(string, map[string]bool) ([]scan.ProcessMatch, error) {
 		return []scan.ProcessMatch{{Pid: 2, Tty: "s001", Kind: "claude", Args: "claude"}}, nil
 	}
-	recovered := PollOnce("someuser", failed.Entries)
+	recovered := PollOnce("someuser", nil, failed.Entries)
 	if recovered.Warning != "" {
 		t.Fatalf("got Warning %q, want empty once the scan recovers", recovered.Warning)
 	}
@@ -474,15 +477,36 @@ func TestPollOnceHasNoWarningWhenTheAgentScanSucceedsWithZeroMatches(t *testing.
 	// found nothing must not look like a failed one.
 	previousScan, previousTable := scanAgentProcesses, scanProcessTable
 	t.Cleanup(func() { scanAgentProcesses, scanProcessTable = previousScan, previousTable })
-	scanAgentProcesses = func(string) ([]scan.ProcessMatch, error) { return nil, nil }
+	scanAgentProcesses = func(string, map[string]bool) ([]scan.ProcessMatch, error) { return nil, nil }
 	scanProcessTable = func() map[int]scan.ProcessInfo { return map[int]scan.ProcessInfo{} }
 
-	result := PollOnce("someuser", nil)
+	result := PollOnce("someuser", nil, nil)
 
 	if result.Warning != "" {
 		t.Fatalf("got Warning %q, want empty", result.Warning)
 	}
 	if len(result.Entries) != 0 {
 		t.Fatalf("got %+v, want no entries", result.Entries)
+	}
+}
+
+func TestPollOnceThreadsTheKindSetToTheAgentScan(t *testing.T) {
+	// The kind set canopy resolved from config (or the defaults) must
+	// reach the scan unchanged: the scan, not registry, decides what
+	// matches, and it can only do that if the set actually gets there.
+	previousScan, previousTable := scanAgentProcesses, scanProcessTable
+	t.Cleanup(func() { scanAgentProcesses, scanProcessTable = previousScan, previousTable })
+	var got map[string]bool
+	scanAgentProcesses = func(_ string, kinds map[string]bool) ([]scan.ProcessMatch, error) {
+		got = kinds
+		return nil, nil
+	}
+	scanProcessTable = func() map[int]scan.ProcessInfo { return map[int]scan.ProcessInfo{} }
+
+	kinds := map[string]bool{"myagent": true}
+	PollOnce("someuser", kinds, nil)
+
+	if !reflect.DeepEqual(got, kinds) {
+		t.Fatalf("the scan saw kinds %v, want %v", got, kinds)
 	}
 }

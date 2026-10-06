@@ -32,7 +32,7 @@ func typeRunes(m Model, s string) Model {
 }
 
 func TestSlashEntersFilterModeAndTypingFiltersRows(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries(filterEntries())
 
 	updated, _ := m.Update(keyMsg("/"))
@@ -55,7 +55,7 @@ func TestSlashEntersFilterModeAndTypingFiltersRows(t *testing.T) {
 }
 
 func TestFilterModeSwallowsActionKeys(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries(filterEntries())
 	updated, _ := m.Update(keyMsg("/"))
 	m = updated.(Model)
@@ -75,7 +75,7 @@ func TestFilterModeSwallowsActionKeys(t *testing.T) {
 }
 
 func TestEscLeavesFilterModeKeepingTheQueryApplied(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries(filterEntries())
 	updated, _ := m.Update(keyMsg("/"))
 	m = updated.(Model)
@@ -96,7 +96,7 @@ func TestEscLeavesFilterModeKeepingTheQueryApplied(t *testing.T) {
 }
 
 func TestEscInNormalModeClearsAnAppliedFilter(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries(filterEntries())
 	updated, _ := m.Update(keyMsg("/"))
 	m = updated.(Model)
@@ -116,7 +116,7 @@ func TestEscInNormalModeClearsAnAppliedFilter(t *testing.T) {
 }
 
 func TestEnterMidFilterStillJumps(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries(filterEntries())
 	updated, _ := m.Update(keyMsg("/"))
 	m = updated.(Model)
@@ -137,7 +137,7 @@ func TestEnterMidFilterStillJumps(t *testing.T) {
 }
 
 func TestArrowsStillMoveTheCursorMidFilter(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries(filterEntries()) // working sorts first: claude, then pi
 	updated, _ := m.Update(keyMsg("/"))
 	m = updated.(Model)
@@ -152,7 +152,7 @@ func TestArrowsStillMoveTheCursorMidFilter(t *testing.T) {
 }
 
 func TestPollKeepsTheFilterApplied(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries(filterEntries())
 	updated, _ := m.Update(keyMsg("/"))
 	m = updated.(Model)
@@ -171,7 +171,7 @@ func TestPollKeepsTheFilterApplied(t *testing.T) {
 }
 
 func TestFilterCursorFollowsTheSameEntryWhileTyping(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	entries := filterEntries()
 	c := entry(3, ancestry.Ghostty, "idle")
 	c.Cwd = "/Users/x/canopy"
@@ -199,7 +199,7 @@ func TestFilterCursorFollowsTheSameEntryWhileTyping(t *testing.T) {
 }
 
 func TestFilterPlaceholderNamesTheQueryWhenNothingMatches(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries(filterEntries())
 	updated, _ := m.Update(keyMsg("/"))
 	m = updated.(Model)
@@ -215,7 +215,7 @@ func TestFilterPlaceholderNamesTheQueryWhenNothingMatches(t *testing.T) {
 }
 
 func TestCtrlUClearsTheQueryMidFilter(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries(filterEntries())
 	updated, _ := m.Update(keyMsg("/"))
 	m = updated.(Model)

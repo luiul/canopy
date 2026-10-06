@@ -10,30 +10,62 @@ import (
 	"time"
 )
 
+// testKinds is the tracked set the parsing tests run against. It
+// deliberately includes a name no hardcoded list would ever contain
+// ("myagent"), so the tests prove the set is caller-driven: nothing
+// matches unless the caller put it in.
+var testKinds = map[string]bool{
+	"pi": true, "pig": true, "claude": true, "codex": true, "myagent": true,
+}
+
 func TestParsePsOutputMatchesKnownKindWithTty(t *testing.T) {
-	got := ParsePsOutput("78424 ttys006 pi\n")
+	got := ParsePsOutput("78424 ttys006 pi\n", testKinds)
 	want := []ProcessMatch{{Pid: 78424, Tty: "ttys006", Kind: "pi", Args: "pi"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }
 
+func TestParsePsOutputTracksExactlyTheGivenSet(t *testing.T) {
+	// A custom kind matches, and a name absent from this particular set
+	// (pi) does not: there is no hidden built-in list underneath.
+	kinds := map[string]bool{"myagent": true}
+	got := ParsePsOutput("1 ttys000 myagent\n2 ttys001 pi\n", kinds)
+	if len(got) != 1 || got[0].Kind != "myagent" {
+		t.Fatalf("got %+v, want only the myagent row", got)
+	}
+}
+
+func TestParsePsOutputMatchesPigNativeBinaryButNotItsLauncher(t *testing.T) {
+	// A live pig session's process shape: an npm launcher (argv0 `node`,
+	// never tracked), the real agent binary underneath it (basename
+	// `pig`, the row canopy tracks), and pig's node extension host (argv0
+	// `node` again).
+	out := "11 ttys010 node /opt/homebrew/bin/pig\n" +
+		"12 ttys010 /opt/homebrew/lib/node_modules/@pi-in-go/pig-darwin-arm64/pig\n" +
+		"13 ttys010 node /opt/homebrew/lib/node_modules/@pi-in-go/pig/cells/host.js\n"
+	got := ParsePsOutput(out, testKinds)
+	if len(got) != 1 || got[0].Pid != 12 || got[0].Kind != "pig" {
+		t.Fatalf("got %+v, want only pid 12 (the native pig binary)", got)
+	}
+}
+
 func TestParsePsOutputSkipsProcessesWithoutATty(t *testing.T) {
-	got := ParsePsOutput("111 ?? codex mcp\n222 ttys003 codex\n")
+	got := ParsePsOutput("111 ?? codex mcp\n222 ttys003 codex\n", testKinds)
 	if len(got) != 1 || got[0].Pid != 222 {
 		t.Fatalf("got %+v, want only pid 222", got)
 	}
 }
 
 func TestParsePsOutputSkipsUnknownKinds(t *testing.T) {
-	got := ParsePsOutput("1 ttys000 bun /some/server.bundle.mjs\n2 ttys001 zsh\n")
+	got := ParsePsOutput("1 ttys000 bun /some/server.bundle.mjs\n2 ttys001 zsh\n", testKinds)
 	if len(got) != 0 {
 		t.Fatalf("got %+v, want none", got)
 	}
 }
 
 func TestParsePsOutputResolvesFullPathArgv0ToBasename(t *testing.T) {
-	got := ParsePsOutput("5 ttys002 /usr/local/bin/claude --resume\n")
+	got := ParsePsOutput("5 ttys002 /usr/local/bin/claude --resume\n", testKinds)
 	if len(got) != 1 || got[0].Kind != "claude" {
 		t.Fatalf("got %+v, want kind claude", got)
 	}
@@ -47,14 +79,14 @@ func TestParsePsOutputDenylistsHelperSubcommands(t *testing.T) {
 	sort.Strings(tokens)
 	for _, tok := range tokens {
 		out := "9 ttys004 codex " + tok + "\n"
-		if got := ParsePsOutput(out); len(got) != 0 {
+		if got := ParsePsOutput(out, testKinds); len(got) != 0 {
 			t.Fatalf("token %q should be filtered out, got %+v", tok, got)
 		}
 	}
 }
 
 func TestParsePsOutputIgnoresBlankAndMalformedLines(t *testing.T) {
-	got := ParsePsOutput("\n   \nnot a valid ps line\n42 ttys005 pi\n")
+	got := ParsePsOutput("\n   \nnot a valid ps line\n42 ttys005 pi\n", testKinds)
 	if len(got) != 1 || got[0].Pid != 42 {
 		t.Fatalf("got %+v, want only pid 42", got)
 	}
@@ -210,7 +242,7 @@ func TestScanAgentProcessesRetriesOnceAndRecovers(t *testing.T) {
 		return []byte("  123 ttys000 pi\n"), nil
 	})
 
-	matches, err := ScanAgentProcesses("someuser")
+	matches, err := ScanAgentProcesses("someuser", testKinds)
 	if err != nil {
 		t.Fatalf("got error %v, want the retry to recover", err)
 	}
@@ -230,7 +262,7 @@ func TestScanAgentProcessesReportsATypedTimeoutWhenPsHangs(t *testing.T) {
 		return nil, ctx.Err()
 	})
 
-	_, err := ScanAgentProcesses("someuser")
+	_, err := ScanAgentProcesses("someuser", testKinds)
 	if !errors.Is(err, ErrScanTimeout) {
 		t.Fatalf("got error %v, want it to wrap ErrScanTimeout", err)
 	}
@@ -246,7 +278,7 @@ func TestScanAgentProcessesDoesNotRetryASuccess(t *testing.T) {
 		return []byte(""), nil
 	})
 
-	if _, err := ScanAgentProcesses("someuser"); err != nil {
+	if _, err := ScanAgentProcesses("someuser", testKinds); err != nil {
 		t.Fatalf("got error %v, want none", err)
 	}
 	if calls != 1 {

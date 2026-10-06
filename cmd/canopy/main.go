@@ -1,5 +1,6 @@
-// Command canopy is an interactive dashboard for every agent CLI session
-// (pi, claude, codex, ...) running on this machine, wherever it actually
+// Command canopy is an interactive dashboard for every tracked agent CLI
+// session (pi by default, the set configurable via internal/config)
+// running on this machine, wherever it actually
 // is: a VS Code integrated terminal, or a bare Ghostty tab, with its live
 // state and jump-to-window on Enter.
 package main
@@ -16,6 +17,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/luiul/canopy/internal/config"
 	"github.com/luiul/canopy/internal/tui"
 )
 
@@ -24,8 +26,9 @@ import (
 //	go build -ldflags "-X main.version=1.2.3"
 var version = "0.1.0-dev"
 
-const helpText = `canopy: interactive dashboard for every pi/claude/codex/... session on
-this machine: VS Code integrated terminals and bare Ghostty tabs alike.
+const helpText = `canopy: interactive dashboard for every tracked agent session on
+this machine (pi by default): VS Code integrated terminals and bare
+Ghostty tabs alike.
 
 Arrow keys to move, Enter to jump to the selected session's window, x to
 terminate it (with confirmation), ? for every keybinding, r to refresh,
@@ -40,13 +43,19 @@ Flags:
   --no-bell             Disable the terminal bell on new done rows.
   --version             Show the version and exit.
   -h, --help            Show this help and exit.
+
+Configuration:
+  ~/.config/canopy/config.toml (or $XDG_CONFIG_HOME/canopy/config.toml)
+  sets the tracked agent kinds, replacing the default:
+
+      agents = ["pi", "pig", "claude"]
 `
 
-// config is parseFlags' validated result: exactly what main needs to
+// options is parseFlags' validated result: exactly what main needs to
 // decide what to do next, split out from flag.FlagSet's own parsing so
 // that decision is unit-testable without exec'ing the real binary (see
 // main_test.go).
-type config struct {
+type options struct {
 	interval    time.Duration
 	noColor     bool
 	noBell      bool
@@ -58,7 +67,7 @@ type config struct {
 // itself would (including flag.ErrHelp for -h/--help, which callers should
 // treat as "exit 0, not an error") plus canopy's own validation
 // (--interval must be positive).
-func parseFlags(args []string, out io.Writer) (config, error) {
+func parseFlags(args []string, out io.Writer) (options, error) {
 	fs := flag.NewFlagSet("canopy", flag.ContinueOnError)
 	fs.SetOutput(out)
 	interval := fs.Float64("interval", tui.DefaultInterval.Seconds(), "Poll interval in seconds.")
@@ -68,20 +77,20 @@ func parseFlags(args []string, out io.Writer) (config, error) {
 	fs.Usage = func() { _, _ = fmt.Fprint(out, helpText) }
 
 	if err := fs.Parse(args); err != nil {
-		return config{}, err
+		return options{}, err
 	}
 
 	if *showVersion {
-		return config{showVersion: true}, nil
+		return options{showVersion: true}, nil
 	}
 
 	if *interval <= 0 {
 		err := errors.New("canopy: --interval must be positive")
 		_, _ = fmt.Fprintln(out, err)
-		return config{}, err
+		return options{}, err
 	}
 
-	return config{
+	return options{
 		interval: time.Duration(*interval * float64(time.Second)),
 		noColor:  *noColor,
 		noBell:   *noBell,
@@ -130,11 +139,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The tracked agent-kind set comes from the config file when one
+	// exists, or from config.DefaultAgents otherwise. Same fail-fast
+	// posture as checkPlatform above: a malformed or invalid config must
+	// stop the startup with a clear error, not silently track the wrong
+	// thing (see internal/config's doc for the full contract).
+	configPath, err := config.Path()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "canopy:", err)
+		os.Exit(1)
+	}
+	appConfig, err := config.Load(configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "canopy:", err)
+		os.Exit(1)
+	}
+
 	if cfg.noColor || os.Getenv("NO_COLOR") != "" {
 		lipgloss.SetColorProfile(termenv.Ascii)
 	}
 
-	if err := tui.Run(cfg.interval, !cfg.noBell); err != nil {
+	if err := tui.Run(cfg.interval, appConfig.Set(), !cfg.noBell); err != nil {
 		fmt.Fprintln(os.Stderr, "canopy:", err)
 		os.Exit(1)
 	}

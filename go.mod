@@ -9,6 +9,7 @@ require (
 	github.com/luiul/dashkit v0.12.0
 	github.com/mattn/go-runewidth v0.0.28
 	github.com/muesli/termenv v0.16.0
+	github.com/pelletier/go-toml/v2 v2.4.3
 )
 
 require (

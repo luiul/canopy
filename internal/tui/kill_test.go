@@ -52,7 +52,7 @@ func keyMsg(s string) tea.KeyMsg {
 }
 
 func TestXArmsASIGTERMPromptAndXArmsSIGKILL(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 
 	updated, _ := m.Update(keyMsg("x"))
@@ -70,7 +70,7 @@ func TestXArmsASIGTERMPromptAndXArmsSIGKILL(t *testing.T) {
 	// X arms SIGKILL instead. On a fresh model: while a prompt is armed,
 	// any key other than an answer is swallowed rather than re-arming (the
 	// intercept is what makes stacking two prompts impossible).
-	m = New(999)
+	m = New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 	updated, _ = m.Update(keyMsg("X"))
 	m = updated.(Model)
@@ -80,7 +80,7 @@ func TestXArmsASIGTERMPromptAndXArmsSIGKILL(t *testing.T) {
 }
 
 func TestArmingAPromptSchedulesItsAutoCancelTick(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 
 	_, cmd := m.Update(keyMsg("x"))
@@ -90,7 +90,7 @@ func TestArmingAPromptSchedulesItsAutoCancelTick(t *testing.T) {
 }
 
 func TestXOnThePlaceholderRowIsANoOp(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries(nil)
 
 	updated, _ := m.Update(keyMsg("x"))
@@ -100,7 +100,7 @@ func TestXOnThePlaceholderRowIsANoOp(t *testing.T) {
 }
 
 func TestTheArmedPromptRendersInTheFooterWithTargetDetails(t *testing.T) {
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "idle")})
@@ -115,7 +115,7 @@ func TestTheArmedPromptRendersInTheFooterWithTargetDetails(t *testing.T) {
 }
 
 func TestThePromptWarnsWhenTheTargetIsMidTurn(t *testing.T) {
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
@@ -130,7 +130,7 @@ func TestThePromptWarnsWhenTheTargetIsMidTurn(t *testing.T) {
 
 func TestYConfirmsAnArmedPrompt(t *testing.T) {
 	calls := withKillProcess(t, true)
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 
 	updated, _ := m.Update(keyMsg("x"))
@@ -164,7 +164,7 @@ func TestNEscAndEnterCancelAnArmedPromptNotifying(t *testing.T) {
 	calls := withKillProcess(t, true)
 
 	for _, key := range []string{"n", "esc", "enter"} {
-		m := New(999)
+		m := New(999, nil)
 		m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 		updated, _ := m.Update(keyMsg("x"))
 		m = updated.(Model)
@@ -193,7 +193,7 @@ func TestAnArmedPromptSwallowsAnyNonAnswer(t *testing.T) {
 	calls := withKillProcess(t, true)
 
 	for _, key := range []string{"N", "q", "c", "x", "?", "j"} {
-		m := New(999)
+		m := New(999, nil)
 		m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 		updated, _ := m.Update(keyMsg("x"))
 		m = updated.(Model)
@@ -228,7 +228,7 @@ func TestAnArmedPromptSwallowsAnyNonAnswer(t *testing.T) {
 // TestCtrlCQuitsFromAnArmedPrompt pins the one exception to the modal's
 // key swallowing: ctrl+c always quits, from anywhere.
 func TestCtrlCQuitsFromAnArmedPrompt(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 	updated, _ := m.Update(keyMsg("x"))
 	m = updated.(Model)
@@ -244,7 +244,7 @@ func TestCtrlCQuitsFromAnArmedPrompt(t *testing.T) {
 }
 
 func TestAnArmedPromptAutoCancelsAfterTheTimeout(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 	updated, _ := m.Update(keyMsg("x"))
 	m = updated.(Model)
@@ -263,7 +263,7 @@ func TestAnArmedPromptAutoCancelsAfterTheTimeout(t *testing.T) {
 }
 
 func TestAStaleCancelConfirmTokenIsIgnored(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 	updated, _ := m.Update(keyMsg("x"))
 	m = updated.(Model)
@@ -276,7 +276,7 @@ func TestAStaleCancelConfirmTokenIsIgnored(t *testing.T) {
 }
 
 func TestDArmsABulkPromptForDoneRowsOnly(t *testing.T) {
-	m := New(999 * time.Second)
+	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 	m.applyEntries([]registry.RegistryEntry{
@@ -308,7 +308,7 @@ func TestDArmsABulkPromptForDoneRowsOnly(t *testing.T) {
 }
 
 func TestDWithNoDoneRowsJustNotifies(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
 
 	updated, _ := m.Update(keyMsg("D"))
@@ -324,7 +324,7 @@ func TestDWithNoDoneRowsJustNotifies(t *testing.T) {
 
 func TestPPausesARunningRowAndResumesAStoppedOne(t *testing.T) {
 	calls := withKillProcess(t, true)
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(7, ancestry.Ghostty, "working")})
 
 	updated, cmd := m.Update(keyMsg("p"))
@@ -352,7 +352,7 @@ func TestPPausesARunningRowAndResumesAStoppedOne(t *testing.T) {
 
 func TestPOnThePlaceholderRowIsANoOp(t *testing.T) {
 	calls := withKillProcess(t, true)
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries(nil)
 
 	updated, cmd := m.Update(keyMsg("p"))
@@ -366,7 +366,7 @@ func TestPOnThePlaceholderRowIsANoOp(t *testing.T) {
 }
 
 func TestKillResultMsgShowsASingleEntrysOwnMessage(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	updated, cmd := m.Update(killResultMsg{
 		results: []kill.Result{{OK: true, Message: "killed pi (pid 42)"}},
 		sig:     syscall.SIGKILL,
@@ -388,7 +388,7 @@ func TestKillResultMsgShowsASingleEntrysOwnMessage(t *testing.T) {
 }
 
 func TestKillResultMsgSummarizesABulkKill(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	updated, _ := m.Update(killResultMsg{
 		results: []kill.Result{{OK: true}, {OK: true}, {OK: false, Message: "pid 3 already exited"}},
 		sig:     syscall.SIGTERM,
@@ -404,7 +404,7 @@ func TestKillResultMsgSummarizesABulkKill(t *testing.T) {
 }
 
 func TestKillResultMsgWithOnlyFailuresDoesNotRepoll(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	updated, cmd := m.Update(killResultMsg{
 		results: []kill.Result{{OK: false, Message: "nope"}},
 		sig:     syscall.SIGKILL,
@@ -422,7 +422,7 @@ func TestKillResultMsgWithOnlyFailuresDoesNotRepoll(t *testing.T) {
 }
 
 func TestAPollKeepsAnArmedPromptsTargetsFresh(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	e := entry(42, ancestry.Ghostty, "working")
 	e.Uptime = 100 * time.Second
 	m.applyEntries([]registry.RegistryEntry{e})
@@ -444,7 +444,7 @@ func TestAPollKeepsAnArmedPromptsTargetsFresh(t *testing.T) {
 }
 
 func TestAPollCancelsAnArmedPromptWhoseTargetsAllVanished(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{entry(42, ancestry.Ghostty, "working")})
 
 	updated, _ := m.Update(keyMsg("x"))
@@ -458,7 +458,7 @@ func TestAPollCancelsAnArmedPromptWhoseTargetsAllVanished(t *testing.T) {
 }
 
 func TestAPollPrunesVanishedTargetsFromABulkPrompt(t *testing.T) {
-	m := New(999)
+	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{
 		entry(1, ancestry.Ghostty, "done"),
 		entry(2, ancestry.Ghostty, "done"),

@@ -1,5 +1,6 @@
-// Package scan finds the current user's processes that match known agent
-// CLI kinds: pi, claude, codex, etc.
+// Package scan finds the current user's processes whose executable
+// basename is in a caller-provided set of agent CLI kinds (pi, pig,
+// claude, ...; see internal/config for where the set comes from).
 package scan
 
 import (
@@ -46,15 +47,6 @@ var runCommand = func(ctx context.Context, name string, args ...string) ([]byte,
 	return exec.CommandContext(ctx, name, args...).Output()
 }
 
-// KnownKinds is the set of recognized agent CLI kinds that canopy tracks.
-var KnownKinds = map[string]bool{
-	"pi": true, "claude": true, "codex": true, "gemini": true, "cursor": true,
-	"devin": true, "agy": true, "cline": true, "omp": true, "mastracode": true,
-	"opencode": true, "copilot": true, "kimi": true, "kiro": true, "droid": true,
-	"amp": true, "grok": true, "hermes": true, "kilo": true, "qodercli": true,
-	"maki": true,
-}
-
 // SecondTokenDenylist filters out subcommand/flag invocations that share a
 // kind's executable name but aren't the interactive agent itself (e.g.
 // `codex mcp`, `claude --version`).
@@ -65,7 +57,8 @@ var SecondTokenDenylist = map[string]bool{
 
 var psLineRe = regexp.MustCompile(`^(\d+)\s+(\S+)\s+(.*)$`)
 
-// ProcessMatch is one process from `ps` that matches a known agent kind.
+// ProcessMatch is one process from `ps` whose executable basename is in
+// the tracked kind set.
 type ProcessMatch struct {
 	Pid  int
 	Tty  string
@@ -75,8 +68,9 @@ type ProcessMatch struct {
 
 // ParsePsOutput is the pure parsing/filtering logic for
 // `ps -o pid=,tty=,args=` output, split out from ScanAgentProcesses so it's
-// testable without a real process table.
-func ParsePsOutput(output string) []ProcessMatch {
+// testable without a real process table. kinds is the complete tracked
+// set of executable basenames (nil or empty matches nothing).
+func ParsePsOutput(output string, kinds map[string]bool) []ProcessMatch {
 	var matches []ProcessMatch
 	for _, rawLine := range strings.Split(output, "\n") {
 		line := strings.TrimSpace(rawLine)
@@ -100,7 +94,7 @@ func ParsePsOutput(output string) []ProcessMatch {
 		if idx := strings.LastIndex(argv0, "/"); idx != -1 {
 			kind = argv0[idx+1:]
 		}
-		if !KnownKinds[kind] {
+		if !kinds[kind] {
 			continue
 		}
 		if len(tokens) > 1 && SecondTokenDenylist[tokens[1]] {
@@ -115,9 +109,10 @@ func ParsePsOutput(output string) []ProcessMatch {
 	return matches
 }
 
-// ScanAgentProcesses shells out to `ps` and returns every known-kind agent
-// process owned by user. Unlike ResolveCwds/ScanProcessTable (best-effort
-// enrichment: a failure there just leaves some columns blank), this is the
+// ScanAgentProcesses shells out to `ps` and returns every process owned
+// by user whose executable basename is in kinds. Unlike ResolveCwds and
+// ScanProcessTable (best-effort enrichment: a failure there just leaves
+// some columns blank), this is the
 // primary scan a poll depends on, so its error is returned rather than
 // swallowed: registry.PollOnce surfaces it as a visible warning, since a
 // `ps` invocation that fails to run at all (missing binary, sandboxed
@@ -130,7 +125,7 @@ func ParsePsOutput(output string) []ProcessMatch {
 // failed scan is costly upstream (registry surfaces it as a visible
 // warning). A genuinely broken invocation (missing binary, permissions)
 // fails fast both times, so the retry costs nothing there.
-func ScanAgentProcesses(user string) ([]ProcessMatch, error) {
+func ScanAgentProcesses(user string, kinds map[string]bool) ([]ProcessMatch, error) {
 	out, err := scanAgentProcessesOnce(user)
 	if err != nil {
 		time.Sleep(retryBackoff)
@@ -139,7 +134,7 @@ func ScanAgentProcesses(user string) ([]ProcessMatch, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ParsePsOutput(string(out)), nil
+	return ParsePsOutput(string(out), kinds), nil
 }
 
 // scanAgentProcessesOnce is one attempt of ScanAgentProcesses' ps call,
