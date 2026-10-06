@@ -51,5 +51,5 @@ func ReadModelDir(dir string, pid int, now time.Time) (Model, bool) {
 		w.UpdatedAt.IsZero() || now.Before(w.UpdatedAt) || now.Sub(w.UpdatedAt) > ModelMaxAge {
 		return Model{}, false
 	}
-	return Model{Pid: w.Pid, Name: w.Name, Provider: w.Provider, UpdatedAt: w.UpdatedAt}, true
+	return Model(w), true
 }

@@ -2,11 +2,10 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { test } from "node:test";
-import { mock } from "node:test";
+import { mock, test } from "node:test";
+import type { TestContext } from "node:test";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { TestContext } from "node:test";
 
 type Handler = (event: any, ctx: ExtensionContext) => unknown;
 
@@ -149,6 +148,40 @@ test("toggle and reload release and restore only the interactive owner's resourc
 	assert.equal(h.timers.size, 1);
 	assert.equal(process.listeners("exit").length, h.oldListeners.size + 1);
 	await pi.fire("session_shutdown", ctx);
+});
+
+test("model heartbeat refreshes stale metadata without changing the state timestamp", async (t) => {
+	const h = await harness(t);
+	const pi = h.create();
+	const ctx = context("tui", true);
+	await pi.fire("session_start", ctx);
+	const status = JSON.parse(fs.readFileSync(h.status, "utf8"));
+	status.updatedAt = new Date(Date.now() - 11000).toISOString();
+	fs.writeFileSync(h.status, JSON.stringify(status));
+	const model = JSON.parse(fs.readFileSync(h.model, "utf8"));
+	model.updatedAt = new Date(Date.now() - 89000).toISOString();
+	fs.writeFileSync(h.model, JSON.stringify(model));
+	const stateBefore = fs.readFileSync(h.status, "utf8");
+	assert.equal(h.timers.size, 1);
+	for (const timer of h.timers) timer.tick();
+	assert.equal(fs.readFileSync(h.status, "utf8"), stateBefore);
+	assert.ok(Date.now() - Date.parse(JSON.parse(fs.readFileSync(h.model, "utf8")).updatedAt) < 1000);
+	await pi.fire("session_shutdown", ctx);
+});
+
+test("process exit cleans up only the interactive owner's records", async (t) => {
+	const h = await harness(t);
+	const parent = h.create();
+	const child = h.create();
+	await parent.fire("session_start", context("tui", true));
+	await child.fire("session_start", context("print", false, helperModel));
+	const listeners = process.listeners("exit").filter((listener) => !h.oldListeners.has(listener));
+	assert.equal(listeners.length, 1);
+	listeners[0](0);
+	assert.equal(fs.existsSync(h.status), false);
+	assert.equal(fs.existsSync(h.model), false);
+	assert.equal(h.timers.size, 0);
+	assert.equal(process.listeners("exit").length, h.oldListeners.size);
 });
 
 test("older interactive hosts without mode still report", async (t) => {
