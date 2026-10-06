@@ -296,9 +296,10 @@ func TestViewMarksColumnBordersOnTheHeaderRowSoThereIsSomethingToDrag(t *testing
 	if headerLine == "" {
 		t.Fatalf("View() = %q, want a header line containing \"State\"", m.View())
 	}
-	// 9 columns, so 8 internal borders.
-	if n := strings.Count(headerLine, loam.BorderGlyph); n != 8 {
-		t.Fatalf("header line has %d border glyphs, want 8 (one per internal column border): %q", n, headerLine)
+	// One border per pair of adjacent columns.
+	want := len(m.table.Columns()) - 1
+	if n := strings.Count(headerLine, loam.BorderGlyph); n != want {
+		t.Fatalf("header line has %d border glyphs, want %d (one per internal column border): %q", n, want, headerLine)
 	}
 }
 
@@ -415,6 +416,35 @@ func TestBuildRowsTagsOnlyTheCursorRowsSinceCell(t *testing.T) {
 	}
 }
 
+func TestBuildRowsDisplaysSelectedModelAndUnknownPlaceholder(t *testing.T) {
+	pi := entry(1, ancestry.Ghostty, "idle")
+	pi.Kind = "pi"
+	pi.ModelName, pi.ModelProvider = "GPT-6 Sol", "ai-model-router"
+	unknown := entry(2, ancestry.Ghostty, "idle")
+	rows := buildRows([]registry.RegistryEntry{pi, unknown}, 0, "", time.Now(), nil, "")
+	if got, want := rows[0][colModel], "GPT-6 Sol [ai-model-router]"; got != want {
+		t.Fatalf("Model = %q, want %q", got, want)
+	}
+	if got := rows[1][colModel]; got != "—" {
+		t.Fatalf("unknown Model = %q, want —", got)
+	}
+	if got, want := len(rows[0]), len(New(time.Second, nil).table.Columns()); got != want {
+		t.Fatalf("row cells = %d, want %d columns", got, want)
+	}
+	placeholder := buildRows(nil, 0, "", time.Now(), nil, "")
+	if got, want := len(placeholder[0]), len(rows[0]); got != want {
+		t.Fatalf("placeholder cells = %d, want %d columns", got, want)
+	}
+
+	m := New(time.Second, nil)
+	m.width, m.height = 150, 35
+	m.resizeColumns()
+	m.applyEntries([]registry.RegistryEntry{pi})
+	if !strings.Contains(m.View(), "GPT-6 Sol [ai-model-router]") {
+		t.Fatalf("rendered table omitted the selected model: %q", m.View())
+	}
+}
+
 func TestCursorSentinelFollowsArrowKeysBetweenPolls(t *testing.T) {
 	m := New(999, nil)
 	m.applyEntries([]registry.RegistryEntry{
@@ -434,6 +464,16 @@ func TestCursorSentinelFollowsArrowKeysBetweenPolls(t *testing.T) {
 	}
 	if got := mm.table.Rows()[1][colSince]; !strings.Contains(got, cursorSentinel) {
 		t.Fatalf("got %q, want row 1 to carry cursorSentinel after moving down", got)
+	}
+}
+
+func TestModelChangeDoesNotRingTheDoneBell(t *testing.T) {
+	before := entry(1, ancestry.Ghostty, "done")
+	before.ModelName, before.ModelProvider = "GPT-6 Luna", "ai-model-router"
+	after := before
+	after.ModelName = "GPT-6 Sol"
+	if needsBell([]registry.RegistryEntry{before}, []registry.RegistryEntry{after}, nil) {
+		t.Fatal("model selection changed without a state change, want no bell")
 	}
 }
 
@@ -1021,7 +1061,7 @@ func TestRenderHeaderOriginYMatchesTheTablesActualHeaderRowWithAWarningLine(t *t
 
 func TestMouseDragOnlyResizesTheTwoColumnsStraddlingTheDraggedBorder(t *testing.T) {
 	m := New(999*time.Second, nil)
-	m.width, m.height = 120, 40
+	m.width, m.height = 140, 40
 	m.resizeColumns()
 
 	cols := m.table.Columns()
@@ -1056,7 +1096,7 @@ func TestMouseDragOnlyResizesTheTwoColumnsStraddlingTheDraggedBorder(t *testing.
 
 func TestMouseDragNowWorksOnLocationsOwnRightHandBorder(t *testing.T) {
 	m := New(999*time.Second, nil)
-	m.width, m.height = 120, 40
+	m.width, m.height = 140, 40
 	m.resizeColumns()
 
 	cols := m.table.Columns()
@@ -1113,12 +1153,10 @@ func TestMouseDragBetweenTwoAlreadyMinimalColumnsIsANoOp(t *testing.T) {
 }
 
 func TestResizeColumnsNeverOverflowsTheTerminal(t *testing.T) {
-	// The fixed columns sum to 53, plus 18 of cell padding: below a
-	// terminal width of 91, flooring Location at 20 used to push the
-	// table past the terminal's right edge, clipping Kind/PID entirely.
-	// Location dips below its floor instead, down to the hard floor of 8.
+	// At 121 cells, the fixed columns and a 20-cell Location floor fit;
+	// below that Location absorbs the deficit without losing Model/Kind/PID.
 	m := New(999*time.Second, nil)
-	m.width, m.height = 80, 40
+	m.width, m.height = 110, 40
 	m.resizeColumns()
 
 	cols := m.table.Columns()
@@ -1135,10 +1173,10 @@ func TestResizeColumnsNeverOverflowsTheTerminal(t *testing.T) {
 
 	// Past the hard floor the overflow is accepted rather than crushing
 	// Location to nothing.
-	m.width = 60
+	m.width = 95
 	m.resizeColumns()
 	if got := m.table.Columns()[colLocation].Width; got != 8 {
-		t.Fatalf("Location width = %d at width 60, want the hard floor 8", got)
+		t.Fatalf("Location width = %d at width 95, want the hard floor 8", got)
 	}
 }
 
@@ -1168,7 +1206,7 @@ func TestMouseDragSurvivesTheNextTerminalResizeAtTheSameWidth(t *testing.T) {
 
 func TestWindowSizeMsgClearsColumnOverrides(t *testing.T) {
 	m := New(999*time.Second, nil)
-	m.width, m.height = 120, 40
+	m.width, m.height = 140, 40
 	m.resizeColumns()
 
 	cols := m.table.Columns()
@@ -1183,7 +1221,7 @@ func TestWindowSizeMsgClearsColumnOverrides(t *testing.T) {
 		t.Fatal("want a Surface override recorded after the drag")
 	}
 
-	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
 	m = updated.(Model)
 	if m.colOverrides != nil {
 		t.Fatalf("colOverrides = %v after a terminal resize, want nil", m.colOverrides)
@@ -1287,9 +1325,8 @@ func TestMouseDragSurfaceBorderNarrowsToItsContentFloor(t *testing.T) {
 
 func TestMouseDragUptimeBorderNarrowsToItsContentFloor(t *testing.T) {
 	// Uptime's default (7) is its title's width plus one; its content
-	// ("23h59m", 6) is one narrower, so the Uptime/Kind border can move
-	// left exactly one before Uptime floors — the same clamp understory's
-	// Merge column has.
+	// ("23h59m", 6) is one narrower, so the Uptime/Model border can move
+	// left exactly one before Uptime floors; Model absorbs that cell.
 	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
@@ -1307,8 +1344,8 @@ func TestMouseDragUptimeBorderNarrowsToItsContentFloor(t *testing.T) {
 	if got, want := gotCols[colUptime].Width, uptimeContentWidth; got != want {
 		t.Fatalf("Uptime width = %d, want %d (clamped at its content floor)", got, want)
 	}
-	if got, want := gotCols[colKind].Width, 7+(7-uptimeContentWidth); got != want {
-		t.Fatalf("Kind width = %d, want %d (it absorbed exactly what Uptime gave up)", got, want)
+	if got, want := gotCols[colModel].Width, modelContentWidth+2; got != want {
+		t.Fatalf("Model width = %d, want %d (it absorbed exactly what Uptime gave up)", got, want)
 	}
 }
 

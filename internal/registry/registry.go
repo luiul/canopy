@@ -32,6 +32,10 @@ import (
 // OpenVSCode/OpenGhostty.
 var pistatusRead = pistatus.Read
 
+// pistatusReadModel is independent of pistatusRead: the model report stays
+// fresh while pi is idle, without changing the state write's timestamp.
+var pistatusReadModel = pistatus.ReadModel
+
 // resolveCwds is a package-level seam onto scan.ResolveCwds, swapped out in
 // tests so externalEntries can be exercised without shelling out to lsof.
 var resolveCwds = scan.ResolveCwds
@@ -59,6 +63,11 @@ type RegistryEntry struct {
 	Cwd     string // "" means unknown
 	Surface ancestry.Surface
 	State   string
+	// ModelName and ModelProvider are pi's selected model, supplied by the
+	// optional companion extension. Empty for other agent kinds or when the
+	// model report is missing or stale; independent of RealState.
+	ModelName     string
+	ModelProvider string
 	// StateSince is when State last changed, not when this entry was last
 	// seen. Stamped by stampStateSince on every poll: carried over unchanged
 	// while State stays the same, reset to the poll time the moment it
@@ -212,6 +221,15 @@ func externalEntries(matches []scan.ProcessMatch, table map[int]scan.ProcessInfo
 				if entry.Cwd == "" {
 					entry.Cwd = st.Cwd
 				}
+			}
+		}
+		// Model reporting has its own freshness window: an idle pi session can
+		// still have a valid model even after its state report expires. Read
+		// it independently rather than gating it on RealState.
+		if m.Kind == "pi" {
+			if model, ok := pistatusReadModel(m.Pid); ok {
+				entry.ModelName = model.Name
+				entry.ModelProvider = model.Provider
 			}
 		}
 		entries = append(entries, entry)

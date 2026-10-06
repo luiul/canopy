@@ -51,12 +51,9 @@ const notifyDuration = 4 * time.Second
 // Order is deliberately urgency-first: State and Since (what needs you, and
 // for how long) come first, matching the top-to-bottom state-priority sort.
 // Surface and Location (where a session lives) follow. CPU/RAM/Uptime (how a
-// session is doing, resource-wise) come next: useful for spotting a runaway
-// or forgotten session, but not the first thing anyone scans for, so they sit
-// to the right of Location rather than competing with State/Since for
-// leftmost attention. Kind and PID are last and narrow: useful context, but
-// rarely the thing you're scanning for, so they're the columns that give up
-// width first and truncate hardest on a narrow terminal.
+// session is doing, resource-wise) and Model (pi's selected model/provider)
+// come next; Kind and PID are last and narrow. Location remains the only
+// flex column, giving up space first on smaller terminals.
 // Note: there is no leading cursor column. Selected rows are highlighted
 // via loam.ColorizeRows' post-render row highlight; see loam's doc.
 const (
@@ -67,6 +64,7 @@ const (
 	colCPU
 	colRAM
 	colUptime
+	colModel
 	colKind
 	colPID
 )
@@ -257,6 +255,7 @@ func New(interval time.Duration, kinds map[string]bool) Model {
 		{Title: "CPU", Width: 4},
 		{Title: "RAM", Width: 6},
 		{Title: "Uptime", Width: 7},
+		{Title: "Model", Width: modelContentWidth + 1},
 		{Title: "Kind", Width: 7}, // narrow on purpose; truncates long kinds (e.g. "mastracode")
 		{Title: "PID", Width: 6},  // narrow on purpose; truncates rare 6+ digit pids
 	}
@@ -819,20 +818,16 @@ func (m *Model) resetRows(previousKey string) {
 	m.table.SetCursor(cursor)
 }
 
-// stateContentWidth, surfaceContentWidth, ramContentWidth,
-// uptimeContentWidth, and pidContentWidth are the widest values those
-// columns ever display: the states top out at "working"/"unknown", the
-// surfaces at "VS Code"/"Ghostty"/"unknown", RAM at "1023M"/"99.9G"
-// (see ramCellText), Uptime at "23h59m" (humanizeSince's longest form
-// before it switches to "%dd"), and PIDs at five digits. kindDragFloor
-// is the exception: Kind's default already truncates long kinds on
-// purpose ("mastracode"), so its floor only keeps the short kinds
-// ("pi", "grok", "kimi") fully visible rather than fitting every value.
+// State, Surface, RAM, Uptime, and PID floors fit their usual values.
+// Model fits "GPT-6 Sol [ai-model-router]". Longer names may truncate,
+// like long Kind values: a wider Model would squeeze Location on an
+// ordinary 120-cell terminal.
 const (
 	stateContentWidth   = 7
 	surfaceContentWidth = 7
 	ramContentWidth     = 5
 	uptimeContentWidth  = 6
+	modelContentWidth   = 27
 	kindDragFloor       = 4
 	pidContentWidth     = 5
 )
@@ -841,13 +836,12 @@ const (
 // order/index New builds them (see the Column indexes above), for
 // trellis' mouse-resize handling (see Update's tea.MouseMsg case). The
 // fixed columns floor at their CONTENT widths (see the constants above),
-// not their defaults: their values are bounded and always fit there,
-// while their defaults only add room for the title — so a drag can
-// narrow them past the default (truncating the title, never a value) to
-// make room for Location or a neighbor, the same deal understory's fixed
-// columns get. Flooring at the defaults instead would freeze every fixed
-// column in place: each one always sits exactly at its default, leaving
-// zero room to trade in either direction. Since and CPU are the
+// not their defaults: usual values fit there, while the defaults add
+// room for titles. A drag can narrow past the default (truncating the
+// title) to make room for a neighbor. Long Model and Kind values may
+// already truncate at their defaults, since their lengths are unbounded.
+// Flooring at the defaults instead would freeze every fixed column in
+// place, with no room to trade in either direction. Since and CPU are the
 // exceptions: their defaults ARE their content widths ("23h59m",
 // "100%"), so they have nothing to give and their borders move only via
 // their neighbors. Location floors at 20, the same floor resizeColumns'
@@ -864,6 +858,7 @@ func columnMinWidths() []int {
 		4, // CPU: its default is already its content width ("100%")
 		ramContentWidth,
 		uptimeContentWidth,
+		modelContentWidth,
 		kindDragFloor,
 		pidContentWidth,
 	}
@@ -885,11 +880,11 @@ func columnMinWidths() []int {
 // 8) rather than pushing the table past the terminal's right edge — a
 // wider-than-terminal table just gets its rightmost columns (Kind, PID)
 // clipped away entirely, which is worse than a truncated Location. Past
-// 8 the terminal is simply too narrow for nine columns; the remaining
+// 8 the terminal is simply too narrow for ten columns; the remaining
 // overflow is accepted.
 func (m *Model) resizeColumns() {
 	cols := m.table.Columns()
-	if len(cols) != 9 {
+	if len(cols) != colPID+1 {
 		return
 	}
 	fixed := 0
@@ -902,7 +897,7 @@ func (m *Model) resizeColumns() {
 		}
 		fixed += cols[i].Width
 	}
-	remaining := m.width - fixed - 18 // 2 chars of padding per cell, 9 cells
+	remaining := m.width - fixed - 2*len(cols) // 2 chars of padding per cell
 	if remaining < 20 {
 		remaining = max(remaining, 8)
 	}

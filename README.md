@@ -55,10 +55,10 @@ canopy's scope could stay exactly "agent sessions," nothing else.
 canopy — agent sessions on this machine
 3 sessions: 1 done · 1 working · 1 idle
 
-State      Since   Surface    Location                                  CPU   RAM     Uptime  Kind     PID
-working    12s     VS Code    ~/projects/personal/canopy                4%    278M    1h      pi       86872
-done       3m      VS Code    ~/worktrees/.../isa-orchestration         0%    140M    2h30m   pi       9514
-idle       1h20m   Ghostty    ~/some/other/project                     0%    95M     1d       pi       65834
+State      Since   Surface    Location                                  CPU   RAM     Uptime  Model                         Kind     PID
+working    12s     VS Code    ~/projects/personal/canopy                4%    278M    1h      GPT-6 Sol [ai-model-router]   pi       86872
+done       3m      VS Code    ~/worktrees/.../isa-orchestration         0%    140M    2h30m   —                             pi       9514
+idle       1h20m   Ghostty    ~/some/other/project                      0%    95M     1d      —                             pi       65834
 
 ↑/↓ move · enter jump · c dismiss · x kill · / filter · ? help · q quit
 ```
@@ -105,12 +105,13 @@ divider marks each border on the header row (see
 `DrawHeaderBorders`) so there's something to aim the drag at, rather than
 an invisible 2-space gap. Each column can shrink down to the width its
 values still fit (State/Surface/RAM/Uptime/PID their widest value, Kind
-its short kinds, Location its own floor of 20; Since and CPU's defaults
-already ARE their widest values, so their borders move only via their
-neighbors) — a narrower drag truncates only the header title, never a
-value. A resize sticks across the next poll, but resets on a terminal
-resize, since that already recomputes Location's own width from scratch
-against the new terminal width anyway.
+its short kinds, Model the example `GPT-6 Sol [ai-model-router]`,
+Location its own floor of 20; Since and CPU's defaults already ARE their
+widest values, so their borders move only via their neighbors) — a
+narrower drag truncates only the header title for these typical values.
+Very long model names may be cut off. A resize sticks across the next poll,
+but resets on a terminal resize, since that already recomputes Location's
+own width from scratch against the new terminal width anyway.
 
 The currently selected row is highlighted with a subtle grey background
 spanning the full width of the table, rather than a leading marker glyph
@@ -124,13 +125,15 @@ memory straight from `ps`, and total wall-clock time the process has been
 running (distinct from Since, which is time in the *current* state) —
 useful for spotting a runaway or long-forgotten session, but secondary to
 State/Since so they sit to the right of Location rather than competing for
-leftmost attention. Kind and PID are last and deliberately narrow:
-useful context, but rarely what you're scanning for. Location absorbs
-whatever width the terminal leaves after the fixed columns, dipping
-below its preferred floor on a tight terminal rather than letting the
-table overflow and clip Kind/PID off the right edge entirely. Location
-shortens a leading home-directory prefix to `~`, same as your shell
-prompt.
+leftmost attention. Model shows the selected name and provider for `pi`
+when its companion extension reports one; other kinds (or a missing
+report) show `—`. It sits after Uptime, before Kind and PID. Kind and PID
+are last and deliberately narrow: useful context, but rarely what you're
+scanning for. Location absorbs whatever width the terminal leaves after
+the fixed columns, dipping below its preferred floor on a tight terminal
+rather than letting the table overflow and clip the rightmost columns.
+Location shortens a leading home-directory prefix to `~`, same as your
+shell prompt.
 
 State is color-coded (green (bold) for `done`, yellow for `working`, dim
 for `idle`/`unknown`, cyan for `stopped`). A row that just went `done` blinks: a trailing `*`
@@ -324,6 +327,7 @@ go install ./cmd/canopy
 go build ./...
 go vet ./...
 go test -race ./...
+bun test extensions/canopy-status.test.ts   # optional extension test (needs Bun)
 gofmt -l .   # should print nothing
 golangci-lint run ./...
 ```
@@ -344,7 +348,15 @@ docs/extensions.md in the pi repo) that hooks pi's own agent-lifecycle
 events (`before_agent_start`, `agent_start`, `tool_execution_start`,
 `agent_settled`) and writes a tiny `~/.pi/agent/canopy-status/<pid>.json`
 file with pi's real state, which `internal/pistatus` reads straight into
-that pid's `RegistryEntry`, no CPU sampling involved.
+that pid's `RegistryEntry`, no CPU sampling involved. The extension also
+writes a separate `<pid>.model.json` record with the selected model's
+name and provider. Canopy shows it as `Name [provider]` in the Model
+column. The model report has its own heartbeat: it stays available while
+pi is idle, without updating the state timestamp or ringing the `done`
+bell. Selecting another model updates it at once. When the record is
+missing or stale, Model shows `—` and state polling still works. Existing
+pi sessions must reload their extensions or restart to begin writing the
+new record.
 
 Install it by symlinking (or copying) it into pi's global extensions
 directory:

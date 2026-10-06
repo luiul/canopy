@@ -137,7 +137,7 @@ func buildRows(entries []registry.RegistryEntry, cursor int, home string, now ti
 		// back out) rather than claiming the machine has no sessions at
 		// all — the unfiltered message would be a lie about why the table
 		// is empty.
-		placeholder := table.Row{"", "", "", "", "", "", "", "", ""}
+		placeholder := table.Row{"", "", "", "", "", "", "", "", "", ""}
 		if filterQuery != "" {
 			placeholder[colLocation] = fmt.Sprintf("no sessions match filter %q (esc clears)", filterQuery)
 		} else {
@@ -155,11 +155,21 @@ func buildRows(entries []registry.RegistryEntry, cursor int, home string, now ti
 			cpuCellText(e),
 			ramCellText(e),
 			uptimeCellText(e),
+			modelCellText(e),
 			e.Kind,
 			fmt.Sprintf("%d", e.Pid),
 		}
 	}
 	return rows
+}
+
+// modelCellText displays pi's selected model and provider. Unknown models
+// (including all other agent kinds) use the same single-cell placeholder.
+func modelCellText(e registry.RegistryEntry) string {
+	if e.ModelName == "" || e.ModelProvider == "" {
+		return "—"
+	}
+	return fmt.Sprintf("%s [%s]", e.ModelName, e.ModelProvider)
 }
 
 // stateCellText is the State column's plain-text cell value: displayState's

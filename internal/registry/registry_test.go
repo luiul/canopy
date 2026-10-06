@@ -294,6 +294,13 @@ func withPistatusRead(t *testing.T, fn func(int) (pistatus.Status, bool)) {
 	t.Cleanup(func() { pistatusRead = previous })
 }
 
+func withPistatusReadModel(t *testing.T, fn func(int) (pistatus.Model, bool)) {
+	t.Helper()
+	previous := pistatusReadModel
+	pistatusReadModel = fn
+	t.Cleanup(func() { pistatusReadModel = previous })
+}
+
 func TestExternalEntriesReturnsNilForNoMatches(t *testing.T) {
 	if got := externalEntries(nil, nil); got != nil {
 		t.Fatalf("got %+v, want nil", got)
@@ -385,11 +392,39 @@ func TestExternalEntriesPrefersPistatusOverTheCPUHeuristicForPi(t *testing.T) {
 	}
 }
 
+func TestExternalEntriesReadsPiModelWithoutARealState(t *testing.T) {
+	withResolveCwds(t, func([]int) map[int]string { return nil })
+	withPistatusRead(t, func(int) (pistatus.Status, bool) { return pistatus.Status{}, false })
+	withPistatusReadModel(t, func(pid int) (pistatus.Model, bool) {
+		return pistatus.Model{Pid: pid, Name: "GPT-6 Sol", Provider: "ai-model-router"}, true
+	})
+
+	got := externalEntries([]scan.ProcessMatch{{Pid: 9, Tty: "ttys000", Kind: "pi"}}, nil)
+	if len(got) != 1 || got[0].ModelName != "GPT-6 Sol" || got[0].ModelProvider != "ai-model-router" || got[0].RealState {
+		t.Fatalf("got %+v, want model/provider even though state is only a CPU guess", got)
+	}
+}
+
+func TestExternalEntriesLeavesModelUnknownWhenReportIsMissing(t *testing.T) {
+	withResolveCwds(t, func([]int) map[int]string { return nil })
+	withPistatusRead(t, func(int) (pistatus.Status, bool) { return pistatus.Status{}, false })
+	withPistatusReadModel(t, func(int) (pistatus.Model, bool) { return pistatus.Model{}, false })
+
+	got := externalEntries([]scan.ProcessMatch{{Pid: 9, Tty: "ttys000", Kind: "pi"}}, nil)
+	if len(got) != 1 || got[0].ModelName != "" || got[0].ModelProvider != "" {
+		t.Fatalf("got %+v, want no model for a missing report", got)
+	}
+}
+
 func TestExternalEntriesLeavesNonPiKindsUntouchedByPistatus(t *testing.T) {
 	withResolveCwds(t, func(pids []int) map[int]string { return map[int]string{} })
 	withPistatusRead(t, func(int) (pistatus.Status, bool) {
 		t.Fatalf("pistatusRead should never be consulted for a non-pi kind")
 		return pistatus.Status{}, false
+	})
+	withPistatusReadModel(t, func(int) (pistatus.Model, bool) {
+		t.Fatalf("pistatusReadModel should never be consulted for a non-pi kind")
+		return pistatus.Model{}, false
 	})
 
 	table := map[int]scan.ProcessInfo{7: {Pid: 7, Pcpu: 0}}

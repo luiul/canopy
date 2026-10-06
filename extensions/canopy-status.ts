@@ -10,8 +10,11 @@
  * needed; canopy's internal/pistatus package falls back to its CPU
  * heuristic automatically when this isn't installed.
  *
- * File written: ~/.pi/agent/canopy-status/<pid>.json
- *   { "pid": 12345, "cwd": "/path", "state": "working"|"idle"|"done", "updatedAt": "<ISO>" }
+ * Files written under ~/.pi/agent/canopy-status/:
+ *   <pid>.json: { "pid": 12345, "cwd": "/path", "state": "working"|"idle"|"done", "updatedAt": "<ISO>" }
+ *   <pid>.model.json: { "pid": 12345, "model": "GPT-6 Sol", "provider": "ai-model-router", "updatedAt": "<ISO>" }
+ * The model has its own timestamp: changing or refreshing it must not
+ * look like a new state transition to canopy's done/bell logic.
  *
  * State transitions:
  *   - before_agent_start / agent_start / tool_execution_start -> "working"
@@ -58,11 +61,49 @@ const STATUS_DIR = path.join(os.homedir(), ".pi", "agent", "canopy-status");
 // heartbeat refreshing this file's timestamp for the whole time it's true,
 // not just a write at the start — see the workingWatch interval below.
 const WORKING_HEARTBEAT_MS = 3000;
+// Keep the selected model available even if pi sits idle long after the
+// state file's 10s freshness window. Stay below pistatus.ModelMaxAge (90s).
+const MODEL_HEARTBEAT_MS = 30000;
 
 type State = "working" | "idle" | "done";
 
 function statusFile(pid: number): string {
 	return path.join(STATUS_DIR, `${pid}.json`);
+}
+
+function modelFile(pid: number): string {
+	return path.join(STATUS_DIR, `${pid}.model.json`);
+}
+
+// This is the selected model, not a physical model chosen for one request
+// by a virtual-model router.
+type SelectedModel = NonNullable<ExtensionContext["model"]>;
+
+function writeModel(model: SelectedModel | undefined) {
+	if (!model?.name || !model.provider) {
+		removeModel();
+		return;
+	}
+	try {
+		fs.mkdirSync(STATUS_DIR, { recursive: true });
+		const file = modelFile(process.pid);
+		const tmp = `${file}.tmp`;
+		fs.writeFileSync(
+			tmp,
+			JSON.stringify({ pid: process.pid, model: model.name, provider: model.provider, updatedAt: new Date().toISOString() }),
+		);
+		fs.renameSync(tmp, file);
+	} catch {
+		// Best-effort only: never let model reporting break the session.
+	}
+}
+
+function removeModel() {
+	try {
+		fs.unlinkSync(modelFile(process.pid));
+	} catch {
+		// Already gone, or no model was selected.
+	}
 }
 
 function writeStatus(cwd: string, state: State) {
@@ -93,6 +134,21 @@ export default function (pi: ExtensionAPI) {
 
 	let enabled = true;
 	let workingWatch: ReturnType<typeof setInterval> | undefined;
+	let modelWatch: ReturnType<typeof setInterval> | undefined;
+	let selectedModel: SelectedModel | undefined;
+
+	const startModelWatch = () => {
+		if (modelWatch) clearInterval(modelWatch);
+		modelWatch = setInterval(() => writeModel(selectedModel), MODEL_HEARTBEAT_MS);
+		modelWatch.unref?.();
+	};
+
+	const stopModelWatch = () => {
+		if (modelWatch) {
+			clearInterval(modelWatch);
+			modelWatch = undefined;
+		}
+	};
 
 	const stopWorkingWatch = () => {
 		if (workingWatch) {
@@ -120,7 +176,17 @@ export default function (pi: ExtensionAPI) {
 		writeStatus(ctx.cwd, "done");
 	};
 
-	pi.on("session_start", async (_event, ctx) => writeStatus(ctx.cwd, "idle"));
+	pi.on("session_start", async (_event, ctx) => {
+		if (!enabled) return;
+		writeStatus(ctx.cwd, "idle");
+		selectedModel = ctx.model;
+		writeModel(selectedModel);
+		startModelWatch();
+	});
+	pi.on("model_select", async (event) => {
+		selectedModel = event.model;
+		if (enabled) writeModel(selectedModel);
+	});
 	pi.on("before_agent_start", async (_event, ctx) => working(ctx));
 	pi.on("agent_start", async (_event, ctx) => working(ctx));
 	pi.on("tool_execution_start", async (_event, ctx) => working(ctx));
@@ -128,9 +194,14 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async () => {
 		stopWorkingWatch();
+		stopModelWatch();
 		removeStatus();
+		removeModel();
 	});
-	process.on("exit", removeStatus);
+	process.on("exit", () => {
+		removeStatus();
+		removeModel();
+	});
 
 	pi.registerCommand("canopy-status", {
 		description: "Toggle writing canopy's ~/.pi/agent/canopy-status/<pid>.json status file",
@@ -138,9 +209,14 @@ export default function (pi: ExtensionAPI) {
 			enabled = !enabled;
 			if (!enabled) {
 				stopWorkingWatch();
+				stopModelWatch();
 				removeStatus();
+				removeModel();
 			} else {
 				writeStatus(ctx.cwd, "idle");
+				selectedModel = ctx.model;
+				writeModel(selectedModel);
+				startModelWatch();
 			}
 			ctx.ui.notify(enabled ? "canopy-status enabled" : "canopy-status disabled", "info");
 		},
