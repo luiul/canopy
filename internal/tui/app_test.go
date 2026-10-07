@@ -1102,11 +1102,11 @@ func TestMouseDragNowWorksOnLocationsOwnRightHandBorder(t *testing.T) {
 	cols := m.table.Columns()
 	_, originY := m.renderHeader()
 	borderX := locationBorderX(cols)
-	oldLocationWidth, oldCPUWidth := cols[colLocation].Width, cols[colCPU].Width
+	oldLocationWidth, oldModelWidth := cols[colLocation].Width, cols[colModel].Width
 
 	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	m = updated.(Model)
-	// Drag left: Location gives width to CPU, its right-hand neighbor.
+	// Drag left: Location gives width to Model, its right-hand neighbor.
 	updated, _ = m.Update(tea.MouseMsg{X: borderX - 4, Y: originY, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
 	m = updated.(Model)
 
@@ -1114,8 +1114,8 @@ func TestMouseDragNowWorksOnLocationsOwnRightHandBorder(t *testing.T) {
 	if got, want := gotCols[colLocation].Width, oldLocationWidth-4; got != want {
 		t.Fatalf("Location width = %d, want %d (its own border must respond to a drag now)", got, want)
 	}
-	if got, want := gotCols[colCPU].Width, oldCPUWidth+4; got != want {
-		t.Fatalf("CPU width = %d, want %d", got, want)
+	if got, want := gotCols[colModel].Width, oldModelWidth+4; got != want {
+		t.Fatalf("Model width = %d, want %d", got, want)
 	}
 }
 
@@ -1300,14 +1300,14 @@ func TestColumnTitlesNeverTouchTheirRightBorder(t *testing.T) {
 
 func TestMouseDragSurfaceBorderNarrowsToItsContentFloor(t *testing.T) {
 	// Surface's default (8) adds one cell over its content floor (7).
-	// Dragging Model/Surface right gives that cell to Model.
+	// Dragging Kind/Surface right gives that cell to Kind.
 	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
 
 	cols := m.table.Columns()
 	_, originY := m.renderHeader()
-	borderX := modelBorderX(cols)
+	borderX := kindBorderX(cols)
 
 	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	m = updated.(Model)
@@ -1318,8 +1318,8 @@ func TestMouseDragSurfaceBorderNarrowsToItsContentFloor(t *testing.T) {
 	if got, want := gotCols[colSurface].Width, surfaceContentWidth; got != want {
 		t.Fatalf("Surface width = %d, want %d (clamped at its content floor)", got, want)
 	}
-	if got, want := gotCols[colModel].Width, cols[colModel].Width+(8-surfaceContentWidth); got != want {
-		t.Fatalf("Model width = %d, want %d (it absorbed exactly what Surface gave up)", got, want)
+	if got, want := gotCols[colKind].Width, cols[colKind].Width+(8-surfaceContentWidth); got != want {
+		t.Fatalf("Kind width = %d, want %d (it absorbed exactly what Surface gave up)", got, want)
 	}
 }
 
@@ -1351,7 +1351,7 @@ func TestMouseDragUptimeBorderNarrowsToItsContentFloor(t *testing.T) {
 
 func TestMouseDragKindBorderNarrowsToItsDragFloor(t *testing.T) {
 	// Kind fits the configured short kinds at 6 cells. Its drag floor
-	// remains 4, so dragging Kind/Model left gives two cells to Model.
+	// remains 4, so dragging Kind/Surface left gives two cells to Surface.
 	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40
 	m.resizeColumns()
@@ -1369,7 +1369,7 @@ func TestMouseDragKindBorderNarrowsToItsDragFloor(t *testing.T) {
 	if got, want := gotCols[colKind].Width, kindDragFloor; got != want {
 		t.Fatalf("Kind width = %d, want %d (clamped at its drag floor)", got, want)
 	}
-	if got, want := gotCols[colModel].Width, cols[colModel].Width+(6-kindDragFloor); got != want {
-		t.Fatalf("Model width = %d, want %d (it absorbed exactly what Kind gave up)", got, want)
+	if got, want := gotCols[colSurface].Width, cols[colSurface].Width+(6-kindDragFloor); got != want {
+		t.Fatalf("Surface width = %d, want %d (it absorbed exactly what Kind gave up)", got, want)
 	}
 }

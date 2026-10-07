@@ -55,10 +55,10 @@ canopy's scope could stay exactly "agent sessions," nothing else.
 canopy — agent sessions on this machine
 3 sessions: 1 done · 1 working · 1 idle
 
-State      Since   Kind    Model                               Surface   Location                                  CPU   RAM    Uptime   PID
-working    12s     pi      GPT-6.1 Sol (US) [amazon-bedrock]    VS Code   ~/projects/personal/canopy                 4%    278M   1h       86872
-done       3m      pi      —                                   VS Code   ~/worktrees/.../isa-orchestration          0%    140M   2h30m    9514
-idle       1h20m   pi      —                                   Ghostty   ~/some/other/project                       0%    95M    1d       65834
+State      Since   Kind    Surface   Location                                  Model                               CPU   RAM    Uptime   PID
+working    12s     pi      VS Code   ~/projects/personal/canopy                 GPT-6.1 Sol (US) [amazon-bedrock]    4%    278M   1h       86872
+done       3m      pi      VS Code   ~/worktrees/.../isa-orchestration          —                                   0%    140M   2h30m    9514
+idle       1h20m   pi      Ghostty   ~/some/other/project                       —                                   0%    95M    1d       65834
 
 ↑/↓ move · enter jump · c dismiss · x kill · / filter · ? help · q quit
 ```
@@ -102,7 +102,7 @@ Mouse choices survive polls and terminal resizes. New longer labels can truncate
 
 The selected row has a subtle grey background across the table. State keeps its own color on that row. Canopy shares this rendering with understory through [`github.com/luiul/dashkit/loam`](https://github.com/luiul/dashkit/tree/main/loam).
 
-Columns follow the scan order: State and Since show what needs attention, then Kind and Model identify the agent. Surface and Location show where it lives. CPU, RAM, Uptime, and PID provide secondary details at the right. CPU and RAM come from `ps`. Uptime is the process age, not its time in the current state.
+Columns follow the scan order: State and Since show what needs attention, then Kind identifies the agent. Surface and Location show where it lives before Model shows what it uses. CPU, RAM, Uptime, and PID provide secondary details at the right. CPU and RAM come from `ps`. Uptime is the process age, not its time in the current state.
 
 Model shows the selected name and provider when the companion extension reports them. Missing reports show `—`. Location shortens the home-directory prefix to `~`. Model has content priority over a long path. Normal targets are 28 cells for Model and 20 for Location, with no growth ceilings. On narrow terminals, Location can shrink to eight cells, then Model can shrink to its five-cell header floor before compact fields give up space. Below the combined 77-cell hard minimum, a notice explains that the table is clipped. No columns are hidden.
 

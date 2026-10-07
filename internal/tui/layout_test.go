@@ -17,13 +17,13 @@ import (
 	"github.com/luiul/dashkit/trellis"
 )
 
-func TestColumnOrderKeepsAgentIdentityBeforeLocationAndResources(t *testing.T) {
+func TestColumnOrderKeepsLocationBeforeModelAndResources(t *testing.T) {
 	m := New(time.Second, nil)
 	var titles []string
 	for _, c := range m.table.Columns() {
 		titles = append(titles, c.Title)
 	}
-	want := []string{"State", "Since", "Kind", "Model", "Surface", "Location", "CPU", "RAM", "Uptime", "PID"}
+	want := []string{"State", "Since", "Kind", "Surface", "Location", "Model", "CPU", "RAM", "Uptime", "PID"}
 	if !reflect.DeepEqual(titles, want) {
 		t.Fatalf("column order = %v, want %v", titles, want)
 	}

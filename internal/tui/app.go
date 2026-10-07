@@ -50,8 +50,8 @@ const notifyDuration = 4 * time.Second
 //
 // Order is deliberately urgency-first: State and Since (what needs you, and
 // for how long) come first, matching the top-to-bottom state-priority sort.
-// Kind and Model identify the agent next, followed by Surface and Location
-// (where it lives). CPU/RAM/Uptime and PID are secondary context at the right.
+// Kind identifies the agent, then Surface and Location show where it lives.
+// Model follows its location. CPU/RAM/Uptime and PID are secondary context.
 // Model and Location share surplus after useful text fits. Model gets
 // content priority over a long path. Neither has a hard growth ceiling.
 // Note: there is no leading cursor column. Selected rows are highlighted
@@ -60,9 +60,9 @@ const (
 	colState = iota
 	colSince
 	colKind
-	colModel
 	colSurface
 	colLocation
+	colModel
 	colCPU
 	colRAM
 	colUptime
@@ -243,9 +243,9 @@ func defaultColumns() []table.Column {
 		{Title: "State", Width: 8},
 		{Title: "Since", Width: 6},
 		{Title: "Kind", Width: 6}, // fits pi, pig, and claude
-		{Title: "Model", Width: modelContentWidth + 1},
 		{Title: "Surface", Width: 8},
 		{Title: "Location", Width: locationNormalWidth},
+		{Title: "Model", Width: modelContentWidth + 1},
 		{Title: "CPU", Width: 4},
 		{Title: "RAM", Width: ramContentWidth},
 		{Title: "Uptime", Width: 7},
@@ -831,8 +831,8 @@ const (
 
 // Drag floors and automatic hard floors must agree.
 func columnMinWidths() []int {
-	return []int{stateContentWidth, 6, kindDragFloor, modelHardFloor,
-		surfaceContentWidth, locationHardFloor, 4, ramContentWidth,
+	return []int{stateContentWidth, 6, kindDragFloor, surfaceContentWidth,
+		locationHardFloor, modelHardFloor, 4, ramContentWidth,
 		uptimeContentWidth, pidContentWidth}
 }
 
@@ -852,7 +852,7 @@ func (m Model) columnPolicies() []trellis.ColumnPolicy {
 	for _, e := range m.entries {
 		labels := []string{
 			stateCellText(e, now, m.done), sinceCellText(e, now, m.done), e.Kind,
-			modelCellText(e), surfaceLabel(e.Surface), location(e, m.home),
+			surfaceLabel(e.Surface), location(e, m.home), modelCellText(e),
 			cpuCellText(e), ramCellText(e), uptimeCellText(e), fmt.Sprint(e.Pid),
 		}
 		for i, label := range labels {
