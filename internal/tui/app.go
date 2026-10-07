@@ -20,7 +20,6 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mattn/go-runewidth"
 
 	"github.com/luiul/canopy/internal/jump"
 	"github.com/luiul/canopy/internal/kill"
@@ -53,8 +52,8 @@ const notifyDuration = 4 * time.Second
 // for how long) come first, matching the top-to-bottom state-priority sort.
 // Kind and Model identify the agent next, followed by Surface and Location
 // (where it lives). CPU/RAM/Uptime and PID are secondary context at the right.
-// Model fits the reported names; Location uses the remaining space, capped
-// at 40 cells so a wide terminal does not turn it into a large empty gap.
+// Model and Location share surplus after useful text fits. Model gets
+// content priority over a long path. Neither has a hard growth ceiling.
 // Note: there is no leading cursor column. Selected rows are highlighted
 // via loam.ColorizeRows' post-render row highlight; see loam's doc.
 const (
@@ -180,18 +179,11 @@ type Model struct {
 	// a jump attempt is.
 	scanWarning string
 
-	// resizer tracks an in-progress mouse column-border drag (see
-	// github.com/luiul/dashkit/trellis); colOverrides remembers the resulting
-	// width of every column a drag has actually touched (a drag always
-	// moves two adjacent columns at once; see trellis.Model.Handle's own
-	// doc), by column index (see the Column indexes above), so
-	// resizeColumns' own recompute on every terminal resize doesn't
-	// silently discard an earlier resize. Cleared whenever a WindowSizeMsg
-	// arrives (see Update): a genuinely new terminal width invalidates the
-	// old distribution of space entirely, so resizeColumns starts fresh
-	// rather than fighting stale overrides sized for a different width.
-	colOverrides map[int]int
-	resizer      trellis.Model
+	// Keep desired proportions separate from projected columns so narrow
+	// windows and polls cannot erase the user's layout.
+	preferences trellis.Preferences
+	resizer     trellis.Model
+	tooNarrow   bool
 
 	// bellEnabled gates the terminal-bell side effect in applyEntries/Update
 	// (see needsBell in bell.go): on by default (set in New), off via
@@ -238,8 +230,7 @@ type Model struct {
 	quitting      bool
 }
 
-// defaultColumns is also the starting point for terminal resizes, so a
-// previous mouse drag cannot become the next resize's default.
+// defaultColumns supplies labels and normal readable targets, not saved widths.
 func defaultColumns() []table.Column {
 	return []table.Column{
 		// Every fixed column's default fits its widest value without
@@ -254,7 +245,7 @@ func defaultColumns() []table.Column {
 		{Title: "Kind", Width: 6}, // fits pi, pig, and claude
 		{Title: "Model", Width: modelContentWidth + 1},
 		{Title: "Surface", Width: 8},
-		{Title: "Location", Width: locationMaxWidth},
+		{Title: "Location", Width: locationNormalWidth},
 		{Title: "CPU", Width: 4},
 		{Title: "RAM", Width: ramContentWidth},
 		{Title: "Uptime", Width: 7},
@@ -355,15 +346,14 @@ func clearNotifyCmd(token int) tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		widthChanged := m.width != msg.Width
 		m.width, m.height = msg.Width, msg.Height
-		// A new terminal width invalidates whatever distribution of space a
-		// prior drag settled on — resizeColumns is about to recompute every
-		// column from scratch against the new width, so any stale override
-		// is dropped first rather than fighting that recompute.
-		m.colOverrides = nil
 		m.table.SetWidth(msg.Width)
-		m.table.SetHeight(clampInt(msg.Height-6, 3, 1000))
-		m.resizeColumns()
+		if widthChanged {
+			m.resizer.Cancel()
+			m.resizeColumns()
+		}
+		m.resizeTableHeight()
 		return m, nil
 
 	case tea.MouseMsg:
@@ -371,25 +361,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// owns the footer and the help overlay replaces the table, so a
 		// drag's target row isn't even on screen.
 		if m.showHelp || m.pendingKill.Active() {
+			m.settleDrag()
 			return m, nil
 		}
 		_, originY := m.renderHeader()
 		cols := m.table.Columns()
+		wasDragging := m.resizer.Dragging()
 		widths, changed := m.resizer.Handle(msg, cols, columnMinWidths(), 0, originY)
 		if changed {
-			if m.colOverrides == nil {
-				m.colOverrides = map[int]int{}
-			}
-			// A drag always moves the dragged column and its right-hand
-			// neighbor together (see trellis.Model.Handle's own doc), so
-			// both of their new widths need remembering — and no others:
-			// recording every column's width would pin columns this drag
-			// never touched (see colOverrides' own doc), the same
-			// pair-only rule understory's handler follows.
-			dragged := m.resizer.DragColumn()
-			m.colOverrides[dragged] = widths[dragged]
-			m.colOverrides[dragged+1] = widths[dragged+1]
+			m.preferences.Capture(widths, m.columnPolicies(), m.resizer.DragColumn())
 			m.table.SetColumns(trellis.Apply(cols, widths))
+		}
+		if wasDragging && !m.resizer.Dragging() {
+			m.resizeColumns()
 		}
 		return m, nil
 
@@ -510,6 +494,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "?":
+			m.settleDrag()
 			m.showHelp = true
 			return m, nil
 		case "x", "X":
@@ -525,6 +510,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "X" {
 				sig = syscall.SIGKILL
 			}
+			m.settleDrag()
 			return m, m.pendingKill.Arm(killPrompt{entries: []registry.RegistryEntry{entry}, sig: sig})
 		case "p":
 			entry, ok := m.selectedEntry()
@@ -552,6 +538,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(targets) == 0 {
 				return m, m.setNotify("no done sessions to kill", false)
 			}
+			m.settleDrag()
 			return m, m.pendingKill.Arm(killPrompt{entries: targets, sig: syscall.SIGTERM})
 		case "enter":
 			entry, ok := m.selectedEntry()
@@ -827,95 +814,83 @@ func (m *Model) resetRows(previousKey string) {
 	m.table.SetCursor(cursor)
 }
 
-// State, Surface, RAM, Uptime, and PID floors fit their usual values.
-// Model starts at the width of "GPT-6 Sol [ai-model-router]" and grows
-// to fit reported names, up to modelMaxWidth or the terminal's budget.
+// Compact floors keep usual values readable. Model can yield its normal
+// 28-cell target down to its five-cell header on narrow terminals.
 const (
 	stateContentWidth   = 7
 	surfaceContentWidth = 7
 	ramContentWidth     = 5
 	uptimeContentWidth  = 6
 	modelContentWidth   = 27
+	modelHardFloor      = 5
 	kindDragFloor       = 4
 	pidContentWidth     = 5
-	modelMaxWidth       = 60
-	locationMaxWidth    = 40
-	locationDragFloor   = 20
+	locationNormalWidth = 20
 	locationHardFloor   = 8
 )
 
-// columnMinWidths returns each column's own minimum width, in the same
-// order/index New builds them (see the Column indexes above), for
-// trellis' mouse-resize handling (see Update's tea.MouseMsg case). The
-// fixed columns floor at their CONTENT widths (see the constants above),
-// not their defaults: usual values fit there, while the defaults add
-// room for titles. A drag can narrow past the default (truncating the
-// title) to make room for a neighbor. Long Model and Kind values may
-// still truncate on tight terminals, since their lengths are unbounded.
-// Flooring at the defaults instead would freeze every fixed column in
-// place, with no room to trade in either direction. Since and CPU are the
-// exceptions: their defaults ARE their content widths ("23h59m",
-// "100%"), so they have nothing to give and their borders move only via
-// their neighbors. Location's drag floor is 20, while terminal resizes
-// can narrow it further to keep the rightmost columns visible. Trellis treats
-// every column, Location included, identically — there's no column
-// singled out as a drag sink any more (see the trellis package's own
-// doc); this slice only says how far each one may shrink.
+// Drag floors and automatic hard floors must agree.
 func columnMinWidths() []int {
-	return []int{
-		stateContentWidth,
-		6, // Since: its default is already its content width ("23h59m")
-		kindDragFloor,
-		modelContentWidth,
-		surfaceContentWidth,
-		locationDragFloor,
-		4, // CPU: its default is already its content width ("100%")
-		ramContentWidth,
-		uptimeContentWidth,
-		pidContentWidth,
+	return []int{stateContentWidth, 6, kindDragFloor, modelHardFloor,
+		surfaceContentWidth, locationHardFloor, 4, ramContentWidth,
+		uptimeContentWidth, pidContentWidth}
+}
+
+// columnPolicies measures the unfiltered current labels before cursor tagging.
+// Compact fields fit real content but never receive blank surplus.
+func (m Model) columnPolicies() []trellis.ColumnPolicy {
+	cols := defaultColumns()
+	mins := columnMinWidths()
+	policies := make([]trellis.ColumnPolicy, len(cols))
+	for i, c := range cols {
+		policies[i] = trellis.ColumnPolicy{Minimum: c.Width, HardMinimum: mins[i], Preferred: c.Width}
+	}
+	policies[colModel].Weight = 1
+	policies[colLocation].Weight = 1
+	policies[colLocation].ShrinkPriority = 1
+	now := time.Now()
+	for _, e := range m.entries {
+		labels := []string{
+			stateCellText(e, now, m.done), sinceCellText(e, now, m.done), e.Kind,
+			modelCellText(e), surfaceLabel(e.Surface), location(e, m.home),
+			cpuCellText(e), ramCellText(e), uptimeCellText(e), fmt.Sprint(e.Pid),
+		}
+		for i, label := range labels {
+			policies[i].Preferred = max(policies[i].Preferred, trellis.ContentWidth(label))
+		}
+	}
+	return policies
+}
+
+// resizeColumns uses the shared allocator unless a gesture owns the geometry.
+// Desired manual proportions survive polls and temporary narrow windows.
+func (m *Model) resizeColumns() {
+	if len(m.table.Columns()) != colPID+1 || m.resizer.Dragging() {
+		return
+	}
+	widths, fits := m.preferences.Allocate(m.width, m.columnPolicies())
+	m.tooNarrow = !fits
+	m.table.SetColumns(trellis.Apply(defaultColumns(), widths))
+	m.resizeTableHeight()
+}
+
+// settleDrag keeps a modal from swallowing the release and freezing future polls.
+func (m *Model) settleDrag() {
+	if m.resizer.Dragging() {
+		m.resizer.Cancel()
+		m.resizeColumns()
 	}
 }
 
-// resizeColumns gives Model enough room for the longest reported label,
-// then gives Location the remaining space, capped at 40 cells. Both use
-// display-cell widths, not byte lengths. On tight terminals Model can
-// lose its extra space and Location can fall below its 20-cell drag floor.
-// Below the combined hard floors the remaining overflow is accepted.
-// Mouse overrides win over automatic sizing until the terminal resizes.
-func (m *Model) resizeColumns() {
-	if len(m.table.Columns()) != colPID+1 {
+func (m *Model) resizeTableHeight() {
+	if m.height <= 0 {
 		return
 	}
-	cols := defaultColumns()
-	fixed := 0
-	for i := range cols {
-		if i == colLocation || i == colModel {
-			continue
-		}
-		if w, ok := m.colOverrides[i]; ok {
-			cols[i].Width = w
-		}
-		fixed += cols[i].Width
+	headerHeight := 6
+	if m.tooNarrow {
+		headerHeight++
 	}
-	available := m.width - fixed - 2*len(cols) // 2 cells of padding per column
-	locationFloor := locationHardFloor
-	if w, ok := m.colOverrides[colLocation]; ok {
-		locationFloor = w
-	}
-	modelWidth := cols[colModel].Width
-	for _, e := range m.entries {
-		modelWidth = max(modelWidth, runewidth.StringWidth(modelCellText(e))+1)
-	}
-	modelWidth = min(modelWidth, modelMaxWidth)
-	cols[colModel].Width = min(modelWidth, max(modelContentWidth, available-locationFloor))
-	if w, ok := m.colOverrides[colModel]; ok {
-		cols[colModel].Width = w
-	}
-	cols[colLocation].Width = clampInt(available-cols[colModel].Width, locationHardFloor, locationMaxWidth)
-	if w, ok := m.colOverrides[colLocation]; ok {
-		cols[colLocation].Width = w
-	}
-	m.table.SetColumns(cols)
+	m.table.SetHeight(clampInt(m.height-headerHeight, 3, 1000))
 }
 
 // renderHeader builds the header block (title, plus an optional summary
@@ -942,6 +917,10 @@ func (m Model) renderHeader() (text string, tableOriginY int) {
 		// does (see Model.scanWarning's own doc comment), unlike the
 		// footer's notification, which auto-clears after notifyDuration.
 		text += "\n" + errorStyle.Render("⚠ "+m.scanWarning)
+		lines++
+	}
+	if m.tooNarrow {
+		text += "\n" + errorStyle.Render("terminal too narrow: columns clipped")
 		lines++
 	}
 	return text, lines + 1 // +1 for the blank separator line View puts before the table

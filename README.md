@@ -96,13 +96,15 @@ testing, releasing) is written down once in
 
 Each internal column border can be dragged with the mouse. The two columns beside it trade width, so a drag does not change the table's total width. Canopy shares this behavior with understory through [`github.com/luiul/dashkit/trellis`](https://github.com/luiul/dashkit/tree/main/trellis). Header dividers mark the borders through [`loam.DrawHeaderBorders`](https://github.com/luiul/dashkit/tree/main/loam).
 
-Drag floors keep usual values readable. Model floors at 27 cells and Location at 20 cells. Mouse widths survive polls, even when they exceed the automatic caps. A terminal resize resets them to the automatic layout.
+The table fills the terminal width. State, Since, Kind, Surface, CPU, RAM, Uptime, and PID stay compact. Model and Location fit useful text first, then share spare space with equal weights. Filtering does not move borders because sizing uses the full current row set.
+
+Mouse choices survive polls and terminal resizes. New longer labels can truncate after a drag because the chosen proportions take priority. Width changes cancel an active gesture but keep its latest proportions. Height-only changes leave it intact. Preferences stay in memory only. Restart returns to automatic sizing.
 
 The selected row has a subtle grey background across the table. State keeps its own color on that row. Canopy shares this rendering with understory through [`github.com/luiul/dashkit/loam`](https://github.com/luiul/dashkit/tree/main/loam).
 
 Columns follow the scan order: State and Since show what needs attention, then Kind and Model identify the agent. Surface and Location show where it lives. CPU, RAM, Uptime, and PID provide secondary details at the right. CPU and RAM come from `ps`. Uptime is the process age, not its time in the current state.
 
-Model shows the selected name and provider when the companion extension reports them. Missing reports show `—`. Its width follows the longest reported label, up to 60 cells. Location takes the remaining space, up to 40 cells, and shortens the home-directory prefix to `~`. On tight terminals, Model loses extra space and Location can shrink to eight cells to keep PID visible. Very long model labels and paths can still truncate.
+Model shows the selected name and provider when the companion extension reports them. Missing reports show `—`. Location shortens the home-directory prefix to `~`. Model has content priority over a long path. Normal targets are 28 cells for Model and 20 for Location, with no growth ceilings. On narrow terminals, Location can shrink to eight cells, then Model can shrink to its five-cell header floor before compact fields give up space. Below the combined 77-cell hard minimum, a notice explains that the table is clipped. No columns are hidden.
 
 State is color-coded (green (bold) for `done`, yellow for `working`, dim
 for `idle`/`unknown`, cyan for `stopped`). A row that just went `done` blinks: a trailing `*`

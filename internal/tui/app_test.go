@@ -1163,19 +1163,21 @@ func TestResizeColumnsNeverOverflowsTheTerminal(t *testing.T) {
 	for _, c := range cols {
 		total += c.Width
 	}
-	if total > m.width {
-		t.Fatalf("got total table width %d, want <= terminal width %d", total, m.width)
+	if total != m.width {
+		t.Fatalf("got total table width %d, want terminal width %d", total, m.width)
 	}
 	if got, want := cols[colLocation].Width, 13; got != want {
 		t.Fatalf("Location width = %d, want %d (below its floor of 20, but the table fits)", got, want)
 	}
 
-	// Past the hard floor the overflow is accepted rather than crushing
-	// Location to nothing.
+	// Model gives up its normal target before compact fields or PID clip.
 	m.width = 95
 	m.resizeColumns()
 	if got := m.table.Columns()[colLocation].Width; got != 8 {
 		t.Fatalf("Location width = %d at width 95, want the hard floor 8", got)
+	}
+	if got := layoutWidth(m.table.Columns()); got != 95 || m.tooNarrow {
+		t.Fatalf("95-cell layout must fit exactly, got %d tooNarrow=%v", got, m.tooNarrow)
 	}
 }
 
@@ -1194,16 +1196,14 @@ func TestMouseDragSurvivesTheNextTerminalResizeAtTheSameWidth(t *testing.T) {
 	m = updated.(Model)
 	resized := m.table.Columns()[colSurface].Width
 
-	// resizeColumns runs unconditionally on every WindowSizeMsg; calling it
-	// again directly (same width) must reapply the override rather than
-	// silently reverting to Surface's own fixed default.
+	// Poll-time allocation must not move a live gesture's borders.
 	m.resizeColumns()
 	if got := m.table.Columns()[colSurface].Width; got != resized {
 		t.Fatalf("Surface width = %d after resizeColumns, want %d (the drag override, undiscarded)", got, resized)
 	}
 }
 
-func TestWindowSizeMsgClearsColumnOverrides(t *testing.T) {
+func TestWindowSizeMsgPreservesPreferencesAndGestureAtSameWidth(t *testing.T) {
 	m := New(999*time.Second, nil)
 	m.width, m.height = 140, 40
 	m.resizeColumns()
@@ -1216,14 +1216,18 @@ func TestWindowSizeMsgClearsColumnOverrides(t *testing.T) {
 	m = updated.(Model)
 	updated, _ = m.Update(tea.MouseMsg{X: borderX + 4, Y: originY, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
 	m = updated.(Model)
-	if m.colOverrides[colSurface] == 0 {
-		t.Fatal("want a Surface override recorded after the drag")
+	if !m.preferences.Manual() {
+		t.Fatal("want manual preferences after a changed drag")
 	}
+	want := append([]table.Column(nil), m.table.Columns()...)
 
-	updated, _ = m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 140, Height: 50})
 	m = updated.(Model)
-	if m.colOverrides != nil {
-		t.Fatalf("colOverrides = %v after a terminal resize, want nil", m.colOverrides)
+	if !m.preferences.Manual() || !m.resizer.Dragging() {
+		t.Fatal("height-only update discarded preferences or gesture")
+	}
+	if !reflect.DeepEqual(m.table.Columns(), want) {
+		t.Fatalf("height-only update changed geometry: %v want %v", m.table.Columns(), want)
 	}
 }
 
@@ -1314,7 +1318,7 @@ func TestMouseDragSurfaceBorderNarrowsToItsContentFloor(t *testing.T) {
 	if got, want := gotCols[colSurface].Width, surfaceContentWidth; got != want {
 		t.Fatalf("Surface width = %d, want %d (clamped at its content floor)", got, want)
 	}
-	if got, want := gotCols[colModel].Width, modelContentWidth+1+(8-surfaceContentWidth); got != want {
+	if got, want := gotCols[colModel].Width, cols[colModel].Width+(8-surfaceContentWidth); got != want {
 		t.Fatalf("Model width = %d, want %d (it absorbed exactly what Surface gave up)", got, want)
 	}
 }
@@ -1365,7 +1369,7 @@ func TestMouseDragKindBorderNarrowsToItsDragFloor(t *testing.T) {
 	if got, want := gotCols[colKind].Width, kindDragFloor; got != want {
 		t.Fatalf("Kind width = %d, want %d (clamped at its drag floor)", got, want)
 	}
-	if got, want := gotCols[colModel].Width, modelContentWidth+1+(6-kindDragFloor); got != want {
+	if got, want := gotCols[colModel].Width, cols[colModel].Width+(6-kindDragFloor); got != want {
 		t.Fatalf("Model width = %d, want %d (it absorbed exactly what Kind gave up)", got, want)
 	}
 }
