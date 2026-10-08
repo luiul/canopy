@@ -45,25 +45,26 @@ func shortenHome(path, home string) string {
 	return path
 }
 
-// statePriority ranks states by how much attention they need: done
-// (finished, ready to check) ranks highest, then working (busy, nothing
-// for you to do), then idle, then stopped (paused via the p keybind —
-// user-deliberate, so it needs no attention, but it shouldn't scatter to
-// the bottom either), then unknown (heuristic couldn't tell). There
-// is deliberately no "blocked" entry: nothing in canopy ever produces that
-// state (see docs/agent-state-machine.md), so it isn't part of the
-// vocabulary here either.
+// statePriority ranks states by how much attention they need: blocked
+// (pi is waiting on you in a dialog, mid-run or not) ranks highest, then
+// error (a turn failed, needs a look) and done (finished, ready to
+// check), then working (busy, nothing for you to do), then idle, then
+// stopped (paused via the p keybind — user-deliberate, so it needs no
+// attention, but it shouldn't scatter to the bottom either), then unknown
+// (no real status: extension missing/stale, or not pi).
 var statePriority = map[string]int{
-	"done":    0,
-	"working": 1,
-	"idle":    2,
-	"stopped": 3,
-	"unknown": 4,
+	"blocked": 0,
+	"error":   1,
+	"done":    2,
+	"working": 3,
+	"idle":    4,
+	"stopped": 5,
+	"unknown": 6,
 }
 
 // stateOrder is statePriority's states in display order, used for the
 // header's per-state summary counts too.
-var stateOrder = []string{"done", "working", "idle", "stopped", "unknown"}
+var stateOrder = []string{"blocked", "error", "done", "working", "idle", "stopped", "unknown"}
 
 func statePriorityOf(state string) int {
 	if p, ok := statePriority[state]; ok {
@@ -74,8 +75,9 @@ func statePriorityOf(state string) int {
 
 // sortEntries orders entries by statePriority, most actionable first, then
 // grouped by surface, then stable by pid. Ranks by displayState (which
-// folds in done), not the raw State, so an acknowledged done row sorts
-// back down with the rest of idle rather than staying pinned at the top.
+// folds in done/error episodes), not the raw State, so an acknowledged
+// attention row sorts back down with the rest of idle rather than staying
+// pinned at the top.
 func sortEntries(entries []registry.RegistryEntry, done map[string]doneEpisode) {
 	sort.SliceStable(entries, func(i, j int) bool {
 		a, b := entries[i], entries[j]
@@ -169,17 +171,17 @@ func modelCellText(e registry.RegistryEntry) string {
 }
 
 // stateCellText is the State column's plain-text cell value: displayState's
-// word (see displayState — "idle" rather than "done" once acknowledged),
-// with a trailing blinkMarker whenever it's a "done" row currently
-// mid-blink-burst and in its visible ("on") half (see blinkActive/blinkOn
-// in done.go — toggles on and off as the burst runs). done is the only
-// state with any attention-getting treatment at all; every other word
-// (including "unknown") renders as-is. Actual coloring/reverse-video
-// happens later, in View, by post-processing the rendered table (see
-// colorize.go).
+// word (see displayState — "idle" rather than the episode's word once
+// acknowledged), with a trailing blinkMarker whenever the row has an open
+// episode currently mid-blink-burst and in its visible ("on") half (see
+// blinkActive/blinkOn in done.go — toggles on and off as the burst runs).
+// done and error are the only states with any attention-getting treatment
+// at all; every other word (including "unknown") renders as-is. Actual
+// coloring/reverse-video happens later, in View, by post-processing the
+// rendered table (see colorize.go).
 func stateCellText(e registry.RegistryEntry, now time.Time, done map[string]doneEpisode) string {
 	word := displayState(e, done)
-	if ep, ok := done[e.Key()]; word == "done" && ok && blinkActive(ep, now) && blinkOn(ep, now) {
+	if ep, ok := done[e.Key()]; ok && word == ep.State && blinkActive(ep, now) && blinkOn(ep, now) {
 		return word + blinkMarker
 	}
 	return word
@@ -191,20 +193,20 @@ func stateCellText(e registry.RegistryEntry, now time.Time, done map[string]done
 // hand). Two special cases, both driven by done rather than e.StateSince
 // directly:
 //   - an *open* (unacknowledged) episode reports since its own Since (when
-//     updateDoneTracking first saw it go done), not e.StateSince, which the
-//     raw source may have already overwritten with some later transition
-//     of its own.
-//   - an *acknowledged* episode whose raw State is still literally "done"
-//     reports since it was acknowledged, not since the underlying source
-//     originally went done — otherwise a row sitting done for an hour
-//     before you dismissed it would misleadingly read as "idle 1h" the
-//     instant you did.
+//     updateDoneTracking first saw it go done/error), not e.StateSince,
+//     which the raw source may have already overwritten with some later
+//     transition of its own.
+//   - an *acknowledged* episode whose raw State is still literally the
+//     episode's word reports since it was acknowledged, not since the
+//     underlying source originally went done/error — otherwise a row
+//     sitting done for an hour before you dismissed it would misleadingly
+//     read as "idle 1h" the instant you did.
 func sinceCellText(e registry.RegistryEntry, now time.Time, done map[string]doneEpisode) string {
 	if ep, ok := done[e.Key()]; ok {
 		if ep.Acked.IsZero() {
 			return humanizeSince(now.Sub(ep.Since))
 		}
-		if e.State == "done" {
+		if e.State == ep.State {
 			return humanizeSince(now.Sub(ep.Acked))
 		}
 	}

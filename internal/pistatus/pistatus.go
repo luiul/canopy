@@ -1,18 +1,17 @@
 // Package pistatus reads the small per-pid status file canopy's optional
 // companion pi extension (see ../../extensions/canopy-status.ts, installed
 // at ~/.pi/agent/extensions/canopy-status.ts) writes for a running `pi`
-// process: working/idle/done sourced straight from pi's own agent-lifecycle
-// events (before_agent_start, agent_start, tool_execution_start,
-// agent_settled), not guessed from CPU usage the way internal/state has to
-// for every agent kind canopy has no pty for.
+// process: working/blocked/done/error/idle sourced straight from pi's own
+// program-status state machine (pi v1.1.0's reporter, mirrored by the
+// extension event for event).
 //
-// This is the one gap README.md's Limitations section calls out ("Idle/
-// working for non-`pi` surfaces is a CPU% heuristic, not a real status"):
-// true for every kind except `pi`, once this extension is installed, since
-// `pi` is the one agent canopy can actually ask directly instead of
-// guessing from the outside. Without the extension installed, Read simply
-// never finds a file and registry falls back to the CPU heuristic exactly
-// as before; nothing here changes behavior for anyone who hasn't opted in.
+// Without the extension installed, Read simply never finds a file and the
+// entry reads "unknown": canopy tracks pi sessions on this machine only,
+// so there is deliberately no CPU-usage fallback to guess from (the old
+// internal/state heuristic was removed — it structurally could not tell
+// "a turn just finished" from "idle for an hour", or "blocked on a
+// dialog" from "idle", and pi is the one agent kind that can report the
+// truth directly).
 package pistatus
 
 import (
@@ -24,20 +23,28 @@ import (
 )
 
 // MaxAge is how stale a status file can be before Read stops trusting it,
-// so callers fall back to the CPU heuristic instead: covers a `pi` process
-// that died without running its session_shutdown/process-exit cleanup
-// (SIGKILL, a closed terminal tab, a crashed Node/Bun process), whose
-// status file was never removed and would otherwise read as whatever state
-// it was in when it died, forever.
+// so the entry reads "unknown" instead: covers a `pi` process whose
+// extension stopped heartbeating (a crashed handler, a half-dead
+// session), whose working/blocked/idle file would otherwise freeze at
+// whatever state it last wrote. done and error are exempt (see parse):
+// the extension writes them exactly once, at the transition, and never
+// heartbeats them, because updatedAt doubling as canopy's "is this a
+// genuinely new settle" identity anchor (internal/tui's done.go/bell.go)
+// means a refreshed terminal write would impersonate a brand-new one.
 const MaxAge = 10 * time.Second
 
-// Status is one pid's last self-reported state ("working", "idle", or
-// "done"; see canopy-status.ts for the exact transitions, and
-// docs/agent-state-machine.md for why "blocked" isn't among them).
+// Status is one pid's last self-reported state ("working", "blocked",
+// "done", "error", or "idle"; see canopy-status.ts for the exact
+// transitions, and docs/agent-state-machine.md for how the two terminal
+// ones are displayed). Message is the state's optional payload, mirroring
+// pi's own program-status reports: the session name for working/done,
+// the dialog title for blocked, the first line of the error for error,
+// empty otherwise.
 type Status struct {
 	Pid       int
 	Cwd       string
 	State     string
+	Message   string
 	UpdatedAt time.Time
 }
 
@@ -46,6 +53,7 @@ type wireStatus struct {
 	Pid       int       `json:"pid"`
 	Cwd       string    `json:"cwd"`
 	State     string    `json:"state"`
+	Message   string    `json:"message,omitempty"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
@@ -63,8 +71,8 @@ func Dir() string {
 // Read returns pid's status from Dir(), if canopy-status.ts wrote one
 // recently enough to trust (see MaxAge). ok=false (no file, unreadable,
 // malformed, empty state, or stale) means exactly one thing to callers:
-// fall back to the CPU heuristic for this entry, the same as if the
-// extension weren't installed at all.
+// the entry reads "unknown", the same as if the extension weren't
+// installed at all.
 func Read(pid int) (Status, bool) {
 	return ReadDir(Dir(), pid, time.Now())
 }
@@ -91,7 +99,13 @@ func parse(data []byte, now time.Time) (Status, bool) {
 	if w.State == "" {
 		return Status{}, false
 	}
-	if now.Sub(w.UpdatedAt) > MaxAge {
+	// Terminal states never expire: the extension's done/error writes are
+	// one-shot by design (see MaxAge), so staleness is their normal state
+	// of being, not a sign of a dead extension. Process liveness is
+	// already canopy's job upstream (a dead pi drops out of the ps scan
+	// and its row is removed), and a live pi with a done/error file is
+	// exactly a session sitting settled — the common case.
+	if w.State != "done" && w.State != "error" && now.Sub(w.UpdatedAt) > MaxAge {
 		return Status{}, false
 	}
 	return Status(w), true

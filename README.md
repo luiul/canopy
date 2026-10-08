@@ -53,12 +53,14 @@ canopy's scope could stay exactly "agent sessions," nothing else.
 
 ```
 canopy — agent sessions on this machine
-3 sessions: 1 done · 1 working · 1 idle
+5 sessions: 1 blocked · 1 error · 1 done · 1 working · 1 idle
 
 State      Since   Kind    Surface   Location                                  Model                               CPU   RAM    Uptime   PID
-working    12s     pi      VS Code   ~/projects/personal/canopy                 GPT-6.1 Sol (US) [amazon-bedrock]    4%    278M   1h       86872
-done       3m      pi      VS Code   ~/worktrees/.../isa-orchestration          —                                   0%    140M   2h30m    9514
-idle       1h20m   pi      Ghostty   ~/some/other/project                       —                                   0%    95M    1d       65834
+blocked    40s     pi      VS Code   ~/projects/personal/canopy                 GPT-6.1 Sol (US) [amazon-bedrock]    0%    278M   1h       86872
+error      3m      pi      VS Code   ~/worktrees/.../isa-orchestration          —                                   0%    140M   2h30m    9514
+done       8m      pi      Ghostty   ~/some/other/project                       —                                   0%    95M    1d       65834
+working    12s     pi      VS Code   ~/projects/hellofresh/analytics            GPT-6 Luna (EU) [ai-model-router]      4%    310M   45m      90210
+idle       1h20m   pi      Ghostty   ~/projects/personal/harvest                —                                   0%    88M    2d       40211
 
 ↑/↓ move · enter jump · c dismiss · x kill · / filter · ? help · q quit
 ```
@@ -106,39 +108,46 @@ Columns follow the scan order: State and Since show what needs attention, then K
 
 Model shows the selected name and provider when the companion extension reports them. Missing reports show `—`. Location shortens the home-directory prefix to `~`. Model has content priority over a long path. Normal targets are 28 cells for Model and 20 for Location, with no growth ceilings. On narrow terminals, Location can shrink to eight cells, then Model can shrink to its five-cell header floor before compact fields give up space. Below the combined 77-cell hard minimum, a notice explains that the table is clipped. No columns are hidden.
 
-State is color-coded (green (bold) for `done`, yellow for `working`, dim
-for `idle`/`unknown`, cyan for `stopped`). A row that just went `done` blinks: a trailing `*`
-plus a reverse-video highlight, toggling on and off a few times right
+State is color-coded: orange for `blocked`, bold red for `error`, bold
+green for `done`, yellow for `working`, dim for `idle`/`unknown`, cyan
+for `stopped`. A row that just went `done` or `error` blinks: a trailing
+`*` plus a reverse-video highlight, toggling on and off a few times right
 away, then again every five minutes for as long as it stays
 unacknowledged — a repeating nudge rather than a one-shot highlight, since
-`done` is the one state that otherwise only an `enter`/`c` press ever
-clears (see below). `done` is also the one state that rings the terminal
-bell (ASCII BEL) the moment a row newly transitions into it — the one
-signal here that reaches you even if canopy's own pane isn't the one on
-screen (a dock bounce, tab badge, or audible beep, depending on your
-terminal's own bell setting), unlike the color/blink treatment, which
-only helps once you're already looking at it. The bell only fires on the
-transition itself, not on every poll a row happens to stay done —
+`done`/`error` are the states that otherwise only an `enter`/`c` press
+ever clears (see below). Three transitions ring the terminal bell (ASCII
+BEL), the one signal here that reaches you even if canopy's own pane
+isn't the one on screen (a dock bounce, tab badge, or audible beep,
+depending on your terminal's own bell setting), unlike the color/blink
+treatment, which only helps once you're already looking at it: a row
+newly entering `done`, a row newly entering `error`, and a row that
+stays `blocked` for two consecutive polls (about 4s at the default
+interval, so a dialog you answer right away never rings, and one spell
+rings at most once). The `done`/`error` bell only fires on the
+transition itself, not on every poll a row happens to stay there —
 including the first poll right after canopy starts up, if a session is
-already sitting done at that point (done's first blink burst treats "just
+already sitting done at that point (the first blink burst treats "just
 discovered" the same as "just transitioned", too). Sessions are sorted
-most-actionable first: `done`, then `working`, then `idle`, `stopped`,
-and `unknown`.
+most-actionable first: `blocked`, then `error`, `done`, `working`,
+`idle`, `stopped`, and `unknown`.
 Pass `--no-color` (or set `NO_COLOR`) to disable the color/blink treatment
 and get plain text, and `--no-bell` to disable just the bell.
 
-A row that's `done` stays `done` (still sorted to the top, still
-colored, still bell-eligible for its own transition, still blinking every
-five minutes) until you actually do something about it: press `enter` to
-jump to it (which also dismisses it right away), or `c` to dismiss it
-in place without jumping at all. To clear a whole screen of done rows at
-once, `C` dismisses every done row in place, no jumping, no per-row
-selection. Any of these immediately displays the affected rows
-as `idle`, drops them back down in the sort order, and stops the blinking
-— no poll wait required, even mid-burst. It goes back to reading `done`
-— unacknowledged, blinking again from scratch — the next time it actually
-earns that state again (a fresh turn ending), not on every subsequent
-poll where the underlying session happens to still be sitting done.
+A row that's `done` or `error` stays that way (still sorted to the top,
+still colored, still bell-eligible for its own transition, still blinking
+every five minutes) until you actually do something about it: press
+`enter` to jump to it (which also dismisses it right away), or `c` to
+dismiss it in place without jumping at all. To clear a whole screen of
+attention rows at once, `C` dismisses every `done`/`error` row in place,
+no jumping, no per-row selection. Any of these immediately displays the
+affected rows as `idle`, drops them back down in the sort order, and
+stops the blinking — no poll wait required, even mid-burst. A row goes
+back to reading `done`/`error` — unacknowledged, blinking again from
+scratch — the next time it actually earns that state again (a fresh turn
+ending), not on every subsequent poll where the underlying session
+happens to still be sitting settled. `blocked` gets no such treatment:
+it is transient by definition and clears on its own the moment the dialog
+closes, so there is nothing to acknowledge.
 
 ## Configuration
 
@@ -213,7 +222,7 @@ vs. an interpreter + venv).
 
 See [docs/agent-state-machine.md](docs/agent-state-machine.md) for the
 finite state machine behind a row's state, including the invariant
-that a `done` row only ever leaves `done` via `enter` or `c`.
+that a `done`/`error` row only ever leaves that state via `enter` or `c`.
 
 One Go package per concern:
 
@@ -224,12 +233,10 @@ One Go package per concern:
   that sets which agent CLI kinds canopy tracks (see
   [Configuration](#configuration)); no file means the built-in default of
   `pi`.
-- `internal/state`: CPU%-based idle/working heuristic for processes not
-  running in VS Code or Ghostty.
-- `internal/pistatus`: reads the small status file the optional
+- `internal/pistatus`: reads the small status file the
   `extensions/canopy-status.ts` companion writes for a running `pi`
-  process, so canopy can use pi's own real working/idle/done instead of
-  the CPU heuristic for that one agent kind (see "Real pi status" below).
+  process: pi's own real working/blocked/done/error/idle, mirrored from
+  pi's program-status state machine (see "Real pi status" below).
 - `internal/ancestry`: walks a process's parent chain to classify which app
   (VS Code / Ghostty) is hosting it.
 - `internal/jump`: maps a row's Surface onto
@@ -245,7 +252,8 @@ One Go package per concern:
   identity check (pid plus lifetime, from a fresh `ps` snapshot) so a
   recycled pid is never signaled by mistake.
 - `internal/registry`: merges a fresh poll against the previous one so a
-  single missed `ps`/poll doesn't flicker a row away.
+  single missed `ps`/poll doesn't flicker a row away, and stamps each
+  row's State (pi's own report where available, `unknown` otherwise).
 - `internal/ack`: lets multiple concurrently running canopy instances
   agree on which `done` rows have been acknowledged (`enter`/`c`), the one
   piece of dashboard state that isn't already derivable from a shared,
@@ -298,7 +306,7 @@ go install ./cmd/canopy
 go build ./...
 go vet ./...
 go test -race ./...
-bun test extensions/canopy-status.test.ts   # optional extension test (needs Bun)
+node --test scripts/test-canopy-status.ts   # the companion pi extension's tests
 gofmt -l .   # should print nothing
 golangci-lint run ./...
 ```
@@ -309,25 +317,30 @@ Or, all at once:
 make check
 ```
 
-## Real pi status (optional)
+## Real pi status
 
-Canopy has no pty for a `pi` process running outside a terminal it owns, so by default it falls
-back to the same CPU% heuristic every other agent kind gets. `pi` is the
-one agent kind canopy can ask directly instead of guessing, though:
+Canopy has no pty for a `pi` process running outside a terminal it owns,
+but `pi` is the one agent kind that can report its own state directly.
 `extensions/canopy-status.ts` is a small companion pi extension (see
-docs/extensions.md in the pi repo) that hooks pi's own agent-lifecycle
-events (`before_agent_start`, `agent_start`, `tool_execution_start`,
-`agent_settled`) and writes a tiny `~/.pi/agent/canopy-status/<pid>.json`
-file with pi's real state, which `internal/pistatus` reads straight into
-that pid's `RegistryEntry`, no CPU sampling involved. The extension also
-writes a separate `<pid>.model.json` record with the selected model's
-name and provider. Canopy shows it as `Name [provider]` in the Model
-column. The model report has its own heartbeat: it stays available while
-pi is idle, without updating the state timestamp or ringing the `done`
-bell. Selecting another model updates it at once. When the record is
-missing or stale, Model shows `—` and state polling still works. Existing
-pi sessions must reload their extensions or restart to begin writing the
-new record. Only interactive pi sessions publish these records. SDK subagents and print, JSON, or RPC sessions cannot overwrite or delete the interactive session's status files.
+docs/extensions.md in the pi repo) that mirrors pi's own program-status
+state machine (the one pi v1.1.0 reports to terminals via OSC 7501; see
+terminal-setup.md#program-status in the pi docs) event for event and
+writes a tiny `~/.pi/agent/canopy-status/<pid>.json` file with pi's real
+state, which `internal/pistatus` reads straight into that pid's
+`RegistryEntry`. The five states and their meaning:
+
+| State | When |
+|---|---|
+| `working` | A run or compaction is in progress. |
+| `blocked` | An extension dialog (confirm, select, input, editor) is waiting for you. |
+| `done` | A run finished. Sticky in canopy until `enter`/`c`. |
+| `error` | A run ended with an error pi did not retry. Sticky in canopy until `enter`/`c`. |
+| `idle` | pi started, or you cancelled the run with Escape. |
+
+Each report also carries an optional message (the session name for
+working/done, the dialog title for blocked, the first line of the error
+for error). canopy stores it today and will render it in a future
+release.
 
 Install it by symlinking (or copying) it into pi's global extensions
 directory:
@@ -336,17 +349,29 @@ directory:
 ln -s "$(pwd)/extensions/canopy-status.ts" ~/.pi/agent/extensions/canopy-status.ts
 ```
 
-It reports `working` while pi is actively running, and `done`
+It reports `working` while pi is actively running, and `done`/`error`
 unconditionally once a turn ends — no frontmost/focus detection at all
 (see docs/agent-state-machine.md's "Removed: frontmost/focus detection"):
 canopy's dashboard already requires an explicit `enter` or `c` on the row
-before it displays anything other than `done`, so guessing whether you
-were already looking at that terminal at settle-time couldn't change what
-you'd see there either way. One consequence: the bell/blink now fires on
-every settled turn, including ones you watched finish directly in the
-terminal, not just ones you missed. macOS only; not installing it (or
-running on another OS) just leaves canopy on the CPU heuristic, same as
-today.
+before it displays anything other than `done`/`error`, so guessing
+whether you were already looking at that terminal at settle-time couldn't
+change what you'd see there either way. One consequence: the bell/blink
+now fires on every settled turn, including ones you watched finish
+directly in the terminal, not just ones you missed.
+
+The extension also writes a separate `<pid>.model.json` record with the
+selected model's name and provider. Canopy shows it as `Name [provider]`
+in the Model column. The model report has its own heartbeat: it stays
+available while pi is idle, without updating the state timestamp or
+ringing the `done` bell. Selecting another model updates it at once. When
+the record is missing or stale, Model shows `—` and state polling still
+works. Existing pi sessions must reload their extensions or restart to
+begin writing the records. Only interactive pi sessions publish these
+records. SDK subagents and print, JSON, or RPC sessions cannot overwrite
+or delete the interactive session's status files. macOS only; a `pi`
+process without the extension (or on another OS) simply reads `unknown`,
+like any other tracked kind — there is no CPU-based guess to fall back
+to (see Limitations).
 
 ## Multiple instances
 
@@ -372,8 +397,20 @@ the filesystem, the same as everything else canopy reads.
   on any other OS, rather than silently reporting zero sessions (its
   process discovery relies on macOS-specific `ps`/`lsof` output and
   AppleScript).
-- Idle/working for non-`pi` surfaces (and `pi` itself without the extension
-  above installed) is a CPU% heuristic, not a real status.
+- State is real only for `pi` with the companion extension installed
+  (see "Real pi status"). Anything else — other tracked kinds, a `pi`
+  process without the extension, or one whose status file went stale —
+  reads `unknown`. canopy deliberately does not guess from CPU usage: a
+  heuristic that cannot tell "a turn just finished" from "idle for an
+  hour" is worse than an honest `unknown`. The CPU column itself is still
+  shown per row, purely informational.
+- `pig` rows read `unknown` even with the extension symlinked into pig's
+  extensions: pig runs its extension host as a separate node process, so
+  the status file lands under a pid canopy does not track.
+- pi's own login prompt (provider authentication flow) sets pi's internal
+  blocked state without any extension event, so a session waiting on
+  login reads `idle` in canopy, not `blocked`. Extension dialogs report
+  `blocked` normally.
 - If the underlying agent-process scan itself fails to run (as opposed to
   running fine and finding zero matches, e.g. a `ps` hung past its 5s
   deadline under system load), canopy keeps the last known sessions on

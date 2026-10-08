@@ -139,143 +139,6 @@ func TestRegistryEntryKeyDisambiguatesSamePidDifferentKind(t *testing.T) {
 	}
 }
 
-func TestRefineExternalStatesKeepsTheSingleSampleGuessForABrandNewEntry(t *testing.T) {
-	// No previous poll to diff against yet: nothing to refine.
-	fresh := []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "working")}
-
-	got := refineExternalStates(nil, fresh, time.Now())
-
-	if got[0].State != "working" {
-		t.Fatalf("got state %q, want the untouched bootstrap guess working", got[0].State)
-	}
-}
-
-func TestRefineExternalStatesCorrectsAStaleWorkingGuessBackToIdle(t *testing.T) {
-	// This is the reported bug: macOS's own `ps` %cpu is a decaying average
-	// over up to a minute of real time, so externalEntries' single-sample
-	// guess can still say "working" well after a process has actually gone
-	// idle. Two samples five seconds apart with an unchanged CPUTime (no
-	// CPU actually consumed in that window) must correct that guess.
-	now := time.Now()
-	previous := []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "working")}
-	previous[0].CPUTime = 30 * time.Second
-	previous[0].CPUSampledAt = now.Add(-5 * time.Second)
-
-	fresh := []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "working")} // externalEntries' stale guess
-	fresh[0].CPUTime = 30 * time.Second                                   // unchanged: no CPU consumed since the last poll
-
-	got := refineExternalStates(previous, fresh, now)
-
-	if got[0].State != "idle" {
-		t.Fatalf("got state %q, want idle (no CPU consumed since the last poll)", got[0].State)
-	}
-	if !got[0].CPUSampledAt.Equal(now) {
-		t.Fatalf("got CPUSampledAt %v, want %v", got[0].CPUSampledAt, now)
-	}
-}
-
-func TestRefineExternalStatesConfirmsWorkingOnlyAfterTwoConsecutiveQualifyingPolls(t *testing.T) {
-	// A single qualifying poll (WorkingStreak going 0 -> 1) is exactly what
-	// a brief CPU blip on an otherwise idle process looks like (a heartbeat
-	// tick, a GC pause, a terminal redraw) -- not sustained agent work. It
-	// must not flip the display to working by itself.
-	now := time.Now()
-	previousIdle := []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "idle")}
-	previousIdle[0].CPUTime = 10 * time.Second
-	previousIdle[0].CPUSampledAt = now.Add(-5 * time.Second)
-
-	firstPoll := []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "idle")}
-	firstPoll[0].CPUTime = 14 * time.Second // 4s of CPU time over a 5s window: ~80% > DefaultThreshold
-
-	afterFirstPoll := refineExternalStates(previousIdle, firstPoll, now)
-
-	if afterFirstPoll[0].State != "idle" {
-		t.Fatalf("got state %q after one qualifying poll, want idle (needs %d consecutive)", afterFirstPoll[0].State, workingConfirmPolls)
-	}
-	if afterFirstPoll[0].WorkingStreak != 1 {
-		t.Fatalf("got WorkingStreak %d, want 1", afterFirstPoll[0].WorkingStreak)
-	}
-
-	// A second consecutive qualifying poll must confirm it.
-	now2 := now.Add(5 * time.Second)
-	secondPoll := []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "idle")}
-	secondPoll[0].CPUTime = 18 * time.Second // another 4s of CPU time over another 5s window
-
-	afterSecondPoll := refineExternalStates(afterFirstPoll, secondPoll, now2)
-
-	if afterSecondPoll[0].State != "working" {
-		t.Fatalf("got state %q after two consecutive qualifying polls, want working", afterSecondPoll[0].State)
-	}
-	if afterSecondPoll[0].WorkingStreak != 2 {
-		t.Fatalf("got WorkingStreak %d, want 2", afterSecondPoll[0].WorkingStreak)
-	}
-}
-
-func TestRefineExternalStatesDropsBackToIdleImmediatelyAndResetsTheStreak(t *testing.T) {
-	// Climbing into working is debounced; dropping back to idle is not.
-	confirmedWorking := []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "working")}
-	confirmedWorking[0].CPUTime = 20 * time.Second
-	confirmedWorking[0].CPUSampledAt = time.Now().Add(-5 * time.Second)
-	confirmedWorking[0].WorkingStreak = 2
-
-	now := confirmedWorking[0].CPUSampledAt.Add(5 * time.Second)
-	fresh := []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "working")}
-	fresh[0].CPUTime = 20 * time.Second // unchanged: no CPU consumed since the last poll
-
-	got := refineExternalStates(confirmedWorking, fresh, now)
-
-	if got[0].State != "idle" {
-		t.Fatalf("got state %q, want idle immediately, no debounce", got[0].State)
-	}
-	if got[0].WorkingStreak != 0 {
-		t.Fatalf("got WorkingStreak %d, want reset to 0", got[0].WorkingStreak)
-	}
-}
-
-func TestRefineExternalStatesLeavesARealStateEntryUntouched(t *testing.T) {
-	// canopy-status.ts (internal/pistatus) already told externalEntries the
-	// truth for this pid; even a CPU delta that would otherwise scream
-	// "idle" must not override it.
-	now := time.Now()
-	previous := []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "done")}
-	previous[0].RealState = true
-	previous[0].CPUSampledAt = now.Add(-5 * time.Second)
-
-	fresh := []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "done")}
-	fresh[0].RealState = true
-	// No CPU activity at all between polls; the heuristic would call this
-	// idle, but RealState means refineExternalStates must not even look.
-	fresh[0].CPUTime = previous[0].CPUTime
-
-	got := refineExternalStates(previous, fresh, now)
-
-	if got[0].State != "done" {
-		t.Fatalf("got state %q, want done left untouched by the CPU heuristic", got[0].State)
-	}
-	if got[0].CPUSampledAt != now {
-		t.Fatalf("got CPUSampledAt %v, want it still stamped to now", got[0].CPUSampledAt)
-	}
-}
-
-func TestRefineExternalStatesIgnoresANegativeDelta(t *testing.T) {
-	// A pid the OS recycled between polls (or any other counter hiccup)
-	// would otherwise produce a nonsensical negative rate; keep the
-	// existing guess instead of acting on it.
-	now := time.Now()
-	previous := []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "working")}
-	previous[0].CPUTime = 30 * time.Second
-	previous[0].CPUSampledAt = now.Add(-5 * time.Second)
-
-	fresh := []RegistryEntry{entry(1, "pi", ancestry.Ghostty, "working")}
-	fresh[0].CPUTime = 2 * time.Second // less than previous: negative delta
-
-	got := refineExternalStates(previous, fresh, now)
-
-	if got[0].State != "working" {
-		t.Fatalf("got state %q, want the untouched guess working when the delta is negative", got[0].State)
-	}
-}
-
 // withResolveCwds and withPistatusRead swap in a canned seam for the
 // duration of a test, restoring the real one on cleanup, so
 // externalEntries can be exercised without a live lsof call or a real
@@ -312,7 +175,7 @@ func TestExternalEntriesClassifiesFromTheInjectedProcessTable(t *testing.T) {
 	withPistatusRead(t, func(int) (pistatus.Status, bool) { return pistatus.Status{}, false })
 
 	table := map[int]scan.ProcessInfo{
-		42: {Pid: 42, Pcpu: 5.0, RssKb: 1024, Etime: time.Minute, CPUTime: 3 * time.Second},
+		42: {Pid: 42, Pcpu: 5.0, RssKb: 1024, Etime: time.Minute},
 	}
 	matches := []scan.ProcessMatch{{Pid: 42, Tty: "ttys000", Kind: "claude", Args: "claude"}}
 
@@ -325,8 +188,8 @@ func TestExternalEntriesClassifiesFromTheInjectedProcessTable(t *testing.T) {
 	if e.Pid != 42 || e.Kind != "claude" || e.Cwd != "/x" {
 		t.Fatalf("got %+v, want pid 42, kind claude, cwd /x", e)
 	}
-	if e.State != "working" {
-		t.Fatalf("got state %q, want working (5%% >= DefaultThreshold on the bootstrap sample)", e.State)
+	if e.State != "unknown" {
+		t.Fatalf("got state %q, want unknown (only pi self-reports; there is no CPU fallback)", e.State)
 	}
 	if e.CPUPercent != 5.0 || e.RSSKb != 1024 || e.Uptime != time.Minute {
 		t.Fatalf("got %+v, want CPUPercent/RSSKb/Uptime straight from the injected table", e)
@@ -362,17 +225,16 @@ func TestExternalEntriesMarksStoppedProcesses(t *testing.T) {
 	}
 }
 
-func TestExternalEntriesPrefersPistatusOverTheCPUHeuristicForPi(t *testing.T) {
-	// pi is the one agent kind canopy can ask directly instead of guessing
-	// from CPU; a pistatusRead hit must win even when the CPU sample alone
-	// would say something else.
+func TestExternalEntriesPrefersPistatusForPi(t *testing.T) {
+	// pi is the one agent kind canopy can ask directly; a pistatusRead hit
+	// must win over the default "unknown".
 	withResolveCwds(t, func(pids []int) map[int]string { return map[int]string{} })
 	reportedAt := time.Now()
 	withPistatusRead(t, func(pid int) (pistatus.Status, bool) {
 		return pistatus.Status{Pid: pid, Cwd: "/pi-cwd", State: "done", UpdatedAt: reportedAt}, true
 	})
 
-	table := map[int]scan.ProcessInfo{9: {Pid: 9, Pcpu: 0}} // CPU heuristic alone would say idle
+	table := map[int]scan.ProcessInfo{9: {Pid: 9, Pcpu: 0}}
 	matches := []scan.ProcessMatch{{Pid: 9, Tty: "ttys000", Kind: "pi", Args: "pi"}}
 
 	got := externalEntries(matches, table)
@@ -401,7 +263,7 @@ func TestExternalEntriesReadsPiModelWithoutARealState(t *testing.T) {
 
 	got := externalEntries([]scan.ProcessMatch{{Pid: 9, Tty: "ttys000", Kind: "pi"}}, nil)
 	if len(got) != 1 || got[0].ModelName != "GPT-6 Sol" || got[0].ModelProvider != "ai-model-router" || got[0].RealState {
-		t.Fatalf("got %+v, want model/provider even though state is only a CPU guess", got)
+		t.Fatalf("got %+v, want model/provider even though state is unknown", got)
 	}
 }
 
@@ -433,7 +295,7 @@ func TestExternalEntriesLeavesNonPiKindsUntouchedByPistatus(t *testing.T) {
 	got := externalEntries(matches, table)
 
 	if len(got) != 1 || got[0].RealState {
-		t.Fatalf("got %+v, want a plain CPU-heuristic entry", got)
+		t.Fatalf("got %+v, want a plain unknown-state entry", got)
 	}
 }
 

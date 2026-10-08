@@ -71,3 +71,65 @@ func TestReadDirReturnsFalseForAnEmptyDir(t *testing.T) {
 		t.Fatalf("got ok=true for an empty dir, want false")
 	}
 }
+
+func TestReadDirReturnsTheMessage(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	updatedAt := now.Add(-2 * time.Second)
+	writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"blocked","message":"Allow this?","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
+
+	got, ok := ReadDir(dir, 123, now)
+	if !ok {
+		t.Fatalf("got ok=false, want true")
+	}
+	if got.State != "blocked" || got.Message != "Allow this?" {
+		t.Fatalf("got %+v, want state blocked with message Allow this?", got)
+	}
+}
+
+func TestReadDirReadsEveryStateTheExtensionWrites(t *testing.T) {
+	// The full canopy-status.ts vocabulary (pi's program-status states):
+	// parse passes any non-empty state through; these pin the five the
+	// extension actually produces.
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	updatedAt := now.Add(-time.Second)
+	for _, state := range []string{"working", "blocked", "done", "error", "idle"} {
+		dir := t.TempDir()
+		writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"`+state+`","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
+		got, ok := ReadDir(dir, 123, now)
+		if !ok || got.State != state {
+			t.Errorf("state %q: got %+v, ok=%v", state, got, ok)
+		}
+	}
+}
+
+func TestReadDirNeverRejectsAStaleTerminalState(t *testing.T) {
+	// done/error are one-shot writes (the extension never heartbeats them,
+	// because updatedAt is canopy's settle-identity anchor), so staleness
+	// is their normal state of being: they must stay readable for as long
+	// as the process lives.
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	updatedAt := now.Add(-time.Hour) // far past MaxAge
+	for _, state := range []string{"done", "error"} {
+		dir := t.TempDir()
+		writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"`+state+`","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
+		got, ok := ReadDir(dir, 123, now)
+		if !ok || got.State != state {
+			t.Errorf("state %q: got %+v, ok=%v, want the terminal write to never expire", state, got, ok)
+		}
+	}
+}
+
+func TestReadDirRejectsAStaleBlockedStatus(t *testing.T) {
+	// blocked is heartbeated exactly because it can sit for minutes; one
+	// that stopped refreshing means the extension is gone, so the entry
+	// must fall back to "unknown" like any other non-terminal state.
+	dir := t.TempDir()
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	updatedAt := now.Add(-(MaxAge + time.Second))
+	writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"blocked","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
+
+	if _, ok := ReadDir(dir, 123, now); ok {
+		t.Fatalf("got ok=true for a blocked status past MaxAge, want false")
+	}
+}

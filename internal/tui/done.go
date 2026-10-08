@@ -1,9 +1,9 @@
-// The done-episode state machine and its blink animation: the display
+// The attention-episode state machine and its blink animation: the display
 // overlay described in docs/agent-state-machine.md that keeps a row
-// reading "done" until the user actually acts on it (enter or c), plus the
-// on/off blink that makes a newly-done row hard to miss. Split out of
-// app.go, which otherwise mixed this with the Bubble Tea plumbing itself;
-// see app.go's package doc for the full file layout.
+// reading "done" or "error" until the user actually acts on it (enter or
+// c), plus the on/off blink that makes such a row hard to miss. Split out
+// of app.go, which otherwise mixed this with the Bubble Tea plumbing
+// itself; see app.go's package doc for the full file layout.
 package tui
 
 import (
@@ -27,29 +27,52 @@ var (
 	ackRemove = ack.Remove
 )
 
-// doneEpisode is one open-or-closed "done" episode for a single entry key
-// (see Model.done). Since is when updateDoneTracking first saw this
-// episode's raw State read "done"; Acked is zero while the episode is
+// isAttention reports whether state is one of the two terminal,
+// user-must-act states canopy latches into an episode: "done" (a turn
+// finished) or "error" (a turn ended with an unretried error). Both come
+// straight from pi's own program-status semantics (pi v1.1.0, mirrored by
+// canopy-status.ts); "blocked" is deliberately not among them — it is
+// transient by definition (it clears the moment the dialog closes), so
+// there is nothing to acknowledge.
+func isAttention(state string) bool {
+	return state == "done" || state == "error"
+}
+
+// doneEpisode is one open-or-closed attention episode for a single entry
+// key (see Model.done). Since is when updateDoneTracking first saw this
+// episode's raw State read done/error; Acked is zero while the episode is
 // still open (unacknowledged) and set to the moment enter or c actually
 // fired for it (see acknowledge). NextBlinkAt/BurstStart drive the blink
 // animation (see advanceBlinks/blinkActive/blinkOn) — the thing that makes
 // an open episode hard to miss, both the moment it opens and again every
 // blinkReminderInterval for as long as it stays open.
 type doneEpisode struct {
+	// State is the attention word this episode displays: "done" or
+	// "error". Latched at open (and kept current with the raw source
+	// while the episode stays open — a done row whose next turn fails
+	// fast, before the user acknowledged the done, re-latches to "error")
+	// because an open episode outlives the raw state that created it:
+	// displayState must keep reporting the episode's word even when the
+	// raw source has moved on to "working" in the meantime.
+	State string
+
 	Since time.Time
 	Acked time.Time
 
 	// RawAt is the raw source's own report timestamp
-	// (registry.RegistryEntry.RealStateReportedAt) for the "done" write this
-	// episode currently reflects. Kept fresh every poll while the episode is
-	// open (see updateDoneTracking), so that once it's acknowledged, a later
-	// poll can tell a genuinely new settle apart from the same still-fresh
-	// "done" string repeating: pistatus.Read keeps returning literal "done"
-	// for up to pistatus.MaxAge after a turn settles, so the State string
-	// alone can't make that distinction if a second turn settles again
-	// inside that same window. Zero for anything not RealState (nothing
-	// there can ever legitimately mask a second done this way, since the CPU
-	// heuristic never produces "done" in the first place).
+	// (registry.RegistryEntry.RealStateReportedAt) for the done/error
+	// write this episode currently reflects. Kept fresh every poll while
+	// the episode is open (see updateDoneTracking), so that once it's
+	// acknowledged, a later poll can tell a genuinely new settle apart
+	// from the same still-fresh string repeating: canopy-status.ts's
+	// terminal writes are one-shot, but pistatus.Read keeps returning
+	// them for as long as the process lives (done/error are exempt from
+	// pistatus.MaxAge), so the State string alone can't make that
+	// distinction if a second turn settles again without canopy ever
+	// sampling a "working" poll in between. Zero for anything not
+	// RealState (nothing there can ever legitimately mask a second settle
+	// this way, since only pi's own reports produce done/error in the
+	// first place).
 	RawAt time.Time
 
 	// NextBlinkAt is when this episode's next blink burst should start:
@@ -68,26 +91,26 @@ type doneEpisode struct {
 // displayState is the state actually shown for e. Four cases, checked in
 // order:
 //
-//  1. e has an open (unacknowledged) episode in done: report "done"
-//     unconditionally, regardless of what e.State (the raw source) says
-//     right now. This is the one deliberately sticky case — see
-//     updateDoneTracking's doc comment for why an episode has to survive a
-//     raw source that quietly moves off "done" on its own, with no enter/c
-//     ever happening in canopy. Sticky enough to outrank even the stopped
-//     overlay below: a done row still needs the user's enter/c, paused or
-//     not.
-//  2. e has an acknowledged episode in done, and e.State is still
-//     literally "done" (the common case: the user acted before the raw
-//     source moved on by itself): report the synthetic "idle" — unless the
-//     process is currently stopped, which is the more informative reading
-//     and falls through to case 3's overlay instead.
+//  1. e has an open (unacknowledged) episode in done: report the
+//     episode's word ("done" or "error") unconditionally, regardless of
+//     what e.State (the raw source) says right now. This is the one
+//     deliberately sticky case — see updateDoneTracking's doc comment for
+//     why an episode has to survive a raw source that quietly moves off
+//     done/error on its own, with no enter/c ever happening in canopy.
+//     Sticky enough to outrank even the stopped overlay below: an
+//     attention row still needs the user's enter/c, paused or not.
+//  2. e has an acknowledged episode, and e.State is still literally the
+//     episode's word (the common case: the user acted before the raw
+//     source moved on by itself): report the synthetic "idle" — unless
+//     the process is currently stopped, which is the more informative
+//     reading and falls through to case 3's overlay instead.
 //  3. e.Stopped is set (SIGSTOP, e.g. via the p keybind): report the
-//     synthetic "stopped". The raw State can't express this at all — a
-//     stopped process reads 0% CPU, so the heuristic says "idle" — and
-//     "paused by the user" is exactly what a stopped row should say.
+//     synthetic "stopped". The raw State can't express this at all —
+//     pistatus keeps reporting whatever pi last wrote, paused or not —
+//     and "paused by the user" is exactly what a stopped row should say.
 //  4. Anything else (no episode at all, or an acknowledged one whose raw
-//     source has already independently moved past "done"): report e.State
-//     directly.
+//     source has already independently moved past the episode's word):
+//     report e.State directly.
 //
 // e.State itself (which needsBell and registry.stampStateSince must keep
 // comparing poll to poll — see Model.acknowledge's doc comment) is never
@@ -97,9 +120,9 @@ type doneEpisode struct {
 func displayState(e registry.RegistryEntry, done map[string]doneEpisode) string {
 	if ep, ok := done[e.Key()]; ok {
 		if ep.Acked.IsZero() {
-			return "done"
+			return ep.State
 		}
-		if e.State == "done" && !e.Stopped {
+		if e.State == ep.State && !e.Stopped {
 			return "idle"
 		}
 	}
@@ -109,53 +132,55 @@ func displayState(e registry.RegistryEntry, done map[string]doneEpisode) string 
 	return e.State
 }
 
-// blinkTickMsg is the animation frame for an in-progress done blink burst
-// (see tickBlinks/blinkTickCmd): fired every blinkTickInterval, much
-// faster than the dashboard's own poll tick, for exactly as long as some
-// entry is still mid-burst.
+// blinkTickMsg is the animation frame for an in-progress blink burst (see
+// tickBlinks/blinkTickCmd): fired every blinkTickInterval, much faster
+// than the dashboard's own poll tick, for exactly as long as some entry
+// is still mid-burst.
 type blinkTickMsg struct{}
 
 // updateDoneTracking maintains m.done (see its own doc comment) against a
 // fresh poll, before sorting/rendering. Two independent things happen here:
 //
-//  1. Opening a new episode: any key whose raw State reads "done" and has
-//     no *open* entry in done yet gets one, stamped with this poll's time.
-//     From this instant, displayState reports "done" for that key on every
-//     subsequent poll — even one where the raw source has already moved on
-//     to something else by itself (e.g. a fresh working turn starting on
-//     the same session before the user ever acknowledged the previous
-//     episode in canopy) — until acknowledge() actually fires for it, or
-//     the key disappears from fresh outright (session ended). This is
-//     deliberate and is the entire point of this map: without it, a row
-//     could silently stop reading "done" with no enter/c ever happening in
-//     canopy, which the dashboard's whole "done stays done until you act
-//     on it" contract depends on not happening.
+//  1. Opening a new episode: any key whose raw State reads done/error and
+//     has no *open* entry in done yet gets one, stamped with this poll's
+//     time. From this instant, displayState reports the episode's word
+//     for that key on every subsequent poll — even one where the raw
+//     source has already moved on to something else by itself (e.g. a
+//     fresh working turn starting on the same session before the user
+//     ever acknowledged the previous episode in canopy) — until
+//     acknowledge() actually fires for it, or the key disappears from
+//     fresh outright (session ended). This is deliberate and is the
+//     entire point of this map: without it, a row could silently stop
+//     reading done/error with no enter/c ever happening in canopy, which
+//     the dashboard's whole "an attention row stays until you act on it"
+//     contract depends on not happening.
 //
-//     An *acknowledged* entry also gets a brand-new episode here if the raw
-//     source has written a genuinely new "done" since the acknowledgment
-//     (e.RealStateReportedAt has advanced past the episode's own RawAt) —
-//     not just whenever e.State is still literally the string "done".
-//     canopy-status.ts's file keeps reading "done" for up to
-//     pistatus.MaxAge after a turn settles, so a second turn that starts
-//     and settles again inside that same window, without canopy ever
-//     sampling a "working" poll in between, would otherwise be
-//     indistinguishable from the exact same still-fresh write the user
-//     already dismissed — and silently swallowed: no new episode, no bell,
-//     displayState falling through to the acknowledged "idle" the whole
-//     time. RealStateReportedAt is the one signal (pistatus's own write
-//     timestamp, not canopy's poll time) that can tell those two cases
-//     apart when the State string alone can't.
+//     An *acknowledged* entry also gets a brand-new episode here if the
+//     raw source has written a genuinely new done/error since the
+//     acknowledgment (e.RealStateReportedAt has advanced past the
+//     episode's own RawAt) — not just whenever e.State is still literally
+//     the episode's word. pistatus.Read keeps returning a terminal write
+//     for as long as the process lives, so a second turn that starts and
+//     settles again without canopy ever sampling a "working" poll in
+//     between would otherwise be indistinguishable from the exact same
+//     still-fresh write the user already dismissed — and silently
+//     swallowed: no new episode, no bell, displayState falling through to
+//     the acknowledged "idle" the whole time. RealStateReportedAt is the
+//     one signal (pistatus's own write timestamp, not canopy's poll time)
+//     that can tell those two cases apart when the State string alone
+//     can't.
 //
 //  2. Closing a stale, already-acknowledged episode: one whose raw source
-//     has independently moved off "done" (nothing left for it to mask —
-//     displayState already falls through to the real State once Acked is
-//     set and raw isn't literally "done"), or whose key is no longer in
-//     fresh at all. An *open* (unacknowledged) episode is never closed
-//     here just because raw moved off "done" — see point 1. Its RawAt is
-//     still kept current every poll while it stays open, though (see the
-//     loop below), so that whenever it does eventually get acknowledged,
-//     the comparison above is against the latest settle it already
-//     covered, not a stale one from earlier in the same still-open episode.
+//     has independently moved off the episode's word (nothing left for it
+//     to mask — displayState already falls through to the real State once
+//     Acked is set and raw no longer matches), or whose key is no longer
+//     in fresh at all. An *open* (unacknowledged) episode is never closed
+//     here just because raw moved off its word — see point 1. Its RawAt
+//     (and State, so a done that turned into an error re-latches as
+//     "error") is still kept current every poll while it stays open,
+//     though, so that whenever it does eventually get acknowledged, the
+//     comparison above is against the latest settle it already covered,
+//     not a stale one from earlier in the same still-open episode.
 func (m *Model) updateDoneTracking(fresh []registry.RegistryEntry) {
 	now := time.Now()
 	byKey := make(map[string]registry.RegistryEntry, len(fresh))
@@ -164,17 +189,19 @@ func (m *Model) updateDoneTracking(fresh []registry.RegistryEntry) {
 	}
 
 	for _, e := range fresh {
-		if e.State != "done" {
+		if !isAttention(e.State) {
 			continue
 		}
 		key := e.Key()
 		if ep, ok := m.done[key]; ok {
 			if ep.Acked.IsZero() {
-				// Still open: nothing new to decide (see point 1's doc comment),
-				// but keep RawAt current so a *later* acknowledgment compares
-				// against this episode's most recent settle, not its first one.
+				// Still open: nothing new to decide (see point 1's doc
+				// comment), but keep RawAt/State current so a *later*
+				// acknowledgment compares against this episode's most
+				// recent settle, not its first one.
 				if e.RealState {
 					ep.RawAt = e.RealStateReportedAt
+					ep.State = e.State
 					m.done[key] = ep
 				}
 				continue
@@ -183,7 +210,8 @@ func (m *Model) updateDoneTracking(fresh []registry.RegistryEntry) {
 				continue // acknowledged, and still the exact same write: leave it exactly as is
 			}
 			// acknowledged, but the raw source has written a genuinely new
-			// "done" since then: falls through to open a fresh episode below.
+			// done/error since then: falls through to open a fresh episode
+			// below.
 		}
 		if m.done == nil {
 			m.done = map[string]doneEpisode{}
@@ -192,7 +220,7 @@ func (m *Model) updateDoneTracking(fresh []registry.RegistryEntry) {
 		// zero NextBlinkAt as "nothing scheduled", and the whole point of a
 		// freshly opened episode is that its first blink burst fires right
 		// away, on this same poll.
-		m.done[key] = doneEpisode{Since: now, NextBlinkAt: now, RawAt: e.RealStateReportedAt}
+		m.done[key] = doneEpisode{State: e.State, Since: now, NextBlinkAt: now, RawAt: e.RealStateReportedAt}
 	}
 
 	m.syncAcksFromOtherInstances()
@@ -204,8 +232,8 @@ func (m *Model) updateDoneTracking(fresh []registry.RegistryEntry) {
 			delete(m.done, key)
 			continue
 		}
-		if !ep.Acked.IsZero() && e.State != "done" {
-			ackRemove(key) // acknowledged, and raw independently resolved off "done": stale bookkeeping
+		if !ep.Acked.IsZero() && e.State != ep.State {
+			ackRemove(key) // acknowledged, and raw independently resolved off the episode's word: stale bookkeeping
 			delete(m.done, key)
 		}
 	}
@@ -221,7 +249,7 @@ func (m *Model) updateDoneTracking(fresh []registry.RegistryEntry) {
 //
 // "Matching" means RawAt equal, not just the key: RawAt is the same
 // identity anchor the opening loop above already uses to tell a
-// genuinely new settle apart from the same still-fresh "done" string
+// genuinely new settle apart from the same still-fresh string
 // repeating (see RawAt's own doc comment on doneEpisode), and it's needed
 // here for exactly the same reason — an ack record left over from an
 // already-superseded episode for the same key must never be mistaken for
@@ -243,25 +271,26 @@ func (m *Model) syncAcksFromOtherInstances() {
 	}
 }
 
-// blinkToggleInterval is how long each on/off phase of a done blink lasts:
+// blinkToggleInterval is how long each on/off phase of a blink lasts:
 // short enough to read as genuinely blinking rather than one long flash,
 // long enough to still be legible.
 const blinkToggleInterval = 300 * time.Millisecond
 
 // blinkPhases is how many on/off phases make up one blink burst (3 full
-// on-off blinks) — unmistakable that a row just went done, without
+// on-off blinks) — unmistakable that a row just went done/error, without
 // blinking so long it turns into noise.
 const blinkPhases = 6
 
 // blinkBurstDuration is how long a single blink burst runs before
-// settling back to a steady (still colored, just no longer toggling) done
-// cell.
+// settling back to a steady (still colored, just no longer toggling)
+// attention cell.
 const blinkBurstDuration = blinkPhases * blinkToggleInterval
 
-// blinkReminderInterval is how long an unacknowledged done row goes quiet
-// between blink bursts. If enter or c still hasn't happened by then, it
-// blinks again — a repeating nudge for as long as a row stays done, not a
-// one-shot animation you could miss once and then forget about.
+// blinkReminderInterval is how long an unacknowledged attention row goes
+// quiet between blink bursts. If enter or c still hasn't happened by
+// then, it blinks again — a repeating nudge for as long as a row stays
+// unacknowledged, not a one-shot animation you could miss once and then
+// forget about.
 const blinkReminderInterval = 5 * time.Minute
 
 // blinkTickInterval drives the animation's own redraw cadence while a
@@ -272,14 +301,14 @@ const blinkReminderInterval = 5 * time.Minute
 const blinkTickInterval = blinkToggleInterval / 3
 
 // advanceBlinks starts a fresh blink burst — from scratch, right now — for
-// every open (unacknowledged) done episode whose NextBlinkAt has arrived:
+// every open (unacknowledged) episode whose NextBlinkAt has arrived:
 // immediately the first time (updateDoneTracking seeds NextBlinkAt to the
 // instant the episode opens), then every blinkReminderInterval after that
 // for as long as it stays unacknowledged. Acknowledged episodes are
 // skipped outright — acknowledge() doesn't need to touch NextBlinkAt/
-// BurstStart itself, since displayState never reports "done" for an acked
-// episode again anyway (see its own doc comment), so this can never
-// restart one after the fact.
+// BurstStart itself, since displayState never reports an episode's word
+// for an acked episode again anyway (see its own doc comment), so this
+// can never restart one after the fact.
 func (m *Model) advanceBlinks(now time.Time) {
 	for key, ep := range m.done {
 		if !ep.Acked.IsZero() || ep.NextBlinkAt.IsZero() || now.Before(ep.NextBlinkAt) {
@@ -324,17 +353,17 @@ func (m Model) anyBlinkActive(now time.Time) bool {
 	return false
 }
 
-// tickBlinks advances every open done episode's blink schedule against
-// now (see advanceBlinks), rebuilds the table's rows so any resulting
-// on/off change actually renders, and returns a command to redraw again
-// shortly if a burst is still running — nil once every burst has settled,
-// leaving the next reminder to start a new one on some later poll instead
-// of ticking indefinitely. Called from both the poll path (pollResultMsg,
+// tickBlinks advances every open episode's blink schedule against now (see
+// advanceBlinks), rebuilds the table's rows so any resulting on/off
+// change actually renders, and returns a command to redraw again shortly
+// if a burst is still running — nil once every burst has settled, leaving
+// the next reminder to start a new one on some later poll instead of
+// ticking indefinitely. Called from both the poll path (pollResultMsg,
 // where a burst can newly start) and the animation path (blinkTickMsg,
 // which exists purely to keep an already-running burst visibly toggling).
 //
 // A no-op, with no row rebuild at all, when m.done is empty: the common
-// case on most polls (nothing currently done), where there is by
+// case on most polls (nothing currently done/errored), where there is by
 // definition nothing that could be blinking and so nothing that needs
 // re-rendering on top of the rows applyEntries just built.
 func (m *Model) tickBlinks(now time.Time) tea.Cmd {
@@ -358,8 +387,8 @@ func blinkTickCmd() tea.Cmd {
 	return tea.Tick(blinkTickInterval, func(time.Time) tea.Msg { return blinkTickMsg{} })
 }
 
-// acknowledge closes entry's current "done" episode: from this instant on,
-// displayState treats it as idle everywhere (sorting, coloring, the
+// acknowledge closes entry's current attention episode: from this instant
+// on, displayState treats it as idle everywhere (sorting, coloring, the
 // summary line, the State/Since cells). That's exactly what the "c"
 // keybind is for: dismissing a row without bringing its terminal to the
 // front, and it's also why this closes an *open* episode in m.done
@@ -368,21 +397,21 @@ func blinkTickCmd() tea.Cmd {
 // moved on to something else by the time the user presses enter/c (e.g. a
 // fresh working turn starting on the same session before it was
 // acknowledged), and this must still count as acknowledging the earlier
-// done episode — that's the entire point of m.done latching an episode
-// open across exactly that kind of poll.
+// episode — that's the entire point of m.done latching an episode open
+// across exactly that kind of poll.
 //
-// A no-op for anything neither currently (raw) done nor already tracked as
-// an open episode — nothing to acknowledge — so it's safe to call
-// unconditionally from both "enter" and "c".
+// A no-op for anything neither currently (raw) done/error nor already
+// tracked as an open episode — nothing to acknowledge — so it's safe to
+// call unconditionally from both "enter" and "c".
 //
 // This only ever writes to m.done; it never touches entry's raw State
-// field (see the done field's own doc comment on Model for why that has to
-// stay untouched for needsBell/registry.stampStateSince to keep working
-// across polls).
+// field (see the done field's own doc comment on Model for why that has
+// to stay untouched for needsBell/registry.stampStateSince to keep
+// working across polls).
 func (m *Model) acknowledge(entry registry.RegistryEntry) {
 	key := entry.Key()
 	ep, tracked := m.done[key]
-	if entry.State != "done" && !tracked {
+	if !isAttention(entry.State) && !tracked {
 		return
 	}
 	if m.done == nil {
@@ -390,12 +419,12 @@ func (m *Model) acknowledge(entry registry.RegistryEntry) {
 	}
 	if !tracked {
 		// Not already tracked by updateDoneTracking (only expected from tests
-		// driving acknowledge directly): seed RawAt from entry too, so a later
-		// poll's genuinely-new-settle check in updateDoneTracking has
-		// something real to compare against instead of a zero value that
-		// would equal a legitimately-zero RealStateReportedAt and mask a
-		// following poll's comparison.
-		ep = doneEpisode{Since: entry.StateSince, RawAt: entry.RealStateReportedAt}
+		// driving acknowledge directly): seed RawAt/State from entry too, so
+		// a later poll's genuinely-new-settle check in updateDoneTracking
+		// has something real to compare against instead of a zero value
+		// that would equal a legitimately-zero RealStateReportedAt and mask
+		// a following poll's comparison.
+		ep = doneEpisode{State: entry.State, Since: entry.StateSince, RawAt: entry.RealStateReportedAt}
 	}
 	ep.Acked = time.Now()
 	m.done[key] = ep
@@ -408,17 +437,17 @@ func (m *Model) acknowledge(entry registry.RegistryEntry) {
 	m.refreshCursorTag()
 }
 
-// acknowledgeAll closes every currently open "done" episode at once: the
-// "C" keybind's bulk form of acknowledge's per-row dismissal, for the
-// common case of coming back to a screen full of done rows that all just
-// need clearing. The target set is exactly the open episodes in m.done —
-// not m.entries: displayState only ever reports "done" for an open
-// episode (updateDoneTracking opens one for every raw-done key on every
-// poll), so rows without an open episode (working, idle, already
-// acknowledged) have nothing to complete, and the one acknowledge()
-// case this deliberately doesn't share — acting on a raw-done row with
-// no tracked episode at all — can't exist outside tests driving
-// acknowledge directly.
+// acknowledgeAll closes every currently open attention episode at once:
+// the "C" keybind's bulk form of acknowledge's per-row dismissal, for the
+// common case of coming back to a screen full of done/error rows that all
+// just need clearing. The target set is exactly the open episodes in
+// m.done — not m.entries: displayState only ever reports an episode's
+// word for an open episode (updateDoneTracking opens one for every
+// attention-state key on every poll), so rows without an open episode
+// (working, idle, already acknowledged) have nothing to complete, and the
+// one acknowledge() case this deliberately doesn't share — acting on a
+// raw-done row with no tracked episode at all — can't exist outside tests
+// driving acknowledge directly.
 //
 // Already-acknowledged episodes are skipped, not re-stamped: bumping
 // their Acked would reset sinceCellText's "idle since" clock and rewrite
@@ -430,7 +459,7 @@ func (m *Model) acknowledge(entry registry.RegistryEntry) {
 // Acked.IsZero(), so every burst stops on the very next blink frame
 // (see tickBlinks), and the bell side is untouched for the same reason
 // acknowledge's doc comment covers — this only writes m.done, never raw
-// State. Safe to call with no done episodes at all (nil map included):
+// State. Safe to call with no episodes at all (nil map included):
 // the loop does nothing and refreshCursorTag early-returns on an empty
 // entry list.
 func (m *Model) acknowledgeAll() {

@@ -491,7 +491,7 @@ func TestDisplayStateReportsStoppedAsItsOwnSyntheticState(t *testing.T) {
 
 	// An open done episode still outranks it: done needs the user's
 	// enter/c, paused or not.
-	done := map[string]doneEpisode{e.Key(): {Since: time.Now()}}
+	done := map[string]doneEpisode{e.Key(): {State: "done", Since: time.Now()}}
 	if got := displayState(e, done); got != "done" {
 		t.Fatalf("got %q, want an open done episode to outrank stopped", got)
 	}
@@ -500,7 +500,7 @@ func TestDisplayStateReportsStoppedAsItsOwnSyntheticState(t *testing.T) {
 	// more informative reading, not the synthetic idle.
 	acked := entry(1, ancestry.Ghostty, "done")
 	acked.Stopped = true
-	done = map[string]doneEpisode{acked.Key(): {Since: time.Now(), Acked: time.Now()}}
+	done = map[string]doneEpisode{acked.Key(): {State: "done", Since: time.Now(), Acked: time.Now()}}
 	if got := displayState(acked, done); got != "stopped" {
 		t.Fatalf("got %q, want stopped for an acknowledged done row that is paused", got)
 	}

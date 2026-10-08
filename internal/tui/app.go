@@ -36,10 +36,11 @@ import (
 // processes.
 var killProcess = kill.Process
 
-// DefaultInterval is the poll interval used when none is given. Also sets
-// the resolution of refineExternalStates' CPU-time delta: a shorter
-// interval means a tighter, more responsive "has this actually done
-// anything recently" window, at the cost of polling ps/lsof more often.
+// DefaultInterval is the poll interval used when none is given. It also
+// sets the debounce window for a "blocked" row ringing the bell: a dialog
+// has to still be open on two consecutive polls (see newlyBlocked in
+// bell.go), so a shorter interval means an instantly answered dialog is
+// even less likely to ever ring.
 const DefaultInterval = 2 * time.Second
 
 const notifyDuration = 4 * time.Second
@@ -147,23 +148,30 @@ type Model struct {
 	entries []registry.RegistryEntry // sorted, parallel to the table's real rows
 	table   table.Model
 
-	// done tracks each entry's current "done" episode by Key() (see
-	// doneEpisode in done.go): open (Acked zero) until the user actually
-	// acts on it — pressing enter or c, see acknowledge — closed (Acked
-	// set) from that instant on. displayState/sortEntries/stateCellText/
+	// done tracks each entry's current attention ("done"/"error") episode
+	// by Key() (see doneEpisode in done.go): open (Acked zero) until the
+	// user actually acts on it — pressing enter or c, see acknowledge —
+	// closed (Acked set) from that instant on. displayState/sortEntries/stateCellText/
 	// sinceCellText/summaryLine all read this instead of e.State directly;
 	// the raw State field itself is left completely untouched so needsBell
 	// and registry.stampStateSince keep comparing real poll-to-poll
 	// transitions, not what's currently displayed on screen (dismissed, or
 	// still awaiting dismissal). updateDoneTracking (run every poll, before
 	// sorting) is what opens and closes these episodes; deliberately does
-	// *not* close an open one just because the raw source moves off "done"
-	// by itself (e.g. the same session starting a fresh working turn before
-	// the user ever acknowledged the previous done episode in canopy) —
+	// *not* close an open one just because the raw source moves off
+	// done/error by itself (e.g. the same session starting a fresh working
+	// turn before the user ever acknowledged the previous episode in canopy) —
 	// only acknowledge() or the key vanishing from a fresh poll outright
 	// (session ended) does that. See updateDoneTracking's own doc comment
 	// (done.go) for the full rationale.
 	done map[string]doneEpisode
+
+	// blockedRung is the set of entry keys that have already rung the bell
+	// for their current "blocked" spell (see newlyBlocked in bell.go): a
+	// blocked row rings once, the first time it's seen still blocked on a
+	// second consecutive poll, and never again until its raw State leaves
+	// blocked and a later dialog starts a fresh spell.
+	blockedRung map[string]bool
 
 	notification  string
 	notifyIsError bool
@@ -188,7 +196,7 @@ type Model struct {
 	// bellEnabled gates the terminal-bell side effect in applyEntries/Update
 	// (see needsBell in bell.go): on by default (set in New), off via
 	// --no-bell (see cmd/canopy) for anyone who finds an audible alert
-	// intrusive. Coloring and done's blinking (colorize.go, stateCellText)
+	// intrusive. Coloring and blinking (colorize.go, stateCellText)
 	// happen regardless of this flag.
 	bellEnabled bool
 
@@ -545,13 +553,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !ok {
 				return m, nil
 			}
-			// canopy-status.ts writes "done" unconditionally at settle time and
-			// only ever overwrites it once a fresh working turn starts (see
-			// docs/agent-state-machine.md's "Removed: frontmost/focus
-			// detection") — nothing flips it back to "idle" on its own anymore.
-			// Acknowledging right here is what actually clears it: the row
-			// stops reading done the instant the user acts on it, whether or
-			// not the jump itself lands.
+			// canopy-status.ts's done/error writes are one-shot: only a fresh
+			// turn (working) ever overwrites one, so nothing flips an
+			// attention row back to "idle" on its own. Acknowledging right
+			// here is what actually clears it: the row stops reading done/error
+			// the instant the user acts on it, whether or not the jump itself
+			// lands.
 			m.acknowledge(entry)
 			return m, jumpCmd(entry)
 		case "c":
@@ -774,6 +781,28 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 	// not ring again) apart from one that's genuinely new since the last
 	// acknowledgment (the reopen case, which must ring).
 	bell := needsBell(m.entries, fresh, m.done)
+	// Blocked rings separately, on its own two-poll debounce (see
+	// newlyBlocked): a dialog the user answers within one poll interval
+	// never rings, and one spell rings at most once.
+	if keys := newlyBlocked(m.entries, fresh, m.blockedRung); len(keys) > 0 {
+		bell = true
+		if m.blockedRung == nil {
+			m.blockedRung = map[string]bool{}
+		}
+		for _, key := range keys {
+			m.blockedRung[key] = true
+		}
+	}
+	// A key whose raw State has left blocked re-arms for its next spell.
+	freshState := make(map[string]string, len(fresh))
+	for _, e := range fresh {
+		freshState[e.Key()] = e.State
+	}
+	for key := range m.blockedRung {
+		if freshState[key] != "blocked" {
+			delete(m.blockedRung, key)
+		}
+	}
 	m.updateDoneTracking(fresh)
 
 	sortEntries(fresh, m.done)

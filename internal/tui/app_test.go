@@ -78,26 +78,25 @@ func TestSortEntriesRanksDoneAboveWorking(t *testing.T) {
 // done's own attention treatment isn't a static flash: it's a real on/off
 // blink for blinkPhases phases, then steady until the next reminder. This
 // exercises that directly against stateCellText, without going through a
-// poll. There is no "blocked" state to test here at all — see
-// docs/agent-state-machine.md: nothing in canopy has ever produced one.
+// poll.
 func TestStateCellTextBlinksDoneOnAndOffDuringABurst(t *testing.T) {
 	now := time.Now()
 	e := entry(1, ancestry.Ghostty, "done")
 
 	onBurst := now.Add(-blinkToggleInterval / 2) // first ("on") phase
-	done := map[string]doneEpisode{e.Key(): {Since: onBurst, BurstStart: onBurst}}
+	done := map[string]doneEpisode{e.Key(): {State: "done", Since: onBurst, BurstStart: onBurst}}
 	if got := stateCellText(e, now, done); got != "done"+blinkMarker {
 		t.Fatalf("got %q, want a blinking (on) done cell early in the burst", got)
 	}
 
 	offBurst := now.Add(-blinkToggleInterval - blinkToggleInterval/2) // second ("off") phase
-	done = map[string]doneEpisode{e.Key(): {Since: offBurst, BurstStart: offBurst}}
+	done = map[string]doneEpisode{e.Key(): {State: "done", Since: offBurst, BurstStart: offBurst}}
 	if got := stateCellText(e, now, done); got != "done" {
 		t.Fatalf("got %q, want a steady (off) done cell mid-burst", got)
 	}
 
 	staleBurst := now.Add(-blinkBurstDuration - time.Second)
-	done = map[string]doneEpisode{e.Key(): {Since: staleBurst, BurstStart: staleBurst}}
+	done = map[string]doneEpisode{e.Key(): {State: "done", Since: staleBurst, BurstStart: staleBurst}}
 	if got := stateCellText(e, now, done); got != "done" {
 		t.Fatalf("got %q, want a steady done cell once the burst has settled", got)
 	}
@@ -106,18 +105,19 @@ func TestStateCellTextBlinksDoneOnAndOffDuringABurst(t *testing.T) {
 func TestStateCellTextNeverBlinksAnAcknowledgedDoneRowEvenMidBurst(t *testing.T) {
 	now := time.Now()
 	e := entry(1, ancestry.Ghostty, "done")
-	done := map[string]doneEpisode{e.Key(): {Since: now, BurstStart: now, Acked: now}}
+	done := map[string]doneEpisode{e.Key(): {State: "done", Since: now, BurstStart: now, Acked: now}}
 
 	if got := stateCellText(e, now, done); got != "idle" {
 		t.Fatalf("got %q, want idle (via displayState) with no blink marker once acknowledged", got)
 	}
 }
 
-// working/idle/unknown never get any attention-getting marker at all —
-// done is the only state stateCellText treats specially.
+// working/idle/stopped/unknown/blocked never get any attention-getting
+// marker at all — done and error are the only states stateCellText
+// treats specially (via an open episode, which these rows have none of).
 func TestStateCellTextNeverMarksNonDoneStates(t *testing.T) {
 	now := time.Now()
-	for _, state := range []string{"working", "idle", "unknown"} {
+	for _, state := range []string{"working", "idle", "unknown", "blocked", "stopped"} {
 		e := entry(1, ancestry.Ghostty, state)
 		e.StateSince = now.Add(-time.Second)
 		if got := stateCellText(e, now, nil); got != state {
@@ -903,7 +903,7 @@ func TestEnterAcknowledgesAnOpenDoneEpisodeEvenAfterRawStateAlreadyMovedToIdle(t
 
 func TestDisplayStateFoldsAckedDoneIntoIdleWithoutTouchingRawState(t *testing.T) {
 	e := entry(1, ancestry.Ghostty, "done")
-	done := map[string]doneEpisode{e.Key(): {Since: time.Now(), Acked: time.Now()}}
+	done := map[string]doneEpisode{e.Key(): {State: "done", Since: time.Now(), Acked: time.Now()}}
 
 	if got := displayState(e, done); got != "idle" {
 		t.Fatalf("got %q, want idle for an acked done entry", got)
@@ -924,7 +924,7 @@ func TestDisplayStateKeepsReportingDoneForAnOpenEpisodeEvenIfRawStateMovesToIdle
 	// canopy yet, so displayState must keep reporting done regardless of
 	// what the raw State says this poll.
 	e := entry(1, ancestry.Ghostty, "idle")
-	done := map[string]doneEpisode{e.Key(): {Since: time.Now()}}
+	done := map[string]doneEpisode{e.Key(): {State: "done", Since: time.Now()}}
 
 	if got := displayState(e, done); got != "done" {
 		t.Fatalf("got %q, want an open episode to keep reporting done even though raw State already reads idle", got)

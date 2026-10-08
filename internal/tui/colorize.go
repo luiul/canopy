@@ -17,21 +17,23 @@ import (
 	"github.com/luiul/dashkit/loam"
 )
 
-// blinkMarker is appended, as plain text, to a "done" State cell's value
-// whenever that row is mid-blink-burst and on its visible ("on") phase
-// (see stateCellText in app.go for exactly when that applies — done is
-// the only state with any attention-getting treatment at all). It's a
-// real, visible character rather than just an ANSI signal, so blinking
-// still reads under --no-color: the marker itself appears and disappears
-// between redraws.
+// blinkMarker is appended, as plain text, to a done/error State cell's
+// value whenever that row is mid-blink-burst and on its visible ("on")
+// phase (see stateCellText in rows.go for exactly when that applies —
+// done and error are the only states with any attention-getting treatment
+// at all). It's a real, visible character rather than just an ANSI
+// signal, so blinking still reads under --no-color: the marker itself
+// appears and disappears between redraws.
 const blinkMarker = "*"
 
 var stateStyles = map[string]lipgloss.Style{
+	"blocked": lipgloss.NewStyle().Foreground(lipgloss.Color("208")),             // waiting on you in a dialog, mid-run or not
+	"error":   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")),    // turn failed, needs a look
 	"done":    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")),   // finished, ready to check
 	"working": lipgloss.NewStyle().Foreground(lipgloss.Color("11")),              // busy, nothing for you to do yet
 	"idle":    lipgloss.NewStyle().Foreground(lipgloss.Color("240")),             // waiting on a prompt
 	"stopped": lipgloss.NewStyle().Foreground(lipgloss.Color("14")),              // paused via SIGSTOP (the p keybind)
-	"unknown": lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("238")), // heuristic couldn't tell
+	"unknown": lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("238")), // no real status (extension missing/stale, or not pi)
 }
 
 func stateStyle(word string) lipgloss.Style {
@@ -56,9 +58,9 @@ var rowHighlightStyle = lipgloss.NewStyle().Background(lipgloss.AdaptiveColor{Li
 // trailing blinkMarker before looking up the word's color, then renders
 // the *original* word (marker and all, so the marker itself still shows)
 // in a reverse-video variant of that color whenever the marker was
-// present — in practice only ever seen on a "done" row's visible blink
-// phase, but this stays state-word-agnostic since nothing here needs to
-// know that.
+// present — in practice only ever seen on a done/error row's visible
+// blink phase, but this stays state-word-agnostic since nothing here
+// needs to know that.
 func recolorState(trimmed string) lipgloss.Style {
 	word := strings.TrimSuffix(trimmed, blinkMarker)
 	style := stateStyle(word)

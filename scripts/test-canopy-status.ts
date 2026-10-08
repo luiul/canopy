@@ -12,6 +12,7 @@ type Handler = (event: any, ctx: ExtensionContext) => unknown;
 class MockPi {
 	handlers = new Map<string, Handler[]>();
 	commands = new Map<string, { handler: Handler }>();
+	sessionName: string | undefined = "test session";
 
 	on(event: string, handler: Handler) {
 		const handlers = this.handlers.get(event) ?? [];
@@ -21,6 +22,10 @@ class MockPi {
 
 	registerCommand(name: string, command: { handler: Handler }) {
 		this.commands.set(name, command);
+	}
+
+	getSessionName() {
+		return this.sessionName;
 	}
 
 	async fire(event: string, ctx: ExtensionContext, payload: unknown = {}) {
@@ -68,29 +73,37 @@ async function harness(t: TestContext) {
 	return { create, status, model, timers, oldListeners };
 }
 
+function readStatus(file: string): { state: string; message?: string; updatedAt: string } {
+	return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
 test("interactive session owns status, model, heartbeats, and cleanup", async (t) => {
 	const h = await harness(t);
 	const pi = h.create();
 	assert.equal(process.listeners("exit").length, h.oldListeners.size, "factory must not add exit handlers");
 	const ctx = context("tui", true);
 	await pi.fire("session_start", ctx);
-	assert.equal(JSON.parse(fs.readFileSync(h.status, "utf8")).state, "idle");
+	assert.equal(readStatus(h.status).state, "idle");
 	assert.equal(JSON.parse(fs.readFileSync(h.model, "utf8")).model, mainModel.name);
-	assert.equal(h.timers.size, 1);
-	for (const event of ["before_agent_start", "agent_start", "tool_execution_start"]) {
-		await pi.fire(event, ctx);
-		assert.equal(JSON.parse(fs.readFileSync(h.status, "utf8")).state, "working");
-		assert.equal(h.timers.size, 2);
-	}
+	assert.equal(h.timers.size, 2); // status heartbeat + model heartbeat
+	await pi.fire("agent_start", ctx);
+	assert.deepEqual(readStatus(h.status), {
+		pid: process.pid,
+		cwd: "/projects/canopy",
+		state: "working",
+		message: "test session",
+		updatedAt: readStatus(h.status).updatedAt,
+	});
 	const stateBeforeModel = fs.readFileSync(h.status, "utf8");
 	await pi.fire("model_select", ctx, { model: helperModel });
 	assert.equal(JSON.parse(fs.readFileSync(h.model, "utf8")).model, helperModel.name);
 	assert.equal(fs.readFileSync(h.status, "utf8"), stateBeforeModel);
 	for (const timer of h.timers) timer.tick();
 	assert.equal(JSON.parse(fs.readFileSync(h.model, "utf8")).model, helperModel.name);
-	await pi.fire("agent_settled", ctx);
-	assert.equal(JSON.parse(fs.readFileSync(h.status, "utf8")).state, "done");
-	assert.equal(h.timers.size, 1);
+	// The status heartbeat refreshes a live working write's timestamp.
+	assert.ok(Date.now() - Date.parse(readStatus(h.status).updatedAt) < 1000);
+	await pi.fire("agent_settled", ctx, { aborted: false });
+	assert.equal(readStatus(h.status).state, "done");
 	await pi.fire("session_shutdown", ctx);
 	await pi.fire("session_shutdown", ctx);
 	assert.equal(fs.existsSync(h.status), false);
@@ -114,7 +127,7 @@ test("SDK helpers and non-interactive sessions never touch the parent's records"
 		await child.fire("session_start", childCtx);
 		await child.fire("model_select", childCtx, { model: helperModel });
 		for (const event of ["before_agent_start", "agent_start", "tool_execution_start", "agent_settled"]) {
-			await child.fire(event, childCtx);
+			await child.fire(event, childCtx, { aborted: false });
 		}
 		await child.commands.get("canopy-status")!.handler("", childCtx);
 		await child.fire("session_shutdown", childCtx);
@@ -141,31 +154,168 @@ test("toggle and reload release and restore only the interactive owner's resourc
 	await pi.fire("agent_start", ctx);
 	assert.equal(fs.existsSync(h.status), false);
 	await toggle("", ctx);
+	// Events fired while disabled are still tracked, only not written, so
+	// re-enabling reveals the true current state (a run started above).
+	assert.equal(readStatus(h.status).state, "working");
 	assert.equal(JSON.parse(fs.readFileSync(h.model, "utf8")).model, mainModel.name);
-	assert.equal(h.timers.size, 1);
+	assert.equal(h.timers.size, 2);
 	await pi.fire("session_shutdown", ctx);
 	await pi.fire("session_start", ctx);
-	assert.equal(h.timers.size, 1);
+	assert.equal(h.timers.size, 2);
 	assert.equal(process.listeners("exit").length, h.oldListeners.size + 1);
 	await pi.fire("session_shutdown", ctx);
 });
 
-test("model heartbeat refreshes stale metadata without changing the state timestamp", async (t) => {
+test("an aborted run settles to idle, not done", async (t) => {
 	const h = await harness(t);
 	const pi = h.create();
 	const ctx = context("tui", true);
 	await pi.fire("session_start", ctx);
-	const status = JSON.parse(fs.readFileSync(h.status, "utf8"));
-	status.updatedAt = new Date(Date.now() - 11000).toISOString();
-	fs.writeFileSync(h.status, JSON.stringify(status));
+	await pi.fire("agent_start", ctx);
+	assert.equal(readStatus(h.status).state, "working");
+	await pi.fire("agent_settled", ctx, { aborted: true });
+	const status = readStatus(h.status);
+	assert.equal(status.state, "idle");
+	assert.equal(status.message, undefined);
+	await pi.fire("session_shutdown", ctx);
+});
+
+test("an unretried assistant error settles to error with its first line, a retried one to done", async (t) => {
+	const h = await harness(t);
+	const pi = h.create();
+	const ctx = context("tui", true);
+	await pi.fire("session_start", ctx);
+	await pi.fire("agent_start", ctx);
+	await pi.fire("message_end", ctx, { message: { role: "assistant", stopReason: "error", errorMessage: "boom\nstack line two" } });
+	// The error is only the run's outcome: still working until it settles.
+	assert.equal(readStatus(h.status).state, "working");
+	await pi.fire("agent_settled", ctx, { aborted: false });
+	assert.deepEqual(readStatus(h.status), {
+		pid: process.pid,
+		cwd: "/projects/canopy",
+		state: "error",
+		message: "boom",
+		updatedAt: readStatus(h.status).updatedAt,
+	});
+	// A new run whose last message succeeds settles to done (retry semantics).
+	await pi.fire("agent_start", ctx);
+	await pi.fire("message_end", ctx, { message: { role: "assistant", stopReason: "error", errorMessage: "boom" } });
+	await pi.fire("message_end", ctx, { message: { role: "assistant", stopReason: "stop" } });
+	await pi.fire("agent_settled", ctx, { aborted: false });
+	assert.equal(readStatus(h.status).state, "done");
+	assert.equal(readStatus(h.status).message, "test session");
+	await pi.fire("session_shutdown", ctx);
+});
+
+test("done and error are one-shot writes: the heartbeat never refreshes them", async (t) => {
+	const h = await harness(t);
+	const pi = h.create();
+	const ctx = context("tui", true);
+	await pi.fire("session_start", ctx);
+	await pi.fire("agent_start", ctx);
+	await pi.fire("agent_settled", ctx, { aborted: false });
+	const settled = fs.readFileSync(h.status, "utf8");
+	for (const timer of h.timers) timer.tick();
+	assert.equal(fs.readFileSync(h.status, "utf8"), settled, "done must not be heartbeated (updatedAt is canopy's settle identity)");
+	await pi.fire("agent_start", ctx);
+	await pi.fire("message_end", ctx, { message: { role: "assistant", stopReason: "error", errorMessage: "boom" } });
+	await pi.fire("agent_settled", ctx, { aborted: false });
+	const failed = fs.readFileSync(h.status, "utf8");
+	for (const timer of h.timers) timer.tick();
+	assert.equal(fs.readFileSync(h.status, "utf8"), failed, "error must not be heartbeated either");
+	await pi.fire("session_shutdown", ctx);
+});
+
+test("an extension dialog blocks, outranks working, and clears back to the underlying state", async (t) => {
+	const h = await harness(t);
+	const pi = h.create();
+	const ctx = context("tui", true);
+	await pi.fire("session_start", ctx);
+	await pi.fire("ui_prompt_start", ctx, { kind: "confirm", title: "Allow this?" });
+	assert.deepEqual(readStatus(h.status), {
+		pid: process.pid,
+		cwd: "/projects/canopy",
+		state: "blocked",
+		message: "Allow this?",
+		updatedAt: readStatus(h.status).updatedAt,
+	});
+	await pi.fire("ui_prompt_end", ctx, { kind: "confirm", title: "Allow this?" });
+	assert.equal(readStatus(h.status).state, "idle");
+	// Blocked during a run reports blocked, then returns to working.
+	await pi.fire("agent_start", ctx);
+	await pi.fire("ui_prompt_start", ctx, { kind: "select", title: "Pick one" });
+	assert.equal(readStatus(h.status).state, "blocked");
+	await pi.fire("ui_prompt_end", ctx, { kind: "select", title: "Pick one" });
+	assert.equal(readStatus(h.status).state, "working");
+	// A prompt without a title falls back to its kind.
+	await pi.fire("ui_prompt_start", ctx, { kind: "custom" });
+	assert.deepEqual(readStatus(h.status).message, "custom");
+	await pi.fire("ui_prompt_end", ctx, { kind: "custom" });
+	// Working (and blocked while it lasts) is heartbeated: it can sit for
+	// minutes and must not go stale past canopy's pistatus.MaxAge.
+	const stale = readStatus(h.status);
+	stale.updatedAt = new Date(Date.now() - 11000).toISOString();
+	fs.writeFileSync(h.status, JSON.stringify(stale));
+	for (const timer of h.timers) timer.tick();
+	assert.ok(Date.now() - Date.parse(readStatus(h.status).updatedAt) < 1000);
+	await pi.fire("session_shutdown", ctx);
+});
+
+test("compaction reads working, then resolves per pi's rules", async (t) => {
+	const h = await harness(t);
+	const pi = h.create();
+	const ctx = context("tui", true);
+	await pi.fire("session_start", ctx);
+	// Manual compaction at rest: working while it runs, done when it lands.
+	await pi.fire("session_before_compact", ctx);
+	assert.deepEqual(readStatus(h.status), {
+		pid: process.pid,
+		cwd: "/projects/canopy",
+		state: "working",
+		message: "Compacting context",
+		updatedAt: readStatus(h.status).updatedAt,
+	});
+	await pi.fire("session_compact", ctx, { reason: "manual", willRetry: false });
+	assert.equal(readStatus(h.status).state, "done");
+	// A failed manual compaction at rest reads error.
+	await pi.fire("session_before_compact", ctx);
+	await pi.fire("session_compact_failed", ctx, { reason: "manual", aborted: false, errorMessage: "no summary\nmore", willRetry: false });
+	assert.deepEqual(readStatus(h.status), {
+		pid: process.pid,
+		cwd: "/projects/canopy",
+		state: "error",
+		message: "no summary",
+		updatedAt: readStatus(h.status).updatedAt,
+	});
+	// An aborted manual compaction at rest reads idle.
+	await pi.fire("session_before_compact", ctx);
+	await pi.fire("session_compact_failed", ctx, { reason: "manual", aborted: true, willRetry: false });
+	assert.equal(readStatus(h.status).state, "idle");
+	// Mid-run threshold compaction: still working afterwards, run decides the outcome.
+	await pi.fire("agent_start", ctx);
+	await pi.fire("session_before_compact", ctx);
+	assert.equal(readStatus(h.status).state, "working");
+	await pi.fire("session_compact", ctx, { reason: "threshold", willRetry: false });
+	assert.equal(readStatus(h.status).state, "working");
+	await pi.fire("agent_settled", ctx, { aborted: false });
+	assert.equal(readStatus(h.status).state, "done");
+	await pi.fire("session_shutdown", ctx);
+});
+
+test("model heartbeat refreshes stale metadata without faking a state transition", async (t) => {
+	const h = await harness(t);
+	const pi = h.create();
+	const ctx = context("tui", true);
+	await pi.fire("session_start", ctx);
 	const model = JSON.parse(fs.readFileSync(h.model, "utf8"));
 	model.updatedAt = new Date(Date.now() - 89000).toISOString();
 	fs.writeFileSync(h.model, JSON.stringify(model));
-	const stateBefore = fs.readFileSync(h.status, "utf8");
-	assert.equal(h.timers.size, 1);
+	assert.equal(h.timers.size, 2);
 	for (const timer of h.timers) timer.tick();
-	assert.equal(fs.readFileSync(h.status, "utf8"), stateBefore);
+	// The model heartbeat refreshed the model file, and the state still
+	// reads exactly what it did (idle; only its freshness timestamp moved).
 	assert.ok(Date.now() - Date.parse(JSON.parse(fs.readFileSync(h.model, "utf8")).updatedAt) < 1000);
+	assert.equal(readStatus(h.status).state, "idle");
 	await pi.fire("session_shutdown", ctx);
 });
 
@@ -190,5 +340,18 @@ test("older interactive hosts without mode still report", async (t) => {
 	const ctx = context(undefined, true);
 	await pi.fire("session_start", ctx);
 	assert.equal(JSON.parse(fs.readFileSync(h.model, "utf8")).model, mainModel.name);
+	await pi.fire("session_shutdown", ctx);
+});
+
+test("a session without a name omits the message", async (t) => {
+	const h = await harness(t);
+	const pi = h.create();
+	pi.sessionName = undefined;
+	const ctx = context("tui", true);
+	await pi.fire("session_start", ctx);
+	await pi.fire("agent_start", ctx);
+	const status = readStatus(h.status);
+	assert.equal(status.state, "working");
+	assert.equal(status.message, undefined);
 	await pi.fire("session_shutdown", ctx);
 });
