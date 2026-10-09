@@ -68,19 +68,17 @@ type RegistryEntry struct {
 	// dialog title for blocked, the first line of the error for error.
 	// Empty otherwise (idle, unknown, stopped, unnamed sessions, and every
 	// non-pi kind). Carried verbatim with State each poll; the TUI decides
-	// how (and whether) to display it, including latching it into done
-	// episodes the same way State is latched.
+	// how (and whether) to display it (see internal/tui/message.go).
 	Message string
 	// Detail is canopy's own enrichment signal from the extension: the
 	// last tool call while working ("edit: internal/tui/rows.go"), the
-	// last assistant line at settle. Empty otherwise. Same carriage and
-	// latching rules as Message.
+	// last assistant line at settle. Empty otherwise. Same carriage rules
+	// as Message.
 	Detail string
 	// Task is the first prompt of the session (session identity for
 	// unnamed sessions). Unlike Message/Detail it is not state payload —
-	// it rides every write including settles — and the TUI never latches
-	// it into episodes: an open error episode's row still shows the
-	// current session's task if its line falls back to it.
+	// it rides every write including settles — so the TUI can fall back
+	// to it whenever a state's own payloads come out empty.
 	Task string
 	// ModelName and ModelProvider are pi's selected model, supplied by the
 	// optional companion extension. Empty for other agent kinds or when the
@@ -90,8 +88,7 @@ type RegistryEntry struct {
 	// StateSince is when State last changed, not when this entry was last
 	// seen. Stamped by stampStateSince on every poll: carried over unchanged
 	// while State stays the same, reset to the poll time the moment it
-	// flips. Used by the TUI to show "how long in this state" and to blink
-	// a row that just became done.
+	// flips. Used by the TUI to show "how long in this state".
 	StateSince time.Time
 	// CPUPercent is the raw macOS `ps` %cpu sample for this entry's most
 	// recent poll (see scan.ProcessInfo.Pcpu): a decaying average over up to
@@ -130,8 +127,8 @@ type RegistryEntry struct {
 	// again without canopy ever sampling a "working" poll in between,
 	// State reads "done" on both sides with nothing to tell them apart —
 	// except this timestamp, which advances on the second write even though
-	// the string doesn't. internal/tui's updateDoneTracking/needsBell use
-	// it for exactly that.
+	// the string doesn't. internal/tui's newSettles uses it for exactly
+	// that.
 	RealStateReportedAt time.Time
 
 	// Stopped is true when the process itself is currently stopped (SIGSTOP,

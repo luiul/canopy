@@ -50,18 +50,18 @@ func messageStyle(state string) lipgloss.Style {
 	return lipgloss.NewStyle()
 }
 
-// sessionName is the row's pi session name when the display message
+// sessionName is the row's pi session name when the raw report's message
 // carries one — a working/done report's payload — and "" for every other
 // state: blocked's dialog title and error's first line describe an
 // event, not the session's identity, so they never name a row. The
 // kill confirmation prompt uses this to disambiguate its target (see
 // killPromptText). "Compacting context" is the extension's fixed working
 // payload during compaction (canopy-status.ts), not a name — excluded.
-func sessionName(e registry.RegistryEntry, done map[string]doneEpisode) string {
-	switch displayState(e, done) {
+func sessionName(e registry.RegistryEntry) string {
+	switch displayState(e) {
 	case "working", "done":
-		if msg := displayMessage(e, done); msg != "Compacting context" {
-			return msg
+		if e.Message != "Compacting context" {
+			return e.Message
 		}
 	}
 	return ""
@@ -83,13 +83,13 @@ func sessionName(e registry.RegistryEntry, done map[string]doneEpisode) string {
 // so an unnamed working row before its first tool call still says what
 // it's doing. "" overall means no line at all (unknown kinds, or a pi
 // that has never been prompted).
-func detailLineText(e registry.RegistryEntry, done map[string]doneEpisode) string {
+func detailLineText(e registry.RegistryEntry) string {
 	var line string
-	switch displayState(e, done) {
+	switch displayState(e) {
 	case "blocked", "error":
-		line = displayMessage(e, done)
+		line = e.Message
 	case "working", "done":
-		name, detail := displayMessage(e, done), displayDetail(e, done)
+		name, detail := e.Message, e.Detail
 		switch {
 		case name != "" && detail != "":
 			line = name + " · " + detail
@@ -166,11 +166,11 @@ func (m *Model) ensureCursorVisible() {
 // highlight spans the whole band. The line never blinks: blink stays
 // confined to the State word's marker (see stateCellText), and a
 // blinking paragraph would be hostile.
-func messageLine(e registry.RegistryEntry, msg string, done map[string]doneEpisode, selected bool, width int) string {
+func messageLine(e registry.RegistryEntry, msg string, selected bool, width int) string {
 	text := runewidth.Truncate(msg, max(width-runewidth.StringWidth(messageIndent), 0), "…")
 	pad := max(width-runewidth.StringWidth(messageIndent)-runewidth.StringWidth(text), 0)
 	line := subtleStyle.Render(messageIndent) +
-		messageStyle(displayState(e, done)).Render(text) +
+		messageStyle(displayState(e)).Render(text) +
 		strings.Repeat(" ", pad)
 	if selected {
 		line = loam.HighlightRow(line, rowHighlightStyle)
@@ -229,8 +229,8 @@ func (m Model) tableView() string {
 		}
 		if idx := first + j - 1; idx >= 0 && idx < len(displayed) {
 			e := displayed[idx]
-			if msg := detailLineText(e, m.done); msg != "" {
-				out = append(out, messageLine(e, msg, m.done, idx == cursor, width))
+			if msg := detailLineText(e); msg != "" {
+				out = append(out, messageLine(e, msg, idx == cursor, width))
 			}
 		}
 	}
@@ -253,21 +253,21 @@ func (m Model) visibleMessageLines() int {
 	lines := strings.Split(m.table.View(), "\n")
 	first, ok := firstVisibleRow(lines, m.table.Cursor())
 	if !ok {
-		return min(countMessages(displayed, m.done), m.table.Height())
+		return min(countMessages(displayed), m.table.Height())
 	}
 	count := 0
 	for i := first; i < len(displayed) && i < first+m.table.Height(); i++ {
-		if detailLineText(displayed[i], m.done) != "" {
+		if detailLineText(displayed[i]) != "" {
 			count++
 		}
 	}
 	return count
 }
 
-func countMessages(entries []registry.RegistryEntry, done map[string]doneEpisode) int {
+func countMessages(entries []registry.RegistryEntry) int {
 	count := 0
 	for _, e := range entries {
-		if detailLineText(e, done) != "" {
+		if detailLineText(e) != "" {
 			count++
 		}
 	}

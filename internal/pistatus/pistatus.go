@@ -29,9 +29,11 @@ import (
 // session), whose working/blocked/idle file would otherwise freeze at
 // whatever state it last wrote. done and error are exempt (see parse):
 // the extension writes them exactly once, at the transition, and never
-// heartbeats them, because updatedAt doubling as canopy's "is this a
-// genuinely new settle" identity anchor (internal/tui's done.go/bell.go)
-// means a refreshed terminal write would impersonate a brand-new one.
+// heartbeats them. A refreshed terminal write would move updatedAt
+// forward for no real change, which would both knock a still-settled row
+// off its (still true) state and impersonate a brand-new settle to
+// canopy's bell/blink logic (internal/tui's bell.go compares updatedAt
+// poll-to-poll to tell two settles apart).
 const MaxAge = 10 * time.Second
 
 // Status is one pid's last self-reported state ("working", "blocked",

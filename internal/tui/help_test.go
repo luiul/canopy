@@ -27,7 +27,7 @@ func TestQuestionMarkOpensAHelpOverlayListingEveryKeybinding(t *testing.T) {
 	for _, want := range []string{
 		"keybindings",
 		"↑/↓, k/j", "pgup/pgdn, b/f", "u/d", "g/G, home/end",
-		"enter", "c / C", "x / X", "p", "D", "r", "?", "q, ctrl+c", "mouse",
+		"enter", "x / X", "p", "D", "r", "?", "q, ctrl+c", "mouse",
 		"SIGTERM", "SIGKILL", "SIGSTOP", "SIGCONT",
 		"press any key to close",
 	} {

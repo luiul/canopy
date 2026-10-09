@@ -70,14 +70,13 @@
  * needs its timestamp rewritten for as long as it stays true — the 3s
  * heartbeat below rewrites the current computed status, but only while it
  * is working/blocked/idle. done and error are written exactly once, at
- * the transition: canopy latches them into its sticky episode overlay the
- * moment they appear (internal/tui's done.go), and internal/pistatus
- * exempts them from MaxAge, so a one-shot write keeps reading done/error
- * for as long as the process lives. Rewriting them on a timer would only
- * move updatedAt forward, which is canopy's one identity anchor for
- * telling a genuinely new settle apart from the same one repeating — a
- * refreshed done would look like a brand-new done and re-ring the bell
- * after every acknowledgment.
+ * the transition, and internal/pistatus exempts them from MaxAge, so a
+ * one-shot write keeps reading done/error for as long as the process
+ * lives and nothing newer has been written. Rewriting them on a timer
+ * would only move updatedAt forward, which is canopy's one identity
+ * anchor for telling a genuinely new settle apart from the same one
+ * repeating — a refreshed done would look like a brand-new done and
+ * re-ring the bell for a turn that just finished long ago.
  *
  * Only interactive sessions report. SDK subagents share process.pid with
  * their parent, so letting them write would replace the parent's records.

@@ -1,9 +1,8 @@
 package tui
 
-// Tests for the two attention-state additions on top of the original
-// done-only machinery: "error" episodes (sticky, bell, blink, ack exactly
-// like done) and the debounced "blocked" bell. Split from app_test.go;
-// see done.go/bell.go for the machinery under test.
+// Tests for the attention states: "error" (bell, blink, and raw-following
+// display exactly like done) and the debounced "blocked" bell. Split from
+// app_test.go; see blink.go/bell.go for the machinery under test.
 
 import (
 	"testing"
@@ -14,9 +13,8 @@ import (
 )
 
 // realEntry is entry plus the RealState markers a pi self-report carries:
-// needsBell/updateDoneTracking tell a genuinely new settle apart from a
-// repeating one via RealStateReportedAt, which only RealState entries
-// have.
+// newSettles tells a genuinely new settle apart from a repeating one via
+// RealStateReportedAt, which only RealState entries have.
 func realEntry(pid int, surface ancestry.Surface, state string, reportedAt time.Time) registry.RegistryEntry {
 	e := entry(pid, surface, state)
 	e.RealState = true
@@ -24,72 +22,44 @@ func realEntry(pid int, surface ancestry.Surface, state string, reportedAt time.
 	return e
 }
 
-func TestUpdateDoneTrackingOpensAnErrorEpisode(t *testing.T) {
+func TestErrorRingsAndDisplaysLikeDone(t *testing.T) {
 	m := New(999, nil)
-	e := entry(1, ancestry.Ghostty, "error")
-	m.updateDoneTracking([]registry.RegistryEntry{e})
+	if bell := m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "error")}); !bell {
+		t.Fatal("want a bell for a fresh error")
+	}
+	if got := m.table.Rows()[0][colState]; got != "error"+blinkMarker && got != "error" {
+		t.Fatalf("got %q, want error on screen", got)
+	}
 
-	ep, ok := m.done[e.Key()]
-	if !ok {
-		t.Fatalf("got no episode for a raw error entry, want one opened")
-	}
-	if ep.State != "error" || !ep.Acked.IsZero() {
-		t.Fatalf("got episode %+v, want an open error episode", ep)
-	}
-	if got := displayState(e, m.done); got != "error" {
-		t.Fatalf("got %q, want error displayed for the open episode", got)
+	// And like done, it leaves the screen only when the raw signal moves on.
+	m.applyEntries([]registry.RegistryEntry{entry(1, ancestry.Ghostty, "working")})
+	if got := m.table.Rows()[0][colState]; got != "working" {
+		t.Fatalf("got %q, want working once the raw signal moves on", got)
 	}
 }
 
-func TestDisplayStateFoldsAnAckedErrorIntoIdle(t *testing.T) {
-	m := New(999, nil)
-	e := entry(1, ancestry.Ghostty, "error")
-	m.updateDoneTracking([]registry.RegistryEntry{e})
-	m.acknowledge(e)
-
-	if got := displayState(e, m.done); got != "idle" {
-		t.Fatalf("got %q, want idle for an acknowledged error episode", got)
-	}
-	if e.State != "error" {
-		t.Fatalf("got raw State %q, want acknowledge to leave it alone", e.State)
-	}
-}
-
-func TestOpenDoneEpisodeRelatchesToErrorOnANewSettle(t *testing.T) {
-	// A turn settles done; before the user ever acknowledges it in canopy,
-	// the next turn starts and fails fast — all between two polls, so the
-	// raw source goes done -> error with no working poll in between. The
-	// still-open episode must follow the raw word (the row now reads
-	// error), stay the same open episode (no re-bell for something already
-	// flagged), and keep its original Since.
+func TestDoneRelatchesToErrorOnANewSettle(t *testing.T) {
+	// A turn settles done; the next turn starts and fails fast — all
+	// between two polls, so the raw source goes done -> error with no
+	// working poll in between. The row must follow the raw word (it now
+	// reads error), and the newer write must ring again: a second settle
+	// really did happen (see newSettles's RealStateReportedAt rule).
 	m := New(999, nil)
 	t1 := time.Now().Add(-time.Minute)
 	t2 := time.Now()
-	m.updateDoneTracking([]registry.RegistryEntry{realEntry(1, ancestry.Ghostty, "done", t1)})
-	key := entry(1, ancestry.Ghostty, "").Key()
-	opened := m.done[key]
+	if bell := m.applyEntries([]registry.RegistryEntry{realEntry(1, ancestry.Ghostty, "done", t1)}); !bell {
+		t.Fatal("want a bell for the first settle")
+	}
 
-	m.updateDoneTracking([]registry.RegistryEntry{realEntry(1, ancestry.Ghostty, "error", t2)})
-
-	ep := m.done[key]
-	if ep.State != "error" {
-		t.Fatalf("got episode word %q, want re-latched to error", ep.State)
+	if bell := m.applyEntries([]registry.RegistryEntry{realEntry(1, ancestry.Ghostty, "error", t2)}); !bell {
+		t.Fatal("want a bell for the error settle too — it is a genuinely new write")
 	}
-	if !ep.Acked.IsZero() {
-		t.Fatalf("got Acked set, want the episode to stay open (nothing was acknowledged)")
-	}
-	if !ep.Since.Equal(opened.Since) {
-		t.Fatalf("got Since %v, want the original open time %v", ep.Since, opened.Since)
-	}
-	if !ep.RawAt.Equal(t2) {
-		t.Fatalf("got RawAt %v, want kept current at %v", ep.RawAt, t2)
-	}
-	if got := displayState(realEntry(1, ancestry.Ghostty, "error", t2), m.done); got != "error" {
-		t.Fatalf("got %q, want error displayed", got)
+	if got := m.table.Rows()[0][colState]; got != "error"+blinkMarker && got != "error" {
+		t.Fatalf("got %q, want the row to read error now", got)
 	}
 }
 
-func TestNeedsBellErrorTransitions(t *testing.T) {
+func TestNewSettlesErrorTransitions(t *testing.T) {
 	t1 := time.Now().Add(-time.Minute)
 	t2 := time.Now()
 
@@ -97,7 +67,6 @@ func TestNeedsBellErrorTransitions(t *testing.T) {
 		name     string
 		previous []registry.RegistryEntry
 		fresh    []registry.RegistryEntry
-		done     map[string]doneEpisode
 		want     bool
 	}{
 		{
@@ -113,17 +82,9 @@ func TestNeedsBellErrorTransitions(t *testing.T) {
 			want:     false,
 		},
 		{
-			name:     "a new error write landing on a still-open done episode is absorbed silently",
+			name:     "a new error write after a done rings again (a second settle really happened)",
 			previous: []registry.RegistryEntry{realEntry(1, ancestry.Ghostty, "done", t1)},
 			fresh:    []registry.RegistryEntry{realEntry(1, ancestry.Ghostty, "error", t2)},
-			done:     map[string]doneEpisode{entry(1, ancestry.Ghostty, "").Key(): {State: "done", Since: t1, RawAt: t1}},
-			want:     false,
-		},
-		{
-			name:     "a new error write after the done was acknowledged rings again",
-			previous: []registry.RegistryEntry{realEntry(1, ancestry.Ghostty, "done", t1)},
-			fresh:    []registry.RegistryEntry{realEntry(1, ancestry.Ghostty, "error", t2)},
-			done:     map[string]doneEpisode{entry(1, ancestry.Ghostty, "").Key(): {State: "done", Since: t1, Acked: t1, RawAt: t1}},
 			want:     true,
 		},
 		{
@@ -135,8 +96,8 @@ func TestNeedsBellErrorTransitions(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := needsBell(c.previous, c.fresh, c.done); got != c.want {
-				t.Fatalf("needsBell() = %v, want %v", got, c.want)
+			if got := len(newSettles(c.previous, c.fresh)) > 0; got != c.want {
+				t.Fatalf("newSettles() non-empty = %v, want %v", got, c.want)
 			}
 		})
 	}
@@ -200,17 +161,17 @@ func TestApplyEntriesRingsBlockedOnlyAfterTheSecondPollAndReArms(t *testing.T) {
 	}
 }
 
-func TestBlockedNeverOpensAnAttentionEpisode(t *testing.T) {
+func TestBlockedDisplaysAsIsAndNeverBlinks(t *testing.T) {
 	// blocked is transient by definition (it clears the moment the dialog
-	// closes), so there is nothing to acknowledge: no episode, nothing
-	// sticky, displayState passes it straight through.
+	// closes), so there is nothing to signal beyond the word itself: no
+	// settle burst, displayState passes it straight through.
 	m := New(999, nil)
 	e := entry(1, ancestry.Ghostty, "blocked")
-	m.updateDoneTracking([]registry.RegistryEntry{e})
-	if len(m.done) != 0 {
-		t.Fatalf("got %d episodes for a blocked entry, want none", len(m.done))
+	m.applyEntries([]registry.RegistryEntry{e})
+	if len(m.blinks) != 0 {
+		t.Fatalf("got %d bursts for a blocked entry, want none", len(m.blinks))
 	}
-	if got := displayState(e, m.done); got != "blocked" {
+	if got := displayState(e); got != "blocked" {
 		t.Fatalf("got %q, want blocked displayed as-is", got)
 	}
 }
@@ -223,7 +184,7 @@ func TestErrorSortingRanksAboveDone(t *testing.T) {
 		entry(4, ancestry.Ghostty, "blocked"),
 		entry(5, ancestry.Ghostty, "idle"),
 	}
-	sortEntries(entries, nil)
+	sortEntries(entries)
 	want := []string{"blocked", "error", "done", "working", "idle"}
 	for i, w := range want {
 		if got := entries[i].State; got != w {

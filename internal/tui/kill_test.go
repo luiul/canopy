@@ -514,24 +514,17 @@ func TestAPollPrunesVanishedTargetsFromABulkPrompt(t *testing.T) {
 func TestDisplayStateReportsStoppedAsItsOwnSyntheticState(t *testing.T) {
 	e := entry(1, ancestry.Ghostty, "idle")
 	e.Stopped = true
-	if got := displayState(e, nil); got != "stopped" {
+	if got := displayState(e); got != "stopped" {
 		t.Fatalf("got %q, want stopped", got)
 	}
 
-	// An open done episode still outranks it: done needs the user's
-	// enter/c, paused or not.
-	done := map[string]doneEpisode{e.Key(): {State: "done", Since: time.Now()}}
-	if got := displayState(e, done); got != "done" {
-		t.Fatalf("got %q, want an open done episode to outrank stopped", got)
-	}
-
-	// Acknowledged done whose raw State still reads done: stopped is the
-	// more informative reading, not the synthetic idle.
-	acked := entry(1, ancestry.Ghostty, "done")
-	acked.Stopped = true
-	done = map[string]doneEpisode{acked.Key(): {State: "done", Since: time.Now(), Acked: time.Now()}}
-	if got := displayState(acked, done); got != "stopped" {
-		t.Fatalf("got %q, want stopped for an acknowledged done row that is paused", got)
+	// Stopped outranks whatever pistatus last reported, done included: the
+	// raw file can't express "paused by the user" at all, so the synthetic
+	// word is the more informative reading.
+	done := entry(1, ancestry.Ghostty, "done")
+	done.Stopped = true
+	if got := displayState(done); got != "stopped" {
+		t.Fatalf("got %q, want stopped for a paused done row", got)
 	}
 }
 
@@ -553,7 +546,7 @@ func TestSortEntriesRanksStoppedBetweenIdleAndUnknown(t *testing.T) {
 		entry(3, ancestry.Ghostty, "working"),
 	}
 
-	sortEntries(entries, nil)
+	sortEntries(entries)
 
 	want := []int{3, 2, 4, 1} // working, idle, stopped, unknown
 	for i, w := range want {
@@ -571,7 +564,7 @@ func TestSummaryLineCountsStoppedSessions(t *testing.T) {
 		stopped,
 	}
 
-	got := summaryLine(entries, nil)
+	got := summaryLine(entries)
 
 	if !strings.Contains(got, "1 stopped") {
 		t.Fatalf("got %q, want it to contain %q", got, "1 stopped")

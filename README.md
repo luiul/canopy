@@ -67,7 +67,7 @@ working    12s     pi      VS Code   ~/projects/hellofresh/analytics            
 idle       1h20m   pi      Ghostty   ~/projects/personal/harvest                —                                   0%    88M    2d       40211
  ↳ import the harvest CSV exports
 
-↑/↓ move · enter jump · c dismiss · x kill · / filter · ? help · q quit
+↑/↓ move · enter jump · x kill · / filter · ? help · q quit
 ```
 
 (the currently selected row also gets a full-width grey highlight in the
@@ -95,8 +95,8 @@ started a moment ago shouldn't be invisible until the next tick.
 
 canopy and understory share one set of keybinding conventions, so muscle
 memory transfers between the two dashboards: lowercase keys act on the
-selected row or are reversible (`x`, `c`, `p`), uppercase keys are the
-bulk or stronger form (`X`, `C`, `D`), every destructive action asks for
+selected row or are reversible (`x`, `p`), uppercase keys are the
+bulk or stronger form (`X`, `D`), every destructive action asks for
 confirmation first, and `ctrl+c` always quits: from the table, from a
 confirmation prompt, from the help overlay. The full set of shared
 decisions (keybindings, the modal discipline, phrasing, rendering,
@@ -126,10 +126,8 @@ and the session's first prompt for `idle` (the identity an unnamed
 session otherwise lacks). Rows with nothing to say stay one line. A row
 that just went `done` or `error` blinks: a trailing
 `*` plus a reverse-video highlight, toggling on and off a few times right
-away, then again every five minutes for as long as it stays
-unacknowledged — a repeating nudge rather than a one-shot highlight, since
-`done`/`error` are the states that otherwise only an `enter`/`c` press
-ever clears (see below). Three transitions ring the terminal bell (ASCII
+away, then steady — one burst per settle, no repeating reminders. Three
+transitions ring the terminal bell (ASCII
 BEL), the one signal here that reaches you even if canopy's own pane
 isn't the one on screen (a dock bounce, tab badge, or audible beep,
 depending on your terminal's own bell setting), unlike the color/blink
@@ -147,21 +145,15 @@ most-actionable first: `blocked`, then `error`, `done`, `working`,
 Pass `--no-color` (or set `NO_COLOR`) to disable the color/blink treatment
 and get plain text, and `--no-bell` to disable just the bell.
 
-A row that's `done` or `error` stays that way (still sorted to the top,
-still colored, still bell-eligible for its own transition, still blinking
-every five minutes) until you actually do something about it: press
-`enter` to jump to it (which also dismisses it right away), or `c` to
-dismiss it in place without jumping at all. To clear a whole screen of
-attention rows at once, `C` dismisses every `done`/`error` row in place,
-no jumping, no per-row selection. Any of these immediately displays the
-affected rows as `idle`, drops them back down in the sort order, and
-stops the blinking — no poll wait required, even mid-burst. A row goes
-back to reading `done`/`error` — unacknowledged, blinking again from
-scratch — the next time it actually earns that state again (a fresh turn
-ending), not on every subsequent poll where the underlying session
-happens to still be sitting settled. `blocked` gets no such treatment:
-it is transient by definition and clears on its own the moment the dialog
-closes, so there is nothing to acknowledge.
+A row that's `done` or `error` reads that way for exactly as long as the
+session itself is settled: the extension writes those states once and
+nothing overwrites them until the session does something new. The moment
+you go back to the session and start a fresh turn, the row reads
+`working`; an aborted run reads `idle`. There is nothing to acknowledge
+in canopy itself — acting on the session *is* the acknowledgment, and
+the display follows it directly. `blocked` needs no treatment either: it
+is transient by definition and clears on its own the moment the dialog
+closes.
 
 ## Configuration
 
@@ -268,11 +260,6 @@ One Go package per concern:
 - `internal/registry`: merges a fresh poll against the previous one so a
   single missed `ps`/poll doesn't flicker a row away, and stamps each
   row's State (pi's own report where available, `unknown` otherwise).
-- `internal/ack`: lets multiple concurrently running canopy instances
-  agree on which `done` rows have been acknowledged (`enter`/`c`), the one
-  piece of dashboard state that isn't already derivable from a shared,
-  externally observable source the way `State` itself is (see "Multiple
-  instances" below).
 - `internal/tui`: the Bubble Tea dashboard (table, polling timer,
   jump-on-Enter, notifications, mouse column resizing via
   [`github.com/luiul/dashkit/trellis`](https://github.com/luiul/dashkit/tree/main/trellis)
@@ -347,8 +334,8 @@ state, which `internal/pistatus` reads straight into that pid's
 |---|---|
 | `working` | A run or compaction is in progress. |
 | `blocked` | An extension dialog (confirm, select, input, editor) is waiting for you. |
-| `done` | A run finished. Sticky in canopy until `enter`/`c`. |
-| `error` | A run ended with an error pi did not retry. Sticky in canopy until `enter`/`c`. |
+| `done` | A run finished. Reads that way until the session does something new. |
+| `error` | A run ended with an error pi did not retry. Reads that way until the session does something new. |
 | `idle` | pi started, or you cancelled the run with Escape. |
 
 Each report also carries an optional message (the session name for
@@ -360,10 +347,9 @@ one-line summary of what it did) and a `task` (the first prompt of the
 session). canopy renders the composition as a tinted detail line
 directly under the row — a second line only where there is something to
 say, never a column competing with Location and Model for width. The
-line follows the same stickiness rules as the state word itself: an
-acknowledged row's name/outcome disappears with it (the task stays),
-and an unacknowledged `error` row keeps its error line even after the
-session starts a fresh turn. Naming a session — `/name sprint-planning`
+line follows the raw report, same as the state word itself: when the
+session starts a fresh turn, the line shows that turn's own activity.
+Naming a session — `/name sprint-planning`
 inside pi, or `pi --name` — still earns its keep: the name leads the
 line while working and when done.
 
@@ -376,13 +362,10 @@ ln -s "$(pwd)/extensions/canopy-status.ts" ~/.pi/agent/extensions/canopy-status.
 
 It reports `working` while pi is actively running, and `done`/`error`
 unconditionally once a turn ends — no frontmost/focus detection at all
-(see docs/agent-state-machine.md's "Removed: frontmost/focus detection"):
-canopy's dashboard already requires an explicit `enter` or `c` on the row
-before it displays anything other than `done`/`error`, so guessing
-whether you were already looking at that terminal at settle-time couldn't
-change what you'd see there either way. One consequence: the bell/blink
-now fires on every settled turn, including ones you watched finish
-directly in the terminal, not just ones you missed.
+(see docs/agent-state-machine.md's "Removed: frontmost/focus detection").
+One consequence: the bell/blink fires on every settled turn, including
+ones you watched finish directly in the terminal, not just ones you
+missed.
 
 The extension also writes a separate `<pid>.model.json` record with the
 selected model's name and provider. Canopy shows it as `Name [provider]`
@@ -401,14 +384,12 @@ to (see Limitations).
 ## Multiple instances
 
 Running canopy in more than one terminal at once (e.g. two Ghostty tabs)
-just works: every instance polls the same machine independently, so the
-table itself already looks identical everywhere. Acknowledging a `done`
-row (`enter`/`c`) syncs too — within one poll interval (2s by default),
-not instantly — via a small shared file per row under
-`~/.pi/agent/canopy-status/acks/`; see
-[docs/agent-state-machine.md](docs/agent-state-machine.md#cross-instance-sync)
-for how. No daemon, no locking: each instance still only ever talks to
-the filesystem, the same as everything else canopy reads.
+just works: every instance polls the same machine independently, and
+everything on screen — the rows, their states, their detail lines — is
+derived from the same shared, externally observable sources (`ps`/`lsof`
+and the per-pid status files), so all instances show the same thing.
+No daemon, no locking: each instance only ever talks to the filesystem,
+the same as everything else canopy reads.
 
 ## Limitations
 
@@ -452,6 +433,6 @@ the filesystem, the same as everything else canopy reads.
   indistinguishable. The matched window is raised directly with an
   AXRaise: the right window comes to front, but not necessarily the
   specific integrated-terminal tab within it.
-- Mouse click-to-jump/acknowledge isn't implemented (keyboard only: arrow
-  keys, Enter, c); Bubble Tea's table widget doesn't ship row-click
-  handling out of the box the way Textual's `DataTable` does.
+- Mouse click-to-jump isn't implemented (keyboard only: arrow keys,
+  Enter); Bubble Tea's table widget doesn't ship row-click handling out
+  of the box the way Textual's `DataTable` does.

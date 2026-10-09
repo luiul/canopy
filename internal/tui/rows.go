@@ -87,15 +87,31 @@ func statePriorityOf(state string) int {
 	return len(statePriority) // a state outside the known vocabulary sorts last
 }
 
+// displayState is the state actually shown for e: the raw State, with
+// exactly one overlay — a stopped process (SIGSTOP, e.g. via the p
+// keybind) reports the synthetic "stopped", which the raw State can't
+// express at all (pistatus keeps reporting whatever pi last wrote,
+// paused or not). There is deliberately no sticky done/error treatment:
+// the raw signal already moves on the moment the session does anything
+// else (a fresh turn reads working, Escape reads idle), so acting on the
+// session needs no separate canopy-side acknowledgment. Sorting,
+// coloring, the summary line, and the State/Since cells all go through
+// this instead of e.State directly.
+func displayState(e registry.RegistryEntry) string {
+	if e.Stopped {
+		return "stopped"
+	}
+	return e.State
+}
+
 // sortEntries orders entries by statePriority, most actionable first, then
-// grouped by surface, then stable by pid. Ranks by displayState (which
-// folds in done/error episodes), not the raw State, so an acknowledged
-// attention row sorts back down with the rest of idle rather than staying
-// pinned at the top.
-func sortEntries(entries []registry.RegistryEntry, done map[string]doneEpisode) {
+// grouped by surface, then stable by pid. Ranks by displayState, so a
+// paused row sorts as stopped rather than by the state pistatus last
+// reported for it.
+func sortEntries(entries []registry.RegistryEntry) {
 	sort.SliceStable(entries, func(i, j int) bool {
 		a, b := entries[i], entries[j]
-		if pa, pb := statePriorityOf(displayState(a, done)), statePriorityOf(displayState(b, done)); pa != pb {
+		if pa, pb := statePriorityOf(displayState(a)), statePriorityOf(displayState(b)); pa != pb {
 			return pa < pb
 		}
 		if a.Surface != b.Surface {
@@ -110,18 +126,19 @@ func sortEntries(entries []registry.RegistryEntry, done map[string]doneEpisode) 
 
 // refreshCursorTag rebuilds the table's rows so the cursor's Since cell
 // carries cursorSentinel immediately after it moves (arrow keys, page up/down,
-// etc.), instead of waiting for the next poll. Also reused by acknowledge
-// (done.go) to reflect a dismissal immediately, for the same reason: don't
-// wait for the next poll to show it. Cursor movement changes WHICH rows
-// are visible, hence which message detail lines render, so the height
-// must be re-fit here too (see resizeTableHeight) — otherwise scrolling
-// a messaged row into view would push the footer off the terminal.
+// etc.), instead of waiting for the next poll. Also reused by tickBlinks
+// (blink.go) to render each on/off flip of a blink burst immediately, for
+// the same reason: don't wait for the next poll to show it. Cursor
+// movement changes WHICH rows are visible, hence which message detail
+// lines render, so the height must be re-fit here too (see
+// resizeTableHeight) — otherwise scrolling a messaged row into view
+// would push the footer off the terminal.
 func (m *Model) refreshCursorTag() {
 	displayed := m.displayedEntries()
 	if len(displayed) == 0 {
 		return
 	}
-	m.table.SetRows(buildRows(displayed, m.table.Cursor(), m.home, m.locationWidth(), time.Now(), m.done, m.filterQuery))
+	m.table.SetRows(buildRows(displayed, m.table.Cursor(), m.home, m.locationWidth(), time.Now(), m.blinks, m.filterQuery))
 	m.ensureCursorVisible()
 	m.resizeTableHeight()
 }
@@ -135,14 +152,14 @@ func (m *Model) refreshCursorTag() {
 // excluded: their values tick over under the user's fingers, so a row
 // would match-or-not from one poll to the next for reasons invisible in
 // the query.
-func filterCells(e registry.RegistryEntry, home string, done map[string]doneEpisode) []string {
+func filterCells(e registry.RegistryEntry, home string) []string {
 	return []string{
-		displayState(e, done),
+		displayState(e),
 		surfaceLabel(e.Surface),
 		location(e, home),
 		e.Kind,
 		fmt.Sprintf("%d", e.Pid),
-		detailLineText(e, done),
+		detailLineText(e),
 	}
 }
 
@@ -154,7 +171,7 @@ func filterCells(e registry.RegistryEntry, home string, done map[string]doneEpis
 // so the tag tracks the highlighted row immediately rather than only once
 // every poll interval. locationWidth is the Location column's current
 // width, for locationCellText's tail-keeping pre-truncation.
-func buildRows(entries []registry.RegistryEntry, cursor int, home string, locationWidth int, now time.Time, done map[string]doneEpisode, filterQuery string) []table.Row {
+func buildRows(entries []registry.RegistryEntry, cursor int, home string, locationWidth int, now time.Time, blinks map[string]time.Time, filterQuery string) []table.Row {
 	if len(entries) == 0 {
 		// Keep empty-state messages in Location, next to the session paths.
 		// An active filter says why no rows remain and how to clear it.
@@ -169,8 +186,8 @@ func buildRows(entries []registry.RegistryEntry, cursor int, home string, locati
 	rows := make([]table.Row, len(entries))
 	for i, e := range entries {
 		rows[i] = table.Row{
-			stateCellText(e, now, done),
-			loam.Tag(sinceCellText(e, now, done), i == cursor),
+			stateCellText(e, now, blinks),
+			loam.Tag(sinceCellText(e, now), i == cursor),
 			e.Kind,
 			surfaceLabel(e.Surface),
 			locationCellText(e, home, locationWidth),
@@ -193,18 +210,17 @@ func modelCellText(e registry.RegistryEntry) string {
 	return fmt.Sprintf("%s [%s]", e.ModelName, e.ModelProvider)
 }
 
-// stateCellText is the State column's plain-text cell value: displayState's
-// word (see displayState — "idle" rather than the episode's word once
-// acknowledged), with a trailing blinkMarker whenever the row has an open
-// episode currently mid-blink-burst and in its visible ("on") half (see
-// blinkActive/blinkOn in done.go — toggles on and off as the burst runs).
-// done and error are the only states with any attention-getting treatment
-// at all; every other word (including "unknown") renders as-is. Actual
-// coloring/reverse-video happens later, in View, by post-processing the
-// rendered table (see colorize.go).
-func stateCellText(e registry.RegistryEntry, now time.Time, done map[string]doneEpisode) string {
-	word := displayState(e, done)
-	if ep, ok := done[e.Key()]; ok && word == ep.State && blinkActive(ep, now) && blinkOn(ep, now) {
+// stateCellText is the State column's plain-text cell value:
+// displayState's word, with a trailing blinkMarker whenever the row has a
+// blink burst currently running and in its visible ("on") half (see
+// blinkActive/blinkOn in blink.go — toggles on and off as the burst
+// runs). done and error are the only states with any attention-getting
+// treatment at all; every other word (including "unknown") renders as-is.
+// Actual coloring/reverse-video happens later, in View, by
+// post-processing the rendered table (see colorize.go).
+func stateCellText(e registry.RegistryEntry, now time.Time, blinks map[string]time.Time) string {
+	word := displayState(e)
+	if start, ok := blinks[e.Key()]; ok && isAttention(word) && blinkActive(start, now) && blinkOn(start, now) {
 		return word + blinkMarker
 	}
 	return word
@@ -213,26 +229,8 @@ func stateCellText(e registry.RegistryEntry, now time.Time, done map[string]done
 // sinceCellText is the Since column's plain-text cell value: how long the
 // entry has been in its current state, or "" if that's not known yet (a
 // StateSince hasn't been stamped, e.g. in tests that build entries by
-// hand). Two special cases, both driven by done rather than e.StateSince
-// directly:
-//   - an *open* (unacknowledged) episode reports since its own Since (when
-//     updateDoneTracking first saw it go done/error), not e.StateSince,
-//     which the raw source may have already overwritten with some later
-//     transition of its own.
-//   - an *acknowledged* episode whose raw State is still literally the
-//     episode's word reports since it was acknowledged, not since the
-//     underlying source originally went done/error — otherwise a row
-//     sitting done for an hour before you dismissed it would misleadingly
-//     read as "idle 1h" the instant you did.
-func sinceCellText(e registry.RegistryEntry, now time.Time, done map[string]doneEpisode) string {
-	if ep, ok := done[e.Key()]; ok {
-		if ep.Acked.IsZero() {
-			return humanizeSince(now.Sub(ep.Since))
-		}
-		if e.State == ep.State {
-			return humanizeSince(now.Sub(ep.Acked))
-		}
-	}
+// hand).
+func sinceCellText(e registry.RegistryEntry, now time.Time) string {
 	if e.StateSince.IsZero() {
 		return ""
 	}
@@ -243,13 +241,13 @@ func sinceCellText(e registry.RegistryEntry, now time.Time, done map[string]done
 // breakdown, colored to match the State column and ordered the same way
 // (most actionable first), skipping any state with a zero count. Empty
 // when there are no entries, since the placeholder row already says so.
-func summaryLine(entries []registry.RegistryEntry, done map[string]doneEpisode) string {
+func summaryLine(entries []registry.RegistryEntry) string {
 	if len(entries) == 0 {
 		return ""
 	}
 	counts := map[string]int{}
 	for _, e := range entries {
-		counts[displayState(e, done)]++
+		counts[displayState(e)]++
 	}
 
 	parts := make([]string, 0, len(stateOrder))

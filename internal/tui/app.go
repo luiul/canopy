@@ -4,9 +4,9 @@
 //
 // This file holds the Bubble Tea plumbing itself (Model, Init/Update/View,
 // the tea.Cmd constructors, and the column/layout constants they all
-// share). The done-episode state machine and its blink animation live in
-// done.go, the bell decision in bell.go, and row/summary rendering in
-// rows.go — see each file's own package doc for why it's split out.
+// share). The settle blink animation lives in blink.go, the bell
+// decision in bell.go, and row/summary rendering in rows.go — see each
+// file's own package doc for why it's split out.
 package tui
 
 import (
@@ -148,23 +148,13 @@ type Model struct {
 	entries []registry.RegistryEntry // sorted, parallel to the table's real rows
 	table   table.Model
 
-	// done tracks each entry's current attention ("done"/"error") episode
-	// by Key() (see doneEpisode in done.go): open (Acked zero) until the
-	// user actually acts on it — pressing enter or c, see acknowledge —
-	// closed (Acked set) from that instant on. displayState/sortEntries/stateCellText/
-	// sinceCellText/summaryLine all read this instead of e.State directly;
-	// the raw State field itself is left completely untouched so needsBell
-	// and registry.stampStateSince keep comparing real poll-to-poll
-	// transitions, not what's currently displayed on screen (dismissed, or
-	// still awaiting dismissal). updateDoneTracking (run every poll, before
-	// sorting) is what opens and closes these episodes; deliberately does
-	// *not* close an open one just because the raw source moves off
-	// done/error by itself (e.g. the same session starting a fresh working
-	// turn before the user ever acknowledged the previous episode in canopy) —
-	// only acknowledge() or the key vanishing from a fresh poll outright
-	// (session ended) does that. See updateDoneTracking's own doc comment
-	// (done.go) for the full rationale.
-	done map[string]doneEpisode
+	// blinks tracks each entry's active settle-blink burst by Key() (see
+	// blink.go): seeded by applyEntries whenever a poll sees a genuinely
+	// new settle (newSettles), so the row's State word blinks for
+	// blinkBurstDuration and a freshly finished row is hard to miss.
+	// Purely visual: nothing here affects the displayed state, which is
+	// always the raw signal (see displayState in rows.go).
+	blinks map[string]time.Time
 
 	// blockedRung is the set of entry keys that have already rung the bell
 	// for their current "blocked" spell (see newlyBlocked in bell.go): a
@@ -194,7 +184,7 @@ type Model struct {
 	tooNarrow   bool
 
 	// bellEnabled gates the terminal-bell side effect in applyEntries/Update
-	// (see needsBell in bell.go): on by default (set in New), off via
+	// (see newSettles in bell.go): on by default (set in New), off via
 	// --no-bell (see cmd/canopy) for anyone who finds an audible alert
 	// intrusive. Coloring and blinking (colorize.go, stateCellText)
 	// happen regardless of this flag.
@@ -228,7 +218,7 @@ type Model struct {
 	// kill), the same modal discipline pendingKill has. esc leaves the
 	// input with the query still applied; esc in normal mode clears it.
 	// The semantics mirror the jira-today fzf picker, minus its
-	// c-to-clear: c is dismiss here, and one key meaning two things
+	// c-to-clear: c has no binding here, and one key meaning two things
 	// across the two dashboards is the worst kind of inconsistency.
 	filterQuery string
 	filtering   bool
@@ -443,7 +433,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !ok {
 					return m, nil
 				}
-				m.acknowledge(entry)
 				return m, jumpCmd(entry)
 			case "up", "down", "pgup", "pgdown":
 				var cmd tea.Cmd
@@ -544,11 +533,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, killCmd([]registry.RegistryEntry{entry}, sig)
 		case "D":
 			// Bulk form of x for cleanup: SIGTERM every row currently
-			// reading done (what the user actually sees as finished — the
-			// display state, open episodes included, not the raw State).
+			// reading done.
 			var targets []registry.RegistryEntry
 			for _, e := range m.entries {
-				if displayState(e, m.done) == "done" {
+				if displayState(e) == "done" {
 					targets = append(targets, e)
 				}
 			}
@@ -562,31 +550,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !ok {
 				return m, nil
 			}
-			// canopy-status.ts's done/error writes are one-shot: only a fresh
-			// turn (working) ever overwrites one, so nothing flips an
-			// attention row back to "idle" on its own. Acknowledging right
-			// here is what actually clears it: the row stops reading done/error
-			// the instant the user acts on it, whether or not the jump itself
-			// lands.
-			m.acknowledge(entry)
 			return m, jumpCmd(entry)
-		case "c":
-			entry, ok := m.selectedEntry()
-			if !ok {
-				return m, nil
-			}
-			// Dismiss in place, no jump: for a done row you've already dealt
-			// with (or don't need to jump to at all) without bringing its
-			// terminal to the front, which is the only other way a done row
-			// currently stops reading done.
-			m.acknowledge(entry)
-			return m, nil
-		case "C":
-			// Dismiss every open done episode at once, no jump, no per-row
-			// selection: the bulk form of c for clearing a screen full of
-			// done rows (see acknowledgeAll in done.go).
-			m.acknowledgeAll()
-			return m, nil
 		default:
 			var cmd tea.Cmd
 			m.table, cmd = m.table.Update(msg)
@@ -635,9 +599,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// tickBlinks is unconditional, unlike the bell: blinking is a visual
 		// treatment (like coloring), not an audible one, so --no-bell doesn't
-		// touch it. It starts a fresh burst for any episode newly due (just
-		// opened, or blinkReminderInterval since its last one) and returns a
-		// follow-up command only while a burst is still running.
+		// touch it. It keeps any burst applyEntries just started visibly
+		// toggling and returns a follow-up command only while one is still
+		// running.
 		blink := m.tickBlinks(time.Now())
 		if bell && m.bellEnabled {
 			return m, tea.Batch(bellCmd(), blink)
@@ -707,16 +671,16 @@ func (m Model) selectedEntry() (registry.RegistryEntry, bool) {
 // displayedEntries is the view's current row set: every polled entry, or
 // just the ones fuzzy-matching filterQuery while a filter is applied
 // (sieve.Match over filterCells). m.entries itself always holds the full
-// set, so poll-to-poll diffing (needsBell, updateDoneTracking) and the D
-// bulk kill never see the filter at all; only what renders and what the
-// cursor can land on is filtered.
+// set, so poll-to-poll diffing (newSettles) and the D bulk kill never
+// see the filter at all; only what renders and what the cursor can land
+// on is filtered.
 func (m Model) displayedEntries() []registry.RegistryEntry {
 	if m.filterQuery == "" {
 		return m.entries
 	}
 	out := make([]registry.RegistryEntry, 0, len(m.entries))
 	for _, e := range m.entries {
-		if sieve.Match(m.filterQuery, filterCells(e, m.home, m.done)...) {
+		if sieve.Match(m.filterQuery, filterCells(e, m.home)...) {
 			out = append(out, e)
 		}
 	}
@@ -760,11 +724,11 @@ func (m Model) killPromptText() string {
 	if len(p.entries) == 1 {
 		e := p.entries[0]
 		target := fmt.Sprintf("%s (pid %d", e.Kind, e.Pid)
-		if name := sessionName(e, m.done); name != "" {
+		if name := sessionName(e); name != "" {
 			target += ", " + name
 		}
 		prompt := fmt.Sprintf("%s %s, %s)?", verb, target, location(e, m.home))
-		if displayState(e, m.done) == "working" {
+		if displayState(e) == "working" {
 			prompt += " Currently working."
 		}
 		return prompt + " [y/N]"
@@ -776,25 +740,17 @@ func (m Model) killPromptText() string {
 // the cursor to whichever entry was selected before the refresh (by key),
 // the same key-based cursor-preservation canopy's Python original does. It
 // returns whether this refresh introduced a row that newly needs attention
-// (see needsBell in bell.go), computed against the entries from before this
-// call, so Update can ring the bell on exactly the poll where that
-// happened.
+// (see newSettles/newlyBlocked in bell.go), computed against the entries
+// from before this call, so Update can ring the bell on exactly the poll
+// where that happened.
 func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 	var previousKey string
 	if entry, ok := m.selectedEntry(); ok {
 		previousKey = entry.Key()
 	}
 
-	// Bell decisions are always made against the raw State (see needsBell),
-	// never displayState: an acknowledged row that's still raw done and
-	// stays that way must not re-ring just because a user dismissed it.
-	// Passed m.done as it stood at the *end of the previous* poll (before
-	// updateDoneTracking mutates it for this one), so needsBell can tell a
-	// settle that's landing on an already-open, still-unacknowledged episode
-	// (silently absorbed by updateDoneTracking, nothing new on screen, must
-	// not ring again) apart from one that's genuinely new since the last
-	// acknowledgment (the reopen case, which must ring).
-	bell := needsBell(m.entries, fresh, m.done)
+	settled := newSettles(m.entries, fresh)
+	bell := len(settled) > 0
 	// Blocked rings separately, on its own two-poll debounce (see
 	// newlyBlocked): a dialog the user answers within one poll interval
 	// never rings, and one spell rings at most once.
@@ -817,9 +773,12 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 			delete(m.blockedRung, key)
 		}
 	}
-	m.updateDoneTracking(fresh)
+	// Seeded before resetRows below builds the rows, so a freshly settled
+	// row's very first frame already shows the blink marker.
+	m.startBlinks(settled, time.Now())
+	m.pruneBlinks(fresh)
 
-	sortEntries(fresh, m.done)
+	sortEntries(fresh)
 	m.entries = fresh
 
 	m.resetRows(previousKey)
@@ -853,7 +812,7 @@ func (m *Model) resetRows(previousKey string) {
 		cursor = clampInt(cursor, 0, len(displayed)-1)
 	}
 
-	m.table.SetRows(buildRows(displayed, cursor, m.home, m.locationWidth(), time.Now(), m.done, m.filterQuery))
+	m.table.SetRows(buildRows(displayed, cursor, m.home, m.locationWidth(), time.Now(), m.blinks, m.filterQuery))
 	m.table.SetCursor(cursor)
 	// A reordered entry can land outside the scrolled window (see
 	// ensureCursorVisible); repair before the height fit reads the window.
@@ -913,7 +872,7 @@ func (m Model) columnPolicies() []trellis.ColumnPolicy {
 	now := time.Now()
 	for _, e := range m.entries {
 		labels := []string{
-			stateCellText(e, now, m.done), sinceCellText(e, now, m.done), e.Kind,
+			stateCellText(e, now, m.blinks), sinceCellText(e, now), e.Kind,
 			surfaceLabel(e.Surface), location(e, m.home), modelCellText(e),
 			cpuCellText(e), ramCellText(e), uptimeCellText(e), fmt.Sprint(e.Pid),
 		}
@@ -999,7 +958,7 @@ func (m Model) renderHeader() (text string, tableOriginY int) {
 	// The summary describes the rows actually on screen: while a filter
 	// is applied it counts the matching sessions, and the footer's
 	// filter readout says why the total shrank (see footerView).
-	if summary := summaryLine(m.displayedEntries(), m.done); summary != "" {
+	if summary := summaryLine(m.displayedEntries()); summary != "" {
 		text += "\n" + summary
 		lines++
 	}
@@ -1030,8 +989,7 @@ var helpEntries = []loam.HelpBinding{
 	{Key: "pgup/pgdn, b/f", Desc: "page up/down"},
 	{Key: "u/d", Desc: "half page up/down (lowercase d; the uppercase D below terminates every done session)"},
 	{Key: "g/G, home/end", Desc: "jump to the top/bottom"},
-	{Key: "enter", Desc: "jump to the session's window (dismisses a done row)"},
-	{Key: "c / C", Desc: "dismiss this done row / every done row"},
+	{Key: "enter", Desc: "jump to the session's window"},
 	{Key: "x / X", Desc: "terminate (SIGTERM) / force-kill (SIGKILL) the selected session, with confirmation"},
 	{Key: "p", Desc: "pause (SIGSTOP) / resume (SIGCONT) the selected session"},
 	{Key: "D", Desc: "terminate every done session (SIGTERM), with confirmation"},
@@ -1084,7 +1042,7 @@ func (m Model) footerView() string {
 	if m.filterQuery != "" {
 		return subtleStyle.Render(fmt.Sprintf("filter: %s · esc clear · / edit", m.filterQuery))
 	}
-	return subtleStyle.Render("↑/↓ move · enter jump · c dismiss · x kill · / filter · ? help · q quit")
+	return subtleStyle.Render("↑/↓ move · enter jump · x kill · / filter · ? help · q quit")
 }
 
 // View implements tea.Model.

@@ -12,51 +12,47 @@ import (
 	"github.com/luiul/canopy/internal/registry"
 )
 
-// needsBell reports whether any entry in fresh newly needs attention
-// compared to previous: either a brand new entry that's already done or
-// error the first time canopy sees it, or an existing one whose State
-// just flipped into done/error from something else. An entry that was
-// already done/error last poll and still is doesn't re-trigger it —
-// otherwise a session sitting done for an hour would ring the bell on
-// every single poll for that whole hour, drowning out the one moment that
-// actually mattered: the transition itself. "Still is" means either it's
-// the exact same settle (for a RealState entry, RealStateReportedAt
-// hasn't advanced — the raw source hasn't written anything new), or it's
-// a genuinely new settle that landed on an episode still open in done
-// (unacknowledged): updateDoneTracking silently absorbs that second
-// settle into the same still-open episode rather than opening a new one,
-// since the row is already displaying done/error and nothing changes on
-// screen for it — ringing again there would be exactly the drowning-out
-// this skip exists to avoid, just triggered by a second settle instead of
-// a poll timer. Only a settle that's both new (RealStateReportedAt
-// advanced) *and* lands on an already-acknowledged episode (the reopen
-// case in updateDoneTracking) is a fresh transition worth ringing for —
-// see updateDoneTracking's doc comment (done.go) for the full rationale.
-// done must be the caller's Model.done as it stood *before* this poll's
-// updateDoneTracking call, so "still open" reflects the previous poll's
-// episode state, not this one's. done and error are the only states this
-// checks: blocked gets its own debounced check below (newlyBlocked), and
-// working/idle/stopped/unknown are never worth ringing a bell over.
-func needsBell(previous, fresh []registry.RegistryEntry, done map[string]doneEpisode) bool {
+// newSettles returns the keys of the entries in fresh that show a
+// genuinely new settle compared to previous: a brand new entry that's
+// already done or error the first time canopy sees it, or an existing
+// one whose State just flipped into done/error from something else. An
+// entry that was already done/error last poll and still is doesn't count
+// — otherwise a session sitting done for an hour would ring the bell on
+// every single poll for that whole hour, drowning out the one moment
+// that actually mattered: the transition itself.
+//
+// "Still is" is decided by RealStateReportedAt, not the State string:
+// canopy-status.ts writes done/error exactly once per settle and
+// pistatus keeps returning that one-shot write indefinitely (done/error
+// are exempt from pistatus.MaxAge), so a second turn that starts and
+// settles again without canopy ever sampling a "working" poll in between
+// reads the same literal string on both polls. pistatus's own write
+// timestamp advancing is the one signal that tells that second settle
+// apart from the exact same still-fresh write repeating.
+//
+// done and error are the only states this checks: blocked gets its own
+// debounced check below (newlyBlocked), and working/idle/stopped/unknown
+// are never worth ringing a bell over. The caller both rings the bell
+// and starts the rows' blink bursts (see startBlinks) for the returned
+// keys.
+func newSettles(previous, fresh []registry.RegistryEntry) []string {
 	prevByKey := make(map[string]registry.RegistryEntry, len(previous))
 	for _, p := range previous {
 		prevByKey[p.Key()] = p
 	}
+	var keys []string
 	for _, f := range fresh {
 		if !isAttention(f.State) {
 			continue
 		}
 		if was, ok := prevByKey[f.Key()]; ok && isAttention(was.State) {
-			sameWrite := !f.RealState || f.RealStateReportedAt.Equal(was.RealStateReportedAt)
-			ep, tracked := done[f.Key()]
-			stillOpen := tracked && ep.Acked.IsZero()
-			if sameWrite || stillOpen {
-				continue // the exact same settle we already rang for, or one already-flagged and unacknowledged
+			if !f.RealState || f.RealStateReportedAt.Equal(was.RealStateReportedAt) {
+				continue // the exact same settle we already rang for
 			}
 		}
-		return true
+		keys = append(keys, f.Key())
 	}
-	return false
+	return keys
 }
 
 // newlyBlocked returns the keys that newly deserve a ring for being
