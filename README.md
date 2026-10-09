@@ -117,13 +117,22 @@ Model shows the selected name and provider when the companion extension reports 
 
 State is color-coded: orange for `blocked`, bold red for `error`, bold
 green for `done`, yellow for `working`, dim for `idle`/`unknown`, cyan
-for `stopped`. A row with something to say (see "Real pi status"
+for `stopped`. Since shares the row's state hue without bold, so the
+first two columns read as one color block per state and same-state
+neighbors read as one group. Rows that never need attention (`idle`,
+`unknown`) recede: the whole line goes faint except the State word,
+which keeps its full brightness (the same grey-out understory gives its
+parked rows), so the table splits into an attention tier and a quiet
+tier at a glance. `stopped` stays bright on purpose: a forgotten paused
+session is a zombie. A row with something to say (see "Real pi status"
 below) shows it on a second line directly under the row, tinted in the
 same hue without bold: the dialog title for `blocked`, the first error
 line for `error`, the current tool call for `working` (`bash: go test
 ./...`), the session name plus pi's own turn-end summary for `done`,
 and the session's first prompt for `idle` (the identity an unnamed
-session otherwise lacks). Rows with nothing to say stay one line. A row
+session otherwise lacks — that one renders in the footer's subtle grey,
+so it recedes along with its faint row instead of reading white under
+it). Rows with nothing to say stay one line. A row
 that just went `done` or `error` blinks: a trailing
 `*` plus a reverse-video highlight, toggling on and off a few times right
 away, then steady — one burst per settle, no repeating reminders. Three

@@ -34,13 +34,18 @@ const messageIndent = "  ↳ "
 // messageStyles tints a detail line by the state it belongs to: the same
 // hues as stateStyles but never bold — bold stays reserved for the
 // done/error State words themselves, and a whole line of bold error text
-// reads poorly. States missing here (idle, stopped, unknown) never carry
-// a message anyway; the zero style renders plain if one ever shows up.
+// reads poorly. idle/unknown detail lines (the session's first task, not
+// an actionable payload) wear subtleStyle's grey, so they recede along
+// with their faint data line (see dimQuietRow) instead of reading white
+// under a greyed-out row. stopped is the one state left plain: its row
+// stays bright (see isQuiet), so its task line does too.
 var messageStyles = map[string]lipgloss.Style{
 	"blocked": lipgloss.NewStyle().Foreground(lipgloss.Color("208")),
 	"error":   lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
 	"done":    lipgloss.NewStyle().Foreground(lipgloss.Color("10")),
 	"working": lipgloss.NewStyle().Foreground(lipgloss.Color("11")),
+	"idle":    subtleStyle,
+	"unknown": subtleStyle,
 }
 
 func messageStyle(state string) lipgloss.Style {
@@ -193,12 +198,15 @@ func tableRenderWidth(cols []table.Column) int {
 
 // tableView renders the table's body: bubbles/table's own view, with
 // each visible row's detail line (if it has one) injected beneath it,
-// the State/Since recoloring and cursor highlight that colorize.go
-// defines applied to the data lines, and the header border marks drawn
-// last. Replaces the plain colorizeRows pass View used before rows had
-// detail lines; the line-to-entry mapping comes from firstVisibleRow, so
-// it stays correct when the table is scrolled and when the window holds
-// fewer rows than displayedEntries.
+// the State/Since recoloring, quiet-row grey-out, and cursor highlight
+// that colorize.go defines applied to the data lines, and the header
+// border marks drawn last. Replaces the plain colorizeRows pass View
+// used before rows had detail lines; the line-to-entry mapping comes
+// from firstVisibleRow, so it stays correct when the table is scrolled
+// and when the window holds fewer rows than displayedEntries. Since's
+// state hue and the quiet-row grey-out both key off that same mapping;
+// on an unmapped frame Since keeps its former constant grey rather than
+// flash unstyled for one frame.
 func (m Model) tableView() string {
 	cols := m.table.Columns()
 	lines := strings.Split(m.table.View(), "\n")
@@ -216,18 +224,37 @@ func (m Model) tableView() string {
 	for j := 1; j < len(lines); j++ {
 		line := lines[j]
 		isSelected := strings.Contains(line, loam.Sentinel)
+		// Resolve this data line's entry once: Since's state hue, the
+		// quiet row's grey-out, and the detail line below all key off
+		// it. haveEntry is false on an unmapped frame (see
+		// firstVisibleRow) and on the placeholder row, both of which
+		// keep the fallback styling.
+		idx := first + j - 1
+		haveEntry := mapped && idx >= 0 && idx < len(displayed)
+		sinceLookup := func(string) lipgloss.Style { return subtleStyle }
+		if haveEntry {
+			state := displayState(displayed[idx])
+			sinceLookup = func(string) lipgloss.Style { return sinceStyle(state) }
+		}
 		// Rightmost column first: inserting a style's bytes would shift
 		// the start offset of any column to its right.
-		line = loam.RecolorWord(line, offsets[colSince], func(string) lipgloss.Style { return subtleStyle })
+		line = loam.RecolorWord(line, offsets[colSince], sinceLookup)
 		line = loam.RecolorWord(line, offsets[colState], recolorState)
 		if isSelected {
 			line = loam.HighlightRow(line, rowHighlightStyle)
+		}
+		// The grey-out goes last: it must nest the State/Since colors
+		// (and flow over the selection band), and RecolorWord's column
+		// math only works on a still-unstyled line (see dimQuietRow's
+		// doc).
+		if haveEntry && isQuiet(displayState(displayed[idx])) {
+			line = dimQuietRow(line, displayState(displayed[idx]))
 		}
 		out = append(out, strings.ReplaceAll(line, loam.Sentinel, ""))
 		if !mapped {
 			continue // no anchor this frame: no detail lines rather than wrong ones
 		}
-		if idx := first + j - 1; idx >= 0 && idx < len(displayed) {
+		if haveEntry {
 			e := displayed[idx]
 			if msg := detailLineText(e); msg != "" {
 				out = append(out, messageLine(e, msg, idx == cursor, width))

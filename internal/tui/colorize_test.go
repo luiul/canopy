@@ -45,6 +45,122 @@ func TestRecolorStateStylesWordsAndBlinkMarker(t *testing.T) {
 	}
 }
 
+func TestSinceStyleSharesStateHueWithoutBold(t *testing.T) {
+	withForcedColor(t)
+	for _, state := range []string{"blocked", "error", "done", "working", "idle", "stopped", "unknown"} {
+		got, want := sinceStyle(state), stateStyle(state)
+		if got.GetForeground() != want.GetForeground() {
+			t.Fatalf("sinceStyle(%s) foreground = %v, want stateStyle's %v (the two columns read as one block)", state, got.GetForeground(), want.GetForeground())
+		}
+		if got.GetBold() {
+			t.Fatalf("sinceStyle(%s) must never be bold: bold stays reserved for the done/error State words", state)
+		}
+	}
+	if got := sinceStyle("bogus").Render("x"); got != "x" {
+		t.Fatalf("sinceStyle must fall back to the zero style for a state outside the vocabulary, got %q", got)
+	}
+}
+
+func TestIsQuietPinsTheQuietTier(t *testing.T) {
+	for _, s := range []string{"idle", "unknown"} {
+		if !isQuiet(s) {
+			t.Fatalf("%s must be quiet (it never needs attention)", s)
+		}
+	}
+	for _, s := range []string{"blocked", "error", "done", "working", "stopped"} {
+		if isQuiet(s) {
+			t.Fatalf("%s must NOT be quiet: stopped deliberately stays bright, a forgotten paused session is a zombie", s)
+		}
+	}
+}
+
+func TestTableViewColorsSinceByState(t *testing.T) {
+	withForcedColor(t)
+	m := New(time.Second, nil)
+	m.width, m.height = 150, 35
+	working := entry(1, ancestry.Ghostty, "working")
+	working.StateSince = time.Now().Add(-72 * time.Hour) // renders "3d", stable across the test
+	idle := entry(2, ancestry.Ghostty, "idle")
+	idle.StateSince = time.Now().Add(-72 * time.Hour)
+	m.applyEntries([]registry.RegistryEntry{working, idle})
+	// "3d" appears in no other cell (Uptime is empty for these entries),
+	// and the Since cell is the only place it renders in the state's hue.
+	if got, want := m.View(), sinceStyle("working").Render("3d"); !strings.Contains(got, want) {
+		t.Fatalf("got %q, want the working row's Since cell rendered as %q", got, want)
+	}
+}
+
+func TestTableViewDimsQuietRowsAndKeepsTheirStateWordBright(t *testing.T) {
+	withForcedColor(t)
+	m := New(time.Second, nil)
+	m.width, m.height = 150, 35
+	m.applyEntries([]registry.RegistryEntry{
+		entry(1, ancestry.Ghostty, "idle"),
+		entry(2, ancestry.Ghostty, "working"),
+		entry(3, ancestry.Ghostty, "unknown"),
+		entry(4, ancestry.Ghostty, "stopped"),
+	})
+	quietOpen, quietClose := loam.StyleSequences(quietRowStyle)
+	if quietOpen == "" {
+		t.Fatal("StyleSequences returned nothing; withForcedColor isn't taking effect")
+	}
+	// Data lines, not the summary line: they alone carry the location.
+	lines := map[string]string{}
+	for _, line := range strings.Split(m.View(), "\n") {
+		if !strings.Contains(line, "/Users/x") {
+			continue
+		}
+		for _, state := range []string{"idle", "unknown", "stopped", "working"} {
+			if strings.Contains(line, state) {
+				lines[state] = line
+			}
+		}
+	}
+	for _, state := range []string{"idle", "unknown"} {
+		line := lines[state]
+		if line == "" {
+			t.Fatalf("%s data line not found in:\n%s", state, m.View())
+		}
+		if !strings.HasPrefix(line, quietOpen) || !strings.HasSuffix(line, quietClose) {
+			t.Fatalf("%s line %q must be wrapped start-to-end in the quiet faint", state, line)
+		}
+		stateOpen, _ := loam.StyleSequences(stateStyle(state))
+		if !strings.Contains(line, stateOpen+"\x1b[22m") {
+			t.Fatalf("%s line %q must splice SGR 22 into the State word's opening sequence, keeping it bright inside the faint", state, line)
+		}
+	}
+	for _, state := range []string{"working", "stopped"} {
+		if line := lines[state]; line == "" {
+			t.Fatalf("%s data line not found in:\n%s", state, m.View())
+		} else if strings.HasPrefix(line, quietOpen) {
+			t.Fatalf("%s line %q must NOT be faint-wrapped (only the quiet tier recedes)", state, line)
+		}
+	}
+}
+
+func TestTableViewGreysIdleAndUnknownDetailLines(t *testing.T) {
+	withForcedColor(t)
+	m := New(time.Second, nil)
+	m.width, m.height = 150, 35
+	idle := entry(1, ancestry.Ghostty, "idle")
+	idle.Task = "write the launch plan"
+	unknown := entry(2, ancestry.Ghostty, "unknown")
+	unknown.Task = "triage the queue"
+	stopped := entry(3, ancestry.Ghostty, "stopped")
+	stopped.Task = "kept plain on purpose"
+	m.applyEntries([]registry.RegistryEntry{idle, unknown, stopped})
+	view := m.View()
+	if want := subtleStyle.Render("write the launch plan"); !strings.Contains(view, want) {
+		t.Fatalf("idle task line must render in subtle grey (it recedes with its faint row); got %q, want it to contain %q", view, want)
+	}
+	if want := subtleStyle.Render("triage the queue"); !strings.Contains(view, want) {
+		t.Fatalf("unknown task line must render in subtle grey (it recedes with its faint row); got %q, want it to contain %q", view, want)
+	}
+	if !strings.Contains(view, "kept plain on purpose") || strings.Contains(view, subtleStyle.Render("kept plain on purpose")) {
+		t.Fatalf("stopped task line must stay plain (its row is not quiet): %q", view)
+	}
+}
+
 func TestTableViewColorsStateWordsAndSince(t *testing.T) {
 	withForcedColor(t)
 	m := New(time.Second, nil)
