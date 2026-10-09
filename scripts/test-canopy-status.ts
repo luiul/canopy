@@ -73,7 +73,7 @@ async function harness(t: TestContext) {
 	return { create, status, model, timers, oldListeners };
 }
 
-function readStatus(file: string): { state: string; message?: string; updatedAt: string } {
+function readStatus(file: string): { state: string; message?: string; detail?: string; task?: string; updatedAt: string } {
 	return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
@@ -340,6 +340,93 @@ test("older interactive hosts without mode still report", async (t) => {
 	const ctx = context(undefined, true);
 	await pi.fire("session_start", ctx);
 	assert.equal(JSON.parse(fs.readFileSync(h.model, "utf8")).model, mainModel.name);
+	await pi.fire("session_shutdown", ctx);
+});
+
+test("tool calls become the working row's activity, with the cwd stripped from paths", async (t) => {
+	const h = await harness(t);
+	const pi = h.create();
+	const ctx = context("tui", true);
+	await pi.fire("session_start", ctx);
+	await pi.fire("agent_start", ctx);
+	assert.equal(readStatus(h.status).detail, undefined, "no activity before the first tool call");
+	await pi.fire("tool_call", ctx, { toolName: "edit", input: { path: "/projects/canopy/internal/tui/rows.go" } });
+	assert.equal(readStatus(h.status).detail, "edit: internal/tui/rows.go");
+	await pi.fire("tool_call", ctx, { toolName: "bash", input: { command: "go test ./...\n&& go vet" } });
+	assert.equal(readStatus(h.status).detail, "bash: go test ./...");
+	// A tool without a known target argument shows just its name.
+	await pi.fire("tool_call", ctx, { toolName: "mcp__kb__search", input: { query: "x" } });
+	assert.equal(readStatus(h.status).detail, "mcp__kb__search: x");
+	await pi.fire("session_shutdown", ctx);
+});
+
+test("the first prompt of the session becomes the task and never gets overwritten", async (t) => {
+	const h = await harness(t);
+	const pi = h.create();
+	const ctx = context("tui", true);
+	await pi.fire("session_start", ctx);
+	assert.equal(readStatus(h.status).task, undefined);
+	await pi.fire("before_agent_start", ctx, { prompt: "plan the thing\nwith details" });
+	await pi.fire("agent_start", ctx);
+	assert.equal(readStatus(h.status).task, "plan the thing");
+	await pi.fire("agent_settled", ctx, { aborted: false });
+	assert.equal(readStatus(h.status).task, "plan the thing", "task survives the settle write");
+	await pi.fire("before_agent_start", ctx, { prompt: "continue" });
+	await pi.fire("agent_start", ctx);
+	assert.equal(readStatus(h.status).task, "plan the thing", "later prompts (and subagents) must not overwrite the identity");
+	await pi.fire("session_shutdown", ctx);
+});
+
+test("the last assistant text line becomes the done row's outcome detail", async (t) => {
+	const h = await harness(t);
+	const pi = h.create();
+	const ctx = context("tui", true);
+	await pi.fire("session_start", ctx);
+	await pi.fire("agent_start", ctx);
+	await pi.fire("message_end", ctx, { message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "TLDR: fixed the filter.\n\nDetails here." }] } });
+	await pi.fire("agent_settled", ctx, { aborted: false });
+	const status = readStatus(h.status);
+	assert.equal(status.state, "done");
+	assert.equal(status.message, "test session");
+	assert.equal(status.detail, "TLDR: fixed the filter.");
+	// The done write is one-shot, and its detail is the final one (the
+	// heartbeat never refreshes it — same rule as the state itself).
+	const settled = fs.readFileSync(h.status, "utf8");
+	for (const timer of h.timers) timer.tick();
+	assert.equal(fs.readFileSync(h.status, "utf8"), settled);
+	await pi.fire("session_shutdown", ctx);
+});
+
+test("an error turn keeps the error line in message and no outcome in detail", async (t) => {
+	const h = await harness(t);
+	const pi = h.create();
+	const ctx = context("tui", true);
+	await pi.fire("session_start", ctx);
+	await pi.fire("agent_start", ctx);
+	await pi.fire("tool_call", ctx, { toolName: "bash", input: { command: "false" } });
+	await pi.fire("message_end", ctx, { message: { role: "assistant", stopReason: "error", errorMessage: "boom" } });
+	await pi.fire("agent_settled", ctx, { aborted: false });
+	const status = readStatus(h.status);
+	assert.equal(status.state, "error");
+	assert.equal(status.message, "boom");
+	assert.equal(status.detail, undefined, "error rows show the error line; the activity would just be noise");
+	await pi.fire("session_shutdown", ctx);
+});
+
+test("a fresh session resets activity, outcome, and task", async (t) => {
+	const h = await harness(t);
+	const pi = h.create();
+	const ctx = context("tui", true);
+	await pi.fire("session_start", ctx);
+	await pi.fire("before_agent_start", ctx, { prompt: "old task" });
+	await pi.fire("agent_start", ctx);
+	await pi.fire("tool_call", ctx, { toolName: "read", input: { path: "/projects/canopy/README.md" } });
+	await pi.fire("agent_settled", ctx, { aborted: false });
+	await pi.fire("session_start", ctx);
+	const status = readStatus(h.status);
+	assert.equal(status.state, "idle");
+	assert.equal(status.detail, undefined);
+	assert.equal(status.task, undefined);
 	await pi.fire("session_shutdown", ctx);
 });
 

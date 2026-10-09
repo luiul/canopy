@@ -71,6 +71,17 @@ type RegistryEntry struct {
 	// how (and whether) to display it, including latching it into done
 	// episodes the same way State is latched.
 	Message string
+	// Detail is canopy's own enrichment signal from the extension: the
+	// last tool call while working ("edit: internal/tui/rows.go"), the
+	// last assistant line at settle. Empty otherwise. Same carriage and
+	// latching rules as Message.
+	Detail string
+	// Task is the first prompt of the session (session identity for
+	// unnamed sessions). Unlike Message/Detail it is not state payload —
+	// it rides every write including settles — and the TUI never latches
+	// it into episodes: an open error episode's row still shows the
+	// current session's task if its line falls back to it.
+	Task string
 	// ModelName and ModelProvider are pi's selected model, supplied by the
 	// optional companion extension. Empty for other agent kinds or when the
 	// model report is missing or stale; independent of RealState.
@@ -197,6 +208,8 @@ func externalEntries(matches []scan.ProcessMatch, table map[int]scan.ProcessInfo
 			if st, ok := pistatusRead(m.Pid); ok {
 				entry.State = st.State
 				entry.Message = st.Message
+				entry.Detail = st.Detail
+				entry.Task = st.Task
 				entry.RealState = true
 				entry.RealStateReportedAt = st.UpdatedAt
 				if entry.Cwd == "" {

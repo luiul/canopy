@@ -67,6 +67,13 @@ type doneEpisode struct {
 	// a newer settle re-latches an open episode.
 	Message string
 
+	// Detail is latched and refreshed under exactly the same rule as
+	// Message (see above): a done episode keeps the settled turn's final
+	// assistant line, an error episode keeps whatever the last activity
+	// was. Task is deliberately not latched — it is session identity, not
+	// settle payload (see registry.RegistryEntry.Task).
+	Detail string
+
 	Since time.Time
 	Acked time.Time
 
@@ -171,6 +178,23 @@ func displayMessage(e registry.RegistryEntry, done map[string]doneEpisode) strin
 	return e.Message
 }
 
+// displayDetail is displayMessage's exact counterpart for the activity/
+// outcome signal (registry.RegistryEntry.Detail): an open episode keeps
+// its latched detail; an acknowledged, still-settled episode shows none
+// (the row displays "idle", and idle's line comes from the task instead);
+// anything else shows the raw detail.
+func displayDetail(e registry.RegistryEntry, done map[string]doneEpisode) string {
+	if ep, ok := done[e.Key()]; ok {
+		if ep.Acked.IsZero() {
+			return ep.Detail
+		}
+		if e.State == ep.State {
+			return ""
+		}
+	}
+	return e.Detail
+}
+
 // blinkTickMsg is the animation frame for an in-progress blink burst (see
 // tickBlinks/blinkTickCmd): fired every blinkTickInterval, much faster
 // than the dashboard's own poll tick, for exactly as long as some entry
@@ -242,6 +266,7 @@ func (m *Model) updateDoneTracking(fresh []registry.RegistryEntry) {
 					ep.RawAt = e.RealStateReportedAt
 					ep.State = e.State
 					ep.Message = e.Message
+					ep.Detail = e.Detail
 					m.done[key] = ep
 				}
 				continue
@@ -260,7 +285,7 @@ func (m *Model) updateDoneTracking(fresh []registry.RegistryEntry) {
 		// zero NextBlinkAt as "nothing scheduled", and the whole point of a
 		// freshly opened episode is that its first blink burst fires right
 		// away, on this same poll.
-		m.done[key] = doneEpisode{State: e.State, Message: e.Message, Since: now, NextBlinkAt: now, RawAt: e.RealStateReportedAt}
+		m.done[key] = doneEpisode{State: e.State, Message: e.Message, Detail: e.Detail, Since: now, NextBlinkAt: now, RawAt: e.RealStateReportedAt}
 	}
 
 	m.syncAcksFromOtherInstances()

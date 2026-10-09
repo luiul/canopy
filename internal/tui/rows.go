@@ -129,11 +129,12 @@ func (m *Model) refreshCursorTag() {
 // filterCells are the cell strings a filterQuery is matched against (see
 // github.com/luiul/dashkit/sieve): the row's stable text columns, which
 // are State's display word, Surface, Location (the full path, not the
-// tail-truncated cell), Kind, PID, and the display message (so "/rate
-// limit" finds the throttled row). The volatile columns (Since, CPU,
-// RAM, Uptime) are deliberately excluded: their values tick over under
-// the user's fingers, so a row would match-or-not from one poll to the
-// next for reasons invisible in the query.
+// tail-truncated cell), Kind, PID, and the composed detail line (so
+// "/rate limit" finds the throttled row and "/go test" the row running
+// it). The volatile columns (Since, CPU, RAM, Uptime) are deliberately
+// excluded: their values tick over under the user's fingers, so a row
+// would match-or-not from one poll to the next for reasons invisible in
+// the query.
 func filterCells(e registry.RegistryEntry, home string, done map[string]doneEpisode) []string {
 	return []string{
 		displayState(e, done),
@@ -141,7 +142,7 @@ func filterCells(e registry.RegistryEntry, home string, done map[string]doneEpis
 		location(e, home),
 		e.Kind,
 		fmt.Sprintf("%d", e.Pid),
-		displayMessage(e, done),
+		detailLineText(e, done),
 	}
 }
 

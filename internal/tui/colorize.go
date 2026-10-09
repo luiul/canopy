@@ -75,5 +75,3 @@ func recolorState(trimmed string) lipgloss.Style {
 	}
 	return style
 }
-
-

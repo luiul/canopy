@@ -61,9 +61,11 @@ blocked    40s     pi      VS Code   ~/projects/personal/canopy                 
 error      3m      pi      VS Code   …speed-up-ci/global-ops                    —                                   0%    140M   2h30m    9514
  ↳ Rate limit exceeded: too many requests, please retry in 30 seconds
 done       8m      pi      Ghostty   ~/some/other/project                       —                                   0%    95M    1d       65834
- ↳ sprint-planning
+ ↳ sprint-planning · Fixed the flaky test; go test ./... green.
 working    12s     pi      VS Code   ~/projects/hellofresh/analytics            GPT-6 Luna (EU) [ai-model-router]      4%    310M   45m      90210
+ ↳ bash: npm run build
 idle       1h20m   pi      Ghostty   ~/projects/personal/harvest                —                                   0%    88M    2d       40211
+ ↳ import the harvest CSV exports
 
 ↑/↓ move · enter jump · c dismiss · x kill · / filter · ? help · q quit
 ```
@@ -76,8 +78,9 @@ keybinding list as an overlay (any key closes it again).
 
 `/` filters the rows, the same gesture jira-today's fzf picker uses:
 typing narrows the table fuzzily (a subsequence match over the row's
-state, surface, location, kind, pid, and message — so `rate limit`
-finds the throttled session), `enter` still jumps while the
+state, surface, location, kind, pid, and detail line — so `rate limit`
+finds the throttled session and `go test` the one running it), `enter`
+still jumps while the
 input is focused, and `esc` leaves the input with the filter still
 applied. A second `esc`, now back in normal mode, clears it. While the
 input is focused every letter is query text, not a binding, so typing
@@ -114,12 +117,14 @@ Model shows the selected name and provider when the companion extension reports 
 
 State is color-coded: orange for `blocked`, bold red for `error`, bold
 green for `done`, yellow for `working`, dim for `idle`/`unknown`, cyan
-for `stopped`. A row with a message (see "Real pi status" below) shows
-it on a second line directly under the row, tinted in the same hue
-without bold: the dialog title for `blocked`, the first error line for
-`error`, the session name for `working`/`done`. Rows without a message
-stay one line, so the detail lines cost nothing on idle or unnamed
-sessions. A row that just went `done` or `error` blinks: a trailing
+for `stopped`. A row with something to say (see "Real pi status"
+below) shows it on a second line directly under the row, tinted in the
+same hue without bold: the dialog title for `blocked`, the first error
+line for `error`, the current tool call for `working` (`bash: go test
+./...`), the session name plus pi's own turn-end summary for `done`,
+and the session's first prompt for `idle` (the identity an unnamed
+session otherwise lacks). Rows with nothing to say stay one line. A row
+that just went `done` or `error` blinks: a trailing
 `*` plus a reverse-video highlight, toggling on and off a few times right
 away, then again every five minutes for as long as it stays
 unacknowledged — a repeating nudge rather than a one-shot highlight, since
@@ -348,15 +353,19 @@ state, which `internal/pistatus` reads straight into that pid's
 
 Each report also carries an optional message (the session name for
 working/done, the dialog title for blocked, the first line of the error
-for error), which canopy renders as a tinted detail line directly under
-the row — a second line only where there is something to say, never a
-column competing with Location and Model for width. The line follows
-the same stickiness rules as the state word itself: an acknowledged
-row's line disappears with it, and an unacknowledged `error` row keeps
-its error line even after the session starts a fresh turn. Sessions are
-unnamed by default, so working/done rows show nothing until you name
-them: `/name sprint-planning` inside pi (or `pi --name`) makes the row
-identify itself at a glance.
+for error), plus canopy's own enrichment: a `detail` (the last tool
+call while working — `edit: internal/tui/rows.go` — and the first line
+of pi's final assistant message at settle, which is usually pi's own
+one-line summary of what it did) and a `task` (the first prompt of the
+session). canopy renders the composition as a tinted detail line
+directly under the row — a second line only where there is something to
+say, never a column competing with Location and Model for width. The
+line follows the same stickiness rules as the state word itself: an
+acknowledged row's name/outcome disappears with it (the task stays),
+and an unacknowledged `error` row keeps its error line even after the
+session starts a fresh turn. Naming a session — `/name sprint-planning`
+inside pi, or `pi --name` — still earns its keep: the name leads the
+line while working and when done.
 
 Install it by symlinking (or copying) it into pi's global extensions
 directory:

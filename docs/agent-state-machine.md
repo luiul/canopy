@@ -98,37 +98,55 @@ new bell) — see ["Where this lives in code"](#where-this-lives-in-code).
 
 ## The message line
 
-Each raw report can carry an optional **message** payload: the session
-name for `working`/`done`, the dialog title for `blocked`, the first
-line of the error for `error` (`idle`, `unknown`, and `stopped` never
-carry one). It renders as a tinted detail line directly under the row —
-a second line only where there is something to say, never a column,
-because three long-text columns (Message, Location, Model) cannot share
-one viewport: measured with real data at 120 cells, a Message column
-crushed Location and Model to ~7 cells each *and* still truncated the
-error line, while the detail line shows it in full at any width. Rows
-without a message render exactly as before.
+Each raw report can carry three optional payloads, rendered as one
+tinted detail line directly under the row — a second line only where
+there is something to say, never a column, because three long-text
+columns cannot share one viewport: measured with real data at 120
+cells, a Message column crushed Location and Model to ~7 cells each
+*and* still truncated the error line, while the detail line shows it in
+full at any width.
+
+The payloads:
+
+- **message** — pi's own program-status semantics: the session name for
+  `working`/`done`, the dialog title for `blocked`, the first line of
+  the error for `error`.
+- **detail** — canopy's enrichment (pi's reporter has no equivalent):
+  the last tool call while `working` (`edit: internal/tui/rows.go`), the
+  first non-empty line of pi's final assistant message once settled
+  (usually pi's own one-line summary of what it did).
+- **task** — the first prompt of the session, riding every write
+  including settles: session identity, not state payload. Never latched
+  into episodes.
+
+The composition per display state: `blocked` and `error` show their
+message alone (the actionable content); `working` shows "name ·
+activity" and `done` "name · outcome", either part droppable; `idle`,
+`stopped`, and `unknown` show the task. Any state whose parts come out
+empty falls back to the task, so an unnamed row before its first tool
+call still says what it's doing; a pi that was never prompted renders
+no line.
 
 The line follows the display overlay, not the raw signal, so it always
 belongs to the state word on screen:
 
-- An **open episode** shows the episode's latched message (`doneEpisode`
-  captures `Message` at open and refreshes it on re-latch, the same rule
-  `State` follows): an unacknowledged `error` row keeps its error line
-  even after the session starts a fresh `working` turn with a message of
-  its own.
-- An **acknowledged, still settled** episode shows nothing: the row
-  displays `idle`, and `idle` carries no message.
-- Anything else shows the raw report's message verbatim.
+- An **open episode** shows the episode's latched message and detail
+  (`doneEpisode` captures both at open and refreshes them on re-latch,
+  the same rule `State` follows): an unacknowledged `error` row keeps
+  its error line even after the session starts a fresh `working` turn
+  with an activity of its own.
+- An **acknowledged, still settled** episode drops its name and outcome
+  (the row displays `idle`); the task, never latched, still shows.
+- Anything else shows the raw report's values verbatim.
 
 The line is tinted in its state's hue without bold (bold stays reserved
 for the `done`/`error` State words), never blinks (blink stays confined
 to the State word's `*`), and truncates only at the terminal's right
 edge. It is part of the filter's matched text, so `/rate limit` finds
-the throttled row. Each visible detail line costs one table row of
-height; `resizeTableHeight` hands exactly that many rows back to the
-header/footer budget so the footer never gets pushed off screen (see
-`internal/tui/message.go`).
+the throttled row and `/go test` the one running it. Each visible detail
+line costs one table row of height; `resizeTableHeight` hands exactly
+that many rows back to the header/footer budget so the footer never gets
+pushed off screen (see `internal/tui/message.go`).
 
 ## The bell
 
@@ -210,8 +228,8 @@ anything without a fresh report stays `unknown` (`internal/registry`'s
 `internal/tui/done.go` (the bell decision that reads the same
 transitions lives in `internal/tui/bell.go`):
 
-- `doneEpisode{State, Message, Since, Acked, RawAt}` — one entry per row
-  key,
+- `doneEpisode{State, Message, Detail, Since, Acked, RawAt}` — one entry
+  per row key,
   tracking which attention word the episode displays (`done` or
   `error`), and whether it's still open (user hasn't acted yet) or
   acknowledged (user pressed `enter`, `c`, or `C`), held in
@@ -232,12 +250,13 @@ transitions lives in `internal/tui/bell.go`):
   episode (user hasn't acted yet), the synthetic `idle` for an
   acknowledged episode (user did act, display drops back down), or
   `e.State` directly for any row not in an episode at all.
-- `displayMessage(e, done)` — the same overlay for the message payload
-  (see ["The message line"](#the-message-line)): the episode's latched
-  message for an open episode, `""` for an acknowledged still-settled
-  one, `e.Message` otherwise. Rendering, tinting, and the height
-  accounting for the injected detail lines live in
-  `internal/tui/message.go`.
+- `displayMessage(e, done)` / `displayDetail(e, done)` — the same
+  overlay for the message and detail payloads (see ["The message
+  line"](#the-message-line)): the episode's latched values for an open
+  episode, `""` for an acknowledged still-settled one, the raw values
+  otherwise. `detailLineText(e, done)` composes the two plus the task
+  into the rendered line. Rendering, tinting, and the height accounting
+  for the injected detail lines live in `internal/tui/message.go`.
 - `Model.acknowledge(entry)` — marks the episode as acknowledged on
   `key_enter`/`key_c`; a no-op if the entry is neither raw `done`/`error`
   nor has an open episode.

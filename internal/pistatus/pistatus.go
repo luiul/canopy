@@ -40,12 +40,17 @@ const MaxAge = 10 * time.Second
 // ones are displayed). Message is the state's optional payload, mirroring
 // pi's own program-status reports: the session name for working/done,
 // the dialog title for blocked, the first line of the error for error,
-// empty otherwise.
+// empty otherwise. Detail and Task are canopy's own enrichment (pi's
+// reporter has no equivalent): Detail is the rolling activity signal
+// (last tool call while working, last assistant line at settle), Task
+// the first prompt of the session. All empty when absent.
 type Status struct {
 	Pid       int
 	Cwd       string
 	State     string
 	Message   string
+	Detail    string
+	Task      string
 	UpdatedAt time.Time
 }
 
@@ -55,6 +60,8 @@ type wireStatus struct {
 	Cwd       string    `json:"cwd"`
 	State     string    `json:"state"`
 	Message   string    `json:"message,omitempty"`
+	Detail    string    `json:"detail,omitempty"`
+	Task      string    `json:"task,omitempty"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
@@ -100,12 +107,15 @@ func parse(data []byte, now time.Time) (Status, bool) {
 	if w.State == "" {
 		return Status{}, false
 	}
-	// The TUI renders Message as a single line under its row (see
-	// internal/tui/message.go); a stray newline from a session name or
-	// dialog title would silently become an extra line and desync the
+	// The TUI renders Message/Detail/Task on a single line under the row
+	// (see internal/tui/message.go); a stray newline from a session name
+	// or dialog title would silently become an extra line and desync the
 	// line-to-row mapping there. The extension already takes first lines
-	// for errors; this is belt-and-braces for everything else.
-	w.Message = strings.ReplaceAll(strings.ReplaceAll(w.Message, "\r\n", " "), "\n", " ")
+	// for errors and clips its detail/task fragments; this is
+	// belt-and-braces for everything else.
+	w.Message = singleLine(w.Message)
+	w.Detail = singleLine(w.Detail)
+	w.Task = singleLine(w.Task)
 	// Terminal states never expire: the extension's done/error writes are
 	// one-shot by design (see MaxAge), so staleness is their normal state
 	// of being, not a sign of a dead extension. Process liveness is
@@ -116,4 +126,10 @@ func parse(data []byte, now time.Time) (Status, bool) {
 		return Status{}, false
 	}
 	return Status(w), true
+}
+
+// singleLine flattens embedded newlines to spaces (see parse's caller
+// note): the detail line under a row is exactly one terminal line.
+func singleLine(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", " "), "\n", " ")
 }

@@ -45,9 +45,21 @@
  *
  * Files written under ~/.pi/agent/canopy-status/:
  *   <pid>.json: { "pid": 12345, "cwd": "/path", "state": "working"|"blocked"|"done"|"error"|"idle",
- *                 "message": "<session name|dialog title|error first line>", "updatedAt": "<ISO>" }
+ *                 "message": "<session name|dialog title|error first line>",
+ *                 "detail": "<last tool call|last assistant line>",
+ *                 "task": "<first prompt of the session>", "updatedAt": "<ISO>" }
  *   <pid>.model.json: { "pid": 12345, "model": "GPT-6 Sol", "provider": "ai-model-router", "updatedAt": "<ISO>" }
  * message is omitted when there is none (idle, or no session name set).
+ * detail and task are canopy's own enrichment (pi's reporter has no
+ * equivalent): detail is the session's rolling activity signal — the last
+ * tool call while working ("edit: internal/tui/rows.go"), the first
+ * non-empty line of the latest assistant text at settle (pi's own
+ * turn-end summary) — and task is the first prompt of the session, the
+ * identity an unnamed session otherwise lacks. Both ride the exact same
+ * writes as state/message (transitions, heartbeat, one-shot settle);
+ * canopy composes the per-state display line from message/detail/task.
+ * Events feeding them: tool_call (observe-only), message_end (assistant
+ * text), before_agent_start (the prompt).
  * The model has its own timestamp: changing or refreshing it must not
  * look like a new state transition to canopy's done/bell logic.
  *
@@ -96,16 +108,60 @@ const MODEL_HEARTBEAT_MS = 30000;
 type State = "working" | "blocked" | "done" | "error" | "idle";
 
 // Status is one computed report: the state plus its optional message (see
-// the header for which states carry one).
+// the header for which states carry one) plus canopy's own optional
+// detail/task enrichment (see the header for what they carry).
 interface Status {
 	state: State;
 	message?: string;
+	detail?: string;
+	task?: string;
 }
 
 // firstLine mirrors pi's reporter: an error report's message is the first
 // line of the error text, never the whole thing.
 function firstLine(text: string | undefined): string {
 	return text?.split(/\r?\n/, 1)[0]?.trim() || "Error";
+}
+
+// clip bounds a detail/task fragment to one line and a sane length: the
+// TUI truncates to the terminal width itself, so this only keeps the file
+// small and free of embedded newlines.
+function clip(text: string | undefined): string | undefined {
+	const line = text?.split(/\r?\n/).find((l) => l.trim() !== "")?.trim();
+	if (!line) return undefined;
+	return line.length > 100 ? line.slice(0, 99) + "…" : line;
+}
+
+// activityLabel renders one tool call as a short activity fragment:
+// "edit: internal/tui/rows.go", "bash: go test ./...", "grep: displayMessage".
+// The target is whichever conventional argument the tool carries (pi's
+// built-ins: command for bash, path for read/edit/write/ls, pattern for
+// grep/find); anything else (MCP tools, extension tools) shows just the
+// tool name. Paths get the cwd prefix stripped: that prefix is already
+// the row's Location cell, repeating it would only eat the line.
+function activityLabel(toolName: string, input: unknown, cwd: string): string {
+	const args = input as Record<string, unknown> | undefined;
+	const str = (key: string): string | undefined =>
+		typeof args?.[key] === "string" ? (args[key] as string) : undefined;
+	let target = str("path") ?? str("command") ?? str("pattern") ?? str("query") ?? str("url");
+	if (!target) return toolName;
+	if (str("path") && cwd && target.startsWith(cwd + "/")) target = target.slice(cwd.length + 1);
+	return `${toolName}: ${firstLine(target)}`;
+}
+
+// firstTextLine extracts the first non-empty line of an assistant
+// message's text content: pi's final message in a turn usually *is* the
+// one-line summary of what it did, which is exactly what a done row
+// should show.
+function firstTextLine(message: unknown): string | undefined {
+	const m = message as { content?: Array<{ type?: string; text?: string }> };
+	for (const block of m.content ?? []) {
+		if (block.type === "text") {
+			const line = clip(block.text);
+			if (line) return line;
+		}
+	}
+	return undefined;
 }
 
 function statusFile(pid: number): string {
@@ -154,7 +210,7 @@ function writeStatus(cwd: string, status: Status) {
 		const tmp = `${file}.tmp`;
 		fs.writeFileSync(
 			tmp,
-			JSON.stringify({ pid: process.pid, cwd, state: status.state, message: status.message, updatedAt: new Date().toISOString() }),
+			JSON.stringify({ pid: process.pid, cwd, state: status.state, message: status.message, detail: status.detail, task: status.task, updatedAt: new Date().toISOString() }),
 		);
 		fs.renameSync(tmp, file); // same filesystem: canopy never reads a half-written file
 	} catch {
@@ -188,6 +244,13 @@ export default function (pi: ExtensionAPI) {
 	let resting: Status = { state: "idle" };
 	// Title of the extension dialog currently waiting for input, if any.
 	let blockedTitle: string | undefined;
+	// The rolling enrichment signals (see the header): the last tool call,
+	// the first non-empty line of the latest assistant text, and the first
+	// prompt of the session. All three reset on session_start, exactly like
+	// the mirrored run state.
+	let lastActivity: string | undefined;
+	let lastOutcome: string | undefined;
+	let task: string | undefined;
 	// The last context any event arrived with, so the heartbeat can
 	// recompute the current status (and refresh the session name inside a
 	// working/done message) without an event of its own.
@@ -208,12 +271,33 @@ export default function (pi: ExtensionAPI) {
 	// currentStatus mirrors pi's currentStatus(): blocked outranks
 	// compacting outranks an active run, and the resting status carries the
 	// session name when it's done (pi attaches it to working and done).
+	// The detail field then adds canopy's rolling activity signal per state
+	// (blocked/error carry all their content in message; idle carries only
+	// the task), and task rides every write: it's session identity, not
+	// state payload, and it must survive a settle overwriting detail.
 	const currentStatus = (): Status => {
-		if (blockedTitle !== undefined) return { state: "blocked", message: blockedTitle };
-		if (compacting) return { state: "working", message: "Compacting context" };
-		if (runActive) return { state: "working", message: sessionName() };
-		if (resting.state === "done") return { ...resting, message: sessionName() };
-		return resting;
+		const withEnrichment = (s: Status): Status => ({ ...s, detail: currentDetail(s.state), task });
+		if (blockedTitle !== undefined) return withEnrichment({ state: "blocked", message: blockedTitle });
+		if (compacting) return withEnrichment({ state: "working", message: "Compacting context" });
+		if (runActive) return withEnrichment({ state: "working", message: sessionName() });
+		if (resting.state === "done") return withEnrichment({ ...resting, message: sessionName() });
+		return withEnrichment(resting);
+	};
+
+	// currentDetail picks the rolling signal that belongs to a state: the
+	// last tool call while working (the task until the first tool call
+	// lands — a fresh run's only known activity), the latest assistant
+	// line once settled (pi's own turn-end summary), nothing for the two
+	// states whose message already says it all.
+	const currentDetail = (state: State): string | undefined => {
+		switch (state) {
+			case "working":
+				return lastActivity;
+			case "done":
+				return lastOutcome ?? lastActivity;
+			default:
+				return undefined;
+		}
 	};
 
 	const startStatusWatch = () => {
@@ -287,6 +371,9 @@ export default function (pi: ExtensionAPI) {
 		runResult = { state: "done" };
 		resting = { state: "idle" };
 		blockedTitle = undefined;
+		lastActivity = undefined;
+		lastOutcome = undefined;
+		task = undefined;
 		lastWritten = undefined;
 		activeCtx = ctx;
 		if (!enabled) return;
@@ -308,12 +395,32 @@ export default function (pi: ExtensionAPI) {
 		runResult = { state: "done" };
 		update(ctx);
 	});
+	pi.on("before_agent_start", async (event, _ctx) => {
+		// The FIRST prompt of the session is the task (identity): later
+		// prompts ("continue", "go ahead") say nothing about what the
+		// session is for, and a subagent's before_agent_start must never
+		// overwrite the user's own prompt. No update() here: agent_start
+		// fires immediately after and writes.
+		if (task === undefined) task = clip((event as { prompt?: string }).prompt);
+	});
+	pi.on("tool_call", async (event, ctx) => {
+		// Observe-only (no block/mutate): the tool call is the session's
+		// live activity signal, written on the spot so canopy's working
+		// rows show what is happening without waiting for the heartbeat.
+		const e = event as { toolName?: string; input?: unknown };
+		if (e.toolName) lastActivity = clip(activityLabel(e.toolName, e.input, ctx.cwd));
+		update(ctx);
+	});
 	pi.on("message_end", async (event, ctx) => {
 		// The latest response decides the outcome, so a retried error is
 		// replaced by its successful retry (pi's exact rule).
 		const message = event.message as { role?: string; stopReason?: string; errorMessage?: string };
 		if (message.role !== "assistant") return;
 		runResult = message.stopReason === "error" ? { state: "error", message: firstLine(message.errorMessage) } : { state: "done" };
+		if (message.stopReason !== "error") {
+			const line = firstTextLine(message);
+			if (line) lastOutcome = line;
+		}
 		update(ctx);
 	});
 	pi.on("session_before_compact", async (_event, ctx) => {

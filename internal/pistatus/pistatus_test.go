@@ -87,6 +87,21 @@ func TestReadDirReturnsTheMessage(t *testing.T) {
 	}
 }
 
+func TestReadDirReturnsDetailAndTaskSingleLined(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	updatedAt := now.Add(-2 * time.Second)
+	writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"done","message":"sprint-planning","detail":"TLDR: done\nsecond line","task":"plan the thing","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
+
+	got, ok := ReadDir(dir, 123, now)
+	if !ok {
+		t.Fatalf("got ok=false, want true")
+	}
+	if got.Detail != "TLDR: done second line" || got.Task != "plan the thing" || got.Message != "sprint-planning" {
+		t.Fatalf("got %+v, want message/detail/task carried (detail single-lined)", got)
+	}
+}
+
 func TestReadDirReadsEveryStateTheExtensionWrites(t *testing.T) {
 	// The full canopy-status.ts vocabulary (pi's program-status states):
 	// parse passes any non-empty state through; these pin the five the

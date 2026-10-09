@@ -31,9 +31,10 @@ func typeRunes(m Model, s string) Model {
 	return m
 }
 
-func TestFilterMatchesTheDisplayMessage(t *testing.T) {
+func TestFilterMatchesTheComposedDetailLine(t *testing.T) {
 	m := New(999, nil)
 	entries := filterEntries()
+	entries[0].State = "error"
 	entries[0].Message = "rate limit exceeded"
 	m.applyEntries(entries)
 
@@ -41,7 +42,19 @@ func TestFilterMatchesTheDisplayMessage(t *testing.T) {
 	m = typeRunes(updated.(Model), "rate")
 	rows := m.table.Rows()
 	if len(rows) != 1 || rows[0][colPID] != "1" {
-		t.Fatalf("rows = %v, want only the row whose message matches", rows)
+		t.Fatalf("rows = %v, want only the row whose error line matches", rows)
+	}
+
+	// The task (an idle row's detail line) matches too.
+	m2 := New(999, nil)
+	entries2 := filterEntries()
+	entries2[1].Task = "plan the thing"
+	m2.applyEntries(entries2)
+	updated, _ = m2.Update(keyMsg("/"))
+	m2 = typeRunes(updated.(Model), "plan")
+	rows = m2.table.Rows()
+	if len(rows) != 1 || rows[0][colPID] != "2" {
+		t.Fatalf("rows = %v, want only the row whose task matches", rows)
 	}
 }
 

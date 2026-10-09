@@ -67,6 +67,44 @@ func sessionName(e registry.RegistryEntry, done map[string]doneEpisode) string {
 	return ""
 }
 
+// detailLineText is the full text of the detail line under e's row,
+// composed per display state from the three optional payloads (see
+// registry.RegistryEntry's Message/Detail/Task):
+//
+//	blocked → the dialog title (message); error → the first error line
+//	(message) — both are the actionable content, shown alone.
+//	working → "name · activity"; done → "name · outcome" — either part
+//	droppable when absent.
+//	everything else (idle, stopped, unknown) → the task: the first
+//	prompt of the session, the identity an unnamed session otherwise
+//	lacks.
+//
+// Any state whose composed line comes out empty falls back to the task,
+// so an unnamed working row before its first tool call still says what
+// it's doing. "" overall means no line at all (unknown kinds, or a pi
+// that has never been prompted).
+func detailLineText(e registry.RegistryEntry, done map[string]doneEpisode) string {
+	var line string
+	switch displayState(e, done) {
+	case "blocked", "error":
+		line = displayMessage(e, done)
+	case "working", "done":
+		name, detail := displayMessage(e, done), displayDetail(e, done)
+		switch {
+		case name != "" && detail != "":
+			line = name + " · " + detail
+		case name != "":
+			line = name
+		default:
+			line = detail
+		}
+	}
+	if line == "" {
+		line = e.Task
+	}
+	return line
+}
+
 // firstVisibleRow derives which entry index the table's first rendered
 // data line shows, from the one landmark bubbles/table v1 exposes in its
 // output: the selection sentinel (see loam.Tag). The cursor row is
@@ -191,7 +229,7 @@ func (m Model) tableView() string {
 		}
 		if idx := first + j - 1; idx >= 0 && idx < len(displayed) {
 			e := displayed[idx]
-			if msg := displayMessage(e, m.done); msg != "" {
+			if msg := detailLineText(e, m.done); msg != "" {
 				out = append(out, messageLine(e, msg, m.done, idx == cursor, width))
 			}
 		}
@@ -219,7 +257,7 @@ func (m Model) visibleMessageLines() int {
 	}
 	count := 0
 	for i := first; i < len(displayed) && i < first+m.table.Height(); i++ {
-		if displayMessage(displayed[i], m.done) != "" {
+		if detailLineText(displayed[i], m.done) != "" {
 			count++
 		}
 	}
@@ -229,7 +267,7 @@ func (m Model) visibleMessageLines() int {
 func countMessages(entries []registry.RegistryEntry, done map[string]doneEpisode) int {
 	count := 0
 	for _, e := range entries {
-		if displayMessage(e, done) != "" {
+		if detailLineText(e, done) != "" {
 			count++
 		}
 	}

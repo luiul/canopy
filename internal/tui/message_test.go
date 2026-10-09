@@ -45,6 +45,72 @@ func TestDisplayMessageFollowsTheEpisodeOverlay(t *testing.T) {
 	}
 }
 
+func TestDetailLineTextComposesPerState(t *testing.T) {
+	// blocked/error show their message (title / error line) alone.
+	b := messagedEntry(1, ancestry.Ghostty, "blocked", "Allow Bash: go test?")
+	b.Detail, b.Task = "bash: go test", "plan the thing"
+	if got := detailLineText(b, nil); got != "Allow Bash: go test?" {
+		t.Fatalf("blocked = %q", got)
+	}
+
+	// working/done join name and activity/outcome, either part droppable.
+	w := messagedEntry(2, ancestry.Ghostty, "working", "sprint-planning")
+	w.Detail, w.Task = "edit: internal/tui/rows.go", "plan the thing"
+	if got := detailLineText(w, nil); got != "sprint-planning · edit: internal/tui/rows.go" {
+		t.Fatalf("working = %q", got)
+	}
+	w.Message = ""
+	if got := detailLineText(w, nil); got != "edit: internal/tui/rows.go" {
+		t.Fatalf("working unnamed = %q", got)
+	}
+	w.Detail = ""
+	if got := detailLineText(w, nil); got != "plan the thing" {
+		t.Fatalf("working with neither name nor activity falls back to the task, got %q", got)
+	}
+
+	// idle/stopped/unknown show the task; a pi never prompted shows nothing.
+	i := entry(3, ancestry.Ghostty, "idle")
+	i.Task = "plan the thing"
+	if got := detailLineText(i, nil); got != "plan the thing" {
+		t.Fatalf("idle = %q", got)
+	}
+	if got := detailLineText(entry(4, ancestry.Ghostty, "idle"), nil); got != "" {
+		t.Fatalf("idle without a task must render no line, got %q", got)
+	}
+}
+
+func TestDisplayDetailLatchesIntoTheEpisode(t *testing.T) {
+	m := New(time.Second, nil)
+	e := messagedEntry(1, ancestry.Ghostty, "done", "sprint-planning")
+	e.Detail = "TLDR: fixed the filter."
+	e.RealState = true
+	e.RealStateReportedAt = time.Now()
+	m.applyEntries([]registry.RegistryEntry{e})
+	if got := m.done[e.Key()].Detail; got != "TLDR: fixed the filter." {
+		t.Fatalf("episode latched detail %q", got)
+	}
+
+	// The raw source moving on to a fresh working turn must not change the
+	// open episode's line.
+	e.State, e.Message, e.Detail = "working", "sprint-planning", "bash: go test ./..."
+	m.applyEntries([]registry.RegistryEntry{e})
+	if got := displayDetail(e, m.done); got != "TLDR: fixed the filter." {
+		t.Fatalf("open episode must keep its latched detail, got %q", got)
+	}
+	if got := detailLineText(e, m.done); got != "sprint-planning · TLDR: fixed the filter." {
+		t.Fatalf("open done episode line = %q", got)
+	}
+
+	// After acknowledgment with the raw source still settled, the row
+	// displays idle: no name, no outcome — just the task if there is one.
+	m.acknowledge(e)
+	e.State, e.Detail = "done", "TLDR: fixed the filter."
+	e.Task = "plan the thing"
+	if got := detailLineText(e, m.done); got != "plan the thing" {
+		t.Fatalf("acknowledged settled row = %q", got)
+	}
+}
+
 func TestUpdateDoneTrackingLatchesAndRefreshesMessage(t *testing.T) {
 	m := New(time.Second, nil)
 	e := messagedEntry(1, ancestry.Ghostty, "error", "first failure")
