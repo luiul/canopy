@@ -114,6 +114,35 @@ func TestTheArmedPromptRendersInTheFooterWithTargetDetails(t *testing.T) {
 	}
 }
 
+func TestThePromptNamesANamedSession(t *testing.T) {
+	m := New(999*time.Second, nil)
+	m.width, m.height = 120, 40
+	e := entry(42, ancestry.Ghostty, "working")
+	e.Message = "sprint-planning"
+	m.applyEntries([]registry.RegistryEntry{e})
+
+	updated, _ := m.Update(keyMsg("x"))
+	m = updated.(Model)
+
+	want := "Terminate pi (pid 42, sprint-planning, /Users/x/dotfiles)? Currently working. [y/N]"
+	if !strings.Contains(m.View(), want) {
+		t.Fatalf("View() = %q, want %q (the session name disambiguates the target)", m.View(), want)
+	}
+
+	// A blocked row's message is a dialog title, not an identity: the
+	// prompt must not pick it up as a name.
+	b := entry(43, ancestry.Ghostty, "blocked")
+	b.Message = "Allow Bash: go test ./...?"
+	m2 := New(999*time.Second, nil)
+	m2.width, m2.height = 120, 40
+	m2.applyEntries([]registry.RegistryEntry{b})
+	updated, _ = m2.Update(keyMsg("x"))
+	m2 = updated.(Model)
+	if got := m2.View(); !strings.Contains(got, "Terminate pi (pid 43, /Users/x/dotfiles)?") {
+		t.Fatalf("View() = %q, want the dialog title left out of the target", got)
+	}
+}
+
 func TestThePromptWarnsWhenTheTargetIsMidTurn(t *testing.T) {
 	m := New(999*time.Second, nil)
 	m.width, m.height = 120, 40

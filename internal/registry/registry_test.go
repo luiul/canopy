@@ -231,7 +231,7 @@ func TestExternalEntriesPrefersPistatusForPi(t *testing.T) {
 	withResolveCwds(t, func(pids []int) map[int]string { return map[int]string{} })
 	reportedAt := time.Now()
 	withPistatusRead(t, func(pid int) (pistatus.Status, bool) {
-		return pistatus.Status{Pid: pid, Cwd: "/pi-cwd", State: "done", UpdatedAt: reportedAt}, true
+		return pistatus.Status{Pid: pid, Cwd: "/pi-cwd", State: "done", Message: "sprint-planning", UpdatedAt: reportedAt}, true
 	})
 
 	table := map[int]scan.ProcessInfo{9: {Pid: 9, Pcpu: 0}}
@@ -251,6 +251,9 @@ func TestExternalEntriesPrefersPistatusForPi(t *testing.T) {
 	}
 	if e.Cwd != "/pi-cwd" {
 		t.Fatalf("got Cwd %q, want pistatus's cwd used as a fallback since lsof found none", e.Cwd)
+	}
+	if e.Message != "sprint-planning" {
+		t.Fatalf("got Message %q, want the report's message carried verbatim", e.Message)
 	}
 }
 

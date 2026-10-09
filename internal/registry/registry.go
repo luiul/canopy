@@ -63,6 +63,14 @@ type RegistryEntry struct {
 	Cwd     string // "" means unknown
 	Surface ancestry.Surface
 	State   string
+	// Message is the optional payload pi attaches to a State report (see
+	// pistatus.Status.Message): the session name for working/done, the
+	// dialog title for blocked, the first line of the error for error.
+	// Empty otherwise (idle, unknown, stopped, unnamed sessions, and every
+	// non-pi kind). Carried verbatim with State each poll; the TUI decides
+	// how (and whether) to display it, including latching it into done
+	// episodes the same way State is latched.
+	Message string
 	// ModelName and ModelProvider are pi's selected model, supplied by the
 	// optional companion extension. Empty for other agent kinds or when the
 	// model report is missing or stale; independent of RealState.
@@ -188,6 +196,7 @@ func externalEntries(matches []scan.ProcessMatch, table map[int]scan.ProcessInfo
 		if m.Kind == "pi" {
 			if st, ok := pistatusRead(m.Pid); ok {
 				entry.State = st.State
+				entry.Message = st.Message
 				entry.RealState = true
 				entry.RealStateReportedAt = st.UpdatedAt
 				if entry.Cwd == "" {

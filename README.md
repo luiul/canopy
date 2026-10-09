@@ -57,8 +57,11 @@ canopy — agent sessions on this machine
 
 State      Since   Kind    Surface   Location                                  Model                               CPU   RAM    Uptime   PID
 blocked    40s     pi      VS Code   ~/projects/personal/canopy                 GPT-6.1 Sol (US) [amazon-bedrock]    0%    278M   1h       86872
-error      3m      pi      VS Code   ~/worktrees/.../isa-orchestration          —                                   0%    140M   2h30m    9514
+ ↳ Allow Bash: rm -rf node_modules?
+error      3m      pi      VS Code   …speed-up-ci/global-ops                    —                                   0%    140M   2h30m    9514
+ ↳ Rate limit exceeded: too many requests, please retry in 30 seconds
 done       8m      pi      Ghostty   ~/some/other/project                       —                                   0%    95M    1d       65834
+ ↳ sprint-planning
 working    12s     pi      VS Code   ~/projects/hellofresh/analytics            GPT-6 Luna (EU) [ai-model-router]      4%    310M   45m      90210
 idle       1h20m   pi      Ghostty   ~/projects/personal/harvest                —                                   0%    88M    2d       40211
 
@@ -73,7 +76,8 @@ keybinding list as an overlay (any key closes it again).
 
 `/` filters the rows, the same gesture jira-today's fzf picker uses:
 typing narrows the table fuzzily (a subsequence match over the row's
-state, surface, location, kind, and pid), `enter` still jumps while the
+state, surface, location, kind, pid, and message — so `rate limit`
+finds the throttled session), `enter` still jumps while the
 input is focused, and `esc` leaves the input with the filter still
 applied. A second `esc`, now back in normal mode, clears it. While the
 input is focused every letter is query text, not a binding, so typing
@@ -106,11 +110,16 @@ The selected row has a subtle grey background across the table. State keeps its 
 
 Columns follow the scan order: State and Since show what needs attention, then Kind identifies the agent. Surface and Location show where it lives before Model shows what it uses. CPU, RAM, Uptime, and PID provide secondary details at the right. CPU and RAM come from `ps`. Uptime is the process age, not its time in the current state.
 
-Model shows the selected name and provider when the companion extension reports them. Missing reports show `—`. Location shortens the home-directory prefix to `~`. Model has content priority over a long path. Normal targets are 28 cells for Model and 20 for Location, with no growth ceilings. On narrow terminals, Location can shrink to eight cells, then Model can shrink to its five-cell header floor before compact fields give up space. Below the combined 77-cell hard minimum, a notice explains that the table is clipped. No columns are hidden.
+Model shows the selected name and provider when the companion extension reports them. Missing reports show `—`. Location shortens the home-directory prefix to `~`, and when the column is too narrow for the path it truncates the *head* (`…speed-up-ci/global-ops`), because the tail is what identifies the session — the head is the same `~/worktrees/…` prefix on nearly every row. Model has content priority over a long path. Normal targets are 28 cells for Model and 20 for Location, with no growth ceilings. On narrow terminals, Location can shrink to eight cells, then Model can shrink to its five-cell header floor before compact fields give up space. Below the combined 77-cell hard minimum, a notice explains that the table is clipped. No columns are hidden.
 
 State is color-coded: orange for `blocked`, bold red for `error`, bold
 green for `done`, yellow for `working`, dim for `idle`/`unknown`, cyan
-for `stopped`. A row that just went `done` or `error` blinks: a trailing
+for `stopped`. A row with a message (see "Real pi status" below) shows
+it on a second line directly under the row, tinted in the same hue
+without bold: the dialog title for `blocked`, the first error line for
+`error`, the session name for `working`/`done`. Rows without a message
+stay one line, so the detail lines cost nothing on idle or unnamed
+sessions. A row that just went `done` or `error` blinks: a trailing
 `*` plus a reverse-video highlight, toggling on and off a few times right
 away, then again every five minutes for as long as it stays
 unacknowledged — a repeating nudge rather than a one-shot highlight, since
@@ -339,8 +348,15 @@ state, which `internal/pistatus` reads straight into that pid's
 
 Each report also carries an optional message (the session name for
 working/done, the dialog title for blocked, the first line of the error
-for error). canopy stores it today and will render it in a future
-release.
+for error), which canopy renders as a tinted detail line directly under
+the row — a second line only where there is something to say, never a
+column competing with Location and Model for width. The line follows
+the same stickiness rules as the state word itself: an acknowledged
+row's line disappears with it, and an unacknowledged `error` row keeps
+its error line even after the session starts a fresh turn. Sessions are
+unnamed by default, so working/done rows show nothing until you name
+them: `/name sprint-planning` inside pi (or `pi --name`) makes the row
+identify itself at a glance.
 
 Install it by symlinking (or copying) it into pi's global extensions
 directory:

@@ -56,6 +56,17 @@ type doneEpisode struct {
 	// raw source has moved on to "working" in the meantime.
 	State string
 
+	// Message is the state payload latched alongside State (see
+	// registry.RegistryEntry.Message): the error's first line for an
+	// error episode, the session name for a done one. Latched for the
+	// same reason State is — while an episode stays open, the row still
+	// displays the episode's word, so the detail line under it must keep
+	// showing the message that belongs to *that* settle, not whatever
+	// the raw source has moved on to since (a fresh working turn's own
+	// message, or none at all). Refreshed together with State/RawAt when
+	// a newer settle re-latches an open episode.
+	Message string
+
 	Since time.Time
 	Acked time.Time
 
@@ -132,6 +143,34 @@ func displayState(e registry.RegistryEntry, done map[string]doneEpisode) string 
 	return e.State
 }
 
+// displayMessage is the message actually shown for e (rendered as the
+// detail line under e's row — see message.go), mirroring displayState's
+// overlay rules so the line always belongs to the state on screen:
+//
+//  1. e has an open (unacknowledged) episode: the episode's latched
+//     message, unconditionally — the row displays the episode's word,
+//     so the line shows the settle that word is about, even when the
+//     raw source has since moved on to working (whose own message, a
+//     fresh session name or none, would read as nonsense under an
+//     "error" row).
+//  2. e has an acknowledged episode and the raw State is still the
+//     episode's word (displayState reports the synthetic "idle"): ""
+//     — idle carries no message, and the dismissed settle's line would
+//     just re-advertise something the user already acted on.
+//  3. Anything else: e.Message verbatim (blocked's dialog title,
+//     working's session name, or "" for states that carry none).
+func displayMessage(e registry.RegistryEntry, done map[string]doneEpisode) string {
+	if ep, ok := done[e.Key()]; ok {
+		if ep.Acked.IsZero() {
+			return ep.Message
+		}
+		if e.State == ep.State {
+			return ""
+		}
+	}
+	return e.Message
+}
+
 // blinkTickMsg is the animation frame for an in-progress blink burst (see
 // tickBlinks/blinkTickCmd): fired every blinkTickInterval, much faster
 // than the dashboard's own poll tick, for exactly as long as some entry
@@ -202,6 +241,7 @@ func (m *Model) updateDoneTracking(fresh []registry.RegistryEntry) {
 				if e.RealState {
 					ep.RawAt = e.RealStateReportedAt
 					ep.State = e.State
+					ep.Message = e.Message
 					m.done[key] = ep
 				}
 				continue
@@ -220,7 +260,7 @@ func (m *Model) updateDoneTracking(fresh []registry.RegistryEntry) {
 		// zero NextBlinkAt as "nothing scheduled", and the whole point of a
 		// freshly opened episode is that its first blink burst fires right
 		// away, on this same poll.
-		m.done[key] = doneEpisode{State: e.State, Since: now, NextBlinkAt: now, RawAt: e.RealStateReportedAt}
+		m.done[key] = doneEpisode{State: e.State, Message: e.Message, Since: now, NextBlinkAt: now, RawAt: e.RealStateReportedAt}
 	}
 
 	m.syncAcksFromOtherInstances()

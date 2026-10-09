@@ -3,11 +3,14 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/luiul/dashkit/loam"
 	"github.com/muesli/termenv"
+
+	"github.com/luiul/canopy/internal/ancestry"
+	"github.com/luiul/canopy/internal/registry"
 )
 
 // withForcedColor forces lipgloss to emit real ANSI (tests otherwise run
@@ -21,96 +24,136 @@ func withForcedColor(t *testing.T) {
 	t.Cleanup(func() { lipgloss.SetColorProfile(original) })
 }
 
-func TestColorizeRowsAppliesTheStateStyleToAnUnselectedRow(t *testing.T) {
+// messagedEntry is entry plus a state payload (see
+// registry.RegistryEntry.Message), e.g. the first line of an error for
+// an "error" row or the dialog title for a "blocked" one.
+func messagedEntry(pid int, surface ancestry.Surface, state, message string) registry.RegistryEntry {
+	e := entry(pid, surface, state)
+	e.Message = message
+	return e
+}
+
+func TestRecolorStateStylesWordsAndBlinkMarker(t *testing.T) {
 	withForcedColor(t)
-	cols := []table.Column{
-		{Title: "Kind", Width: 4},
-		{Title: "State", Width: 9},
+	if got, want := recolorState("working"), stateStyle("working"); got.GetForeground() != want.GetForeground() {
+		t.Fatalf("recolorState(working) = %v, want the working style", got)
 	}
-	tbl := table.New(table.WithColumns(cols), table.WithHeight(3))
-	tbl.SetRows([]table.Row{{"pi", "working"}, {"pi", "done"}})
-	tbl.SetCursor(0) // row 0 selected; row 1 (the one we check) is not
+	plain := recolorState("done")
+	blink := recolorState("done" + blinkMarker)
+	if !blink.GetReverse() || plain.GetReverse() {
+		t.Fatalf("blink-marked word must render reverse-video, unmarked must not")
+	}
+}
 
-	got := colorizeRows(tbl.View(), tbl.Columns(), 1, -1)
-
-	want := stateStyle("done").Render("done")
-	if !strings.Contains(got, want) {
+func TestTableViewColorsStateWordsAndSince(t *testing.T) {
+	withForcedColor(t)
+	m := New(time.Second, nil)
+	m.width, m.height = 150, 35
+	m.applyEntries([]registry.RegistryEntry{
+		entry(1, ancestry.Ghostty, "working"),
+		entry(2, ancestry.Ghostty, "idle"),
+	})
+	got := m.View()
+	if want := stateStyle("working").Render("working"); !strings.Contains(got, want) {
 		t.Fatalf("got %q, want it to contain the styled word %q", got, want)
 	}
 }
 
-func TestColorizeRowsSkipsTheCurrentlySelectedRow(t *testing.T) {
+func TestTableViewInjectsMessageLineUnderItsRow(t *testing.T) {
 	withForcedColor(t)
-	cols := []table.Column{
-		{Title: "Kind", Width: 4},
-		{Title: "State", Width: 9},
-	}
-	tbl := table.New(table.WithColumns(cols), table.WithHeight(3))
-	tbl.SetRows([]table.Row{{"pi", "done"}})
-	tbl.SetCursor(0)
-
-	rendered := tbl.View()
-	got := colorizeRows(rendered, tbl.Columns(), 1, -1)
-
-	// The selected row is already wrapped whole in the table's own Selected
-	// style; colorizeRows must leave that line untouched rather than
-	// recolor a sub-span of it (which would inject a reset that cuts the
-	// outer highlight short).
-	if got != rendered {
-		t.Fatalf("got a modified selected row:\n%q\nwant it unchanged from:\n%q", got, rendered)
-	}
-}
-
-func TestColorizeRowsBlinksAJustTransitionedRowInReverseVideo(t *testing.T) {
-	withForcedColor(t)
-	cols := []table.Column{
-		{Title: "Kind", Width: 4},
-		{Title: "State", Width: 9},
-	}
-	tbl := table.New(table.WithColumns(cols), table.WithHeight(3))
-	tbl.SetRows([]table.Row{{"pi", "working"}, {"pi", "done" + blinkMarker}})
-	tbl.SetCursor(0) // row 0 selected; row 1 (the blinking one) is not
-
-	got := colorizeRows(tbl.View(), tbl.Columns(), 1, -1)
-
-	want := stateStyle("done").Reverse(true).Render("done" + blinkMarker)
-	if !strings.Contains(got, want) {
-		t.Fatalf("got %q, want it to contain the reverse-video blink %q", got, want)
-	}
-}
-
-func TestColorizeRowsHighlightsTheWholeCursorTaggedRow(t *testing.T) {
-	withForcedColor(t)
-	cols := []table.Column{
-		{Title: "State", Width: 9},
-		{Title: "Since", Width: 6},
-	}
-	tbl := table.New(table.WithColumns(cols), table.WithHeight(3))
-	styles := table.DefaultStyles()
-	styles.Selected = lipgloss.NewStyle()
-	tbl.SetStyles(styles)
-	tbl.SetRows([]table.Row{
-		{"idle", "3d"},
-		{"working", cursorSentinel + "12s"},
+	m := New(time.Second, nil)
+	m.width, m.height = 150, 35
+	m.applyEntries([]registry.RegistryEntry{
+		messagedEntry(1, ancestry.Ghostty, "error", "rate limit exceeded"),
+		entry(2, ancestry.Ghostty, "working"),
 	})
+	lines := strings.Split(m.View(), "\n")
+	rowAt, msgAt := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, "error") && !strings.Contains(line, "rate limit") {
+			rowAt = i
+		}
+		if strings.Contains(line, "rate limit exceeded") {
+			msgAt = i
+		}
+	}
+	if rowAt < 0 || msgAt != rowAt+1 {
+		t.Fatalf("message line must directly follow its row (row %d, message %d):\n%s", rowAt, msgAt, m.View())
+	}
+	if !strings.Contains(lines[msgAt], strings.TrimSpace(messageIndent)) {
+		t.Fatalf("message line %q lacks the indent glyph", lines[msgAt])
+	}
+	if want := messageStyle("error").Render("rate limit exceeded"); !strings.Contains(lines[msgAt], want) {
+		t.Fatalf("message line %q lacks the state tint %q", lines[msgAt], want)
+	}
+}
 
-	got := colorizeRows(tbl.View(), tbl.Columns(), 0, 1)
-	lines := strings.Split(got, "\n")
+func TestTableViewHighlightsCursorRowAndItsMessageLine(t *testing.T) {
+	withForcedColor(t)
+	m := New(time.Second, nil)
+	m.width, m.height = 150, 35
+	m.applyEntries([]registry.RegistryEntry{
+		entry(1, ancestry.Ghostty, "working"),
+		messagedEntry(2, ancestry.Ghostty, "blocked", "Allow Bash: go test ./...?"),
+	})
+	// blocked sorts first; move the cursor onto it.
+	m.table.SetCursor(0)
+	m.refreshCursorTag()
 
 	open, closeSeq := loam.StyleSequences(rowHighlightStyle)
 	if open == "" {
 		t.Fatal("StyleSequences returned no escape codes; withForcedColor isn't taking effect")
 	}
-	if strings.Contains(lines[1], open) {
-		t.Fatalf("got the row highlight on the non-tagged row %q, want it left alone", lines[1])
+	var rowLine, msgLine string
+	for _, line := range strings.Split(m.View(), "\n") {
+		if strings.Contains(line, "blocked") && !strings.Contains(line, "Allow Bash") {
+			rowLine = line
+		}
+		if strings.Contains(line, "Allow Bash") {
+			msgLine = line
+		}
 	}
-	if !strings.HasPrefix(lines[2], open) || !strings.HasSuffix(lines[2], closeSeq) {
-		t.Fatalf("got tagged row %q, want it wrapped start-to-end in the highlight's open/close sequences", lines[2])
+	for name, line := range map[string]string{"row": rowLine, "message": msgLine} {
+		if line == "" {
+			t.Fatalf("%s line not found in:\n%s", name, m.View())
+		}
+		if !strings.HasPrefix(line, open) || !strings.HasSuffix(line, closeSeq) {
+			t.Fatalf("%s line %q must be wrapped start-to-end in the highlight's open/close sequences", name, line)
+		}
 	}
-	if strings.Contains(got, cursorSentinel) {
-		t.Fatalf("got %q, want cursorSentinel stripped out of the final output entirely", got)
+	if strings.Contains(m.View(), cursorSentinel) {
+		t.Fatal("cursorSentinel leaked into the final output")
 	}
-	if want := stateStyle("working").Render("working"); !strings.Contains(lines[2], want) {
-		t.Fatalf("got tagged row %q, want it to still contain the styled word %q", lines[2], want)
+}
+
+func TestTableViewKeepsMessagesOnTheirRowsWhenScrolled(t *testing.T) {
+	m := New(time.Second, nil)
+	m.width, m.height = 150, 12 // small window: not all rows fit
+	var entries []registry.RegistryEntry
+	for i := 0; i < 10; i++ {
+		entries = append(entries, entry(i+1, ancestry.Ghostty, "working"))
+	}
+	// One message deep in the list: its line must stay glued to its row
+	// even when the window starts above row 0.
+	entries[7].Message = "scroll-target-session"
+	m.applyEntries(entries)
+	m.table.SetCursor(9)
+	m.refreshCursorTag()
+
+	lines := strings.Split(m.View(), "\n")
+	rowAt, msgAt := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, "8") && strings.Contains(line, "working") {
+			rowAt = i // the pid-8 row (entry index 7)
+		}
+		if strings.Contains(line, "scroll-target-session") {
+			msgAt = i
+		}
+	}
+	if msgAt < 0 {
+		t.Fatalf("scrolled-off message should be visible with its row:\n%s", m.View())
+	}
+	if rowAt < 0 || msgAt != rowAt+1 {
+		t.Fatalf("message must directly follow its row when scrolled (row %d, message %d):\n%s", rowAt, msgAt, m.View())
 	}
 }

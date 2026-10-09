@@ -360,6 +360,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if widthChanged {
 			m.resizer.Cancel()
 			m.resizeColumns()
+			// Location cells are pre-truncated to the column's current
+			// width (see locationCellText), so a width change must rebuild
+			// the rows now, not at the next poll.
+			m.refreshCursorTag()
 		}
 		m.resizeTableHeight()
 		return m, nil
@@ -379,9 +383,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if changed {
 			m.preferences.Capture(widths, m.columnPolicies(), m.resizer.DragColumn())
 			m.table.SetColumns(trellis.Apply(cols, widths))
+			// Keep the Location cells' truncation in step with the drag
+			// (see locationCellText): the user widening Location wants to
+			// watch more of the path tail appear, live.
+			m.refreshCursorTag()
 		}
 		if wasDragging && !m.resizer.Dragging() {
 			m.resizeColumns()
+			m.refreshCursorTag()
 		}
 		return m, nil
 
@@ -741,15 +750,20 @@ func summarizeKillResults(results []kill.Result, sig syscall.Signal) (string, bo
 // the one prompt template both dashboards share: "<Verb> <target>?
 // <consequence sentence>. [y/N]", with a plain verb (Terminate/Kill, see
 // kill.PromptVerb) rather than the raw signal name. A single target names
-// kind, pid, and location (the things that disambiguate one pi session
-// from the four others on screen), plus a consequence sentence when the
-// session is mid-turn; a bulk prompt just names the verb and the count.
+// kind, pid, session name (when the row carries one — the best
+// identifier there is, see sessionName), and location, plus a
+// consequence sentence when the session is mid-turn; a bulk prompt just
+// names the verb and the count.
 func (m Model) killPromptText() string {
 	p := m.pendingKill.Payload
 	verb := kill.PromptVerb(p.sig)
 	if len(p.entries) == 1 {
 		e := p.entries[0]
-		prompt := fmt.Sprintf("%s %s (pid %d, %s)?", verb, e.Kind, e.Pid, location(e, m.home))
+		target := fmt.Sprintf("%s (pid %d", e.Kind, e.Pid)
+		if name := sessionName(e, m.done); name != "" {
+			target += ", " + name
+		}
+		prompt := fmt.Sprintf("%s %s, %s)?", verb, target, location(e, m.home))
 		if displayState(e, m.done) == "working" {
 			prompt += " Currently working."
 		}
@@ -839,8 +853,27 @@ func (m *Model) resetRows(previousKey string) {
 		cursor = clampInt(cursor, 0, len(displayed)-1)
 	}
 
-	m.table.SetRows(buildRows(displayed, cursor, m.home, time.Now(), m.done, m.filterQuery))
+	m.table.SetRows(buildRows(displayed, cursor, m.home, m.locationWidth(), time.Now(), m.done, m.filterQuery))
 	m.table.SetCursor(cursor)
+	// A reordered entry can land outside the scrolled window (see
+	// ensureCursorVisible); repair before the height fit reads the window.
+	m.ensureCursorVisible()
+	// Measure against the fresh rows and restored cursor (see
+	// resizeTableHeight): the set on screen when the height was last fit
+	// is not necessarily this one.
+	m.resizeTableHeight()
+}
+
+// locationWidth is the Location column's current content width, handed to
+// buildRows so locationCellText can pre-truncate paths to it. 0 when the
+// table isn't built with canopy's column set yet (never in practice;
+// buildRows treats it as "no truncation").
+func (m Model) locationWidth() int {
+	cols := m.table.Columns()
+	if colLocation >= len(cols) {
+		return 0
+	}
+	return cols[colLocation].Width
 }
 
 // Compact floors keep usual values readable. Model can yield its normal
@@ -911,6 +944,23 @@ func (m *Model) settleDrag() {
 	}
 }
 
+// resizeTableHeight fits the table into the terminal height left over by
+// the header block and footer, handing back one row per visible message
+// detail line (see message.go): an injected line is a real terminal row,
+// so without this the body would overrun the footer the moment attention
+// rows (which are exactly the rows with messages) fill the window.
+//
+// The catch-22: how many detail lines are visible depends on the table's
+// height, and the right height depends on the visible detail lines.
+// Solving it optimistically and damping down: start from the full budget,
+// measure the REAL count in the live window each round, and shave the
+// overflow by half (never the whole overflow — the count shrinks as the
+// window does, so a full cut overshoots the fixed point and oscillates).
+// The floor of 2 is unconditionally safe: base is clamped to >= 3, and
+// header + one row + its one detail line is exactly 3. A final full
+// correction guarantees the invariant even if the cap cuts the damping
+// short (a window sliding onto a message cluster as it shrinks can
+// briefly grow the count).
 func (m *Model) resizeTableHeight() {
 	if m.height <= 0 {
 		return
@@ -919,7 +969,19 @@ func (m *Model) resizeTableHeight() {
 	if m.tooNarrow {
 		headerHeight++
 	}
-	m.table.SetHeight(clampInt(m.height-headerHeight, 3, 1000))
+	base := clampInt(m.height-headerHeight, 3, 1000)
+	h := base
+	for range 6 {
+		m.table.SetHeight(h)
+		m.ensureCursorVisible()
+		over := h + m.visibleMessageLines() - base
+		if over <= 0 {
+			return
+		}
+		h = max(h-max(over/2, 1), 2)
+	}
+	m.table.SetHeight(max(base-m.visibleMessageLines(), 2))
+	m.ensureCursorVisible()
 }
 
 // renderHeader builds the header block (title, plus an optional summary
@@ -1035,17 +1097,14 @@ func (m Model) View() string {
 
 	body := m.helpView()
 	if !m.showHelp {
-		tableView := colorizeRows(m.table.View(), m.table.Columns(), colState, colSince)
-		// Marks each column border on the header row with a visible divider
-		// (see loam.DrawHeaderBorders' own doc) — otherwise the only cue for
-		// where a mouse drag needs to land is bubbles/table's own blank
-		// 2-space inter-cell gap, which doesn't look any different from the
-		// padding inside a cell. Runs after colorizeRows, not before: the
-		// header line is the one line ColorizeRows never touches at all (see
-		// its own doc), so the two passes can run in either order without
-		// interfering with each other; this order just keeps "recolor first,
-		// mark structure second" consistent regardless.
-		body = loam.DrawHeaderBorders(tableView, m.table.Columns(), subtleStyle)
+		// tableView (see message.go) renders the rows with each row's
+		// optional message detail line injected beneath it, the State/Since
+		// recoloring and cursor highlight applied to the data lines, and
+		// the header border marks (see loam.DrawHeaderBorders' own doc —
+		// otherwise the only cue for where a mouse drag needs to land is
+		// bubbles/table's own blank 2-space inter-cell gap, which doesn't
+		// look any different from the padding inside a cell) drawn last.
+		body = m.tableView()
 	}
 	return header + "\n\n" + body + "\n\n" + m.footerView() + "\n"
 }

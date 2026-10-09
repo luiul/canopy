@@ -1,20 +1,21 @@
 // State/Since column coloring and the selected row's whole-line
-// highlight are both handled by github.com/luiul/dashkit/loam, the rendering
+// highlight are built on github.com/luiul/dashkit/loam, the rendering
 // substrate this and understory's own internal/tui/colorize.go share
 // (see loam's package doc for why post-processing an already-rendered
 // bubbles/table view, rather than styling table.Row values directly, is
 // necessary at all). This file only holds what's specific to canopy:
 // which words map to which color, the blink-marker suffix handling, and
-// the row highlight's own look.
+// the row highlight's own look. The per-line pass itself moved to
+// message.go's tableView when rows gained their injected message detail
+// lines (see message.go for why); the detail lines' own tints live
+// there too.
 
 package tui
 
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/luiul/dashkit/loam"
 )
 
 // blinkMarker is appended, as plain text, to a done/error State cell's
@@ -43,6 +44,11 @@ func stateStyle(word string) lipgloss.Style {
 	return lipgloss.NewStyle()
 }
 
+// NOTE: the per-line recolor pass (State/Since word coloring, cursor
+// highlight, sentinel stripping) is tableView in message.go — it gained
+// line-kind awareness (data line vs. injected message detail line) when
+// the detail lines were added.
+
 // rowHighlightStyle marks the entire selected row rather than a leading
 // marker glyph: same rationale, and the same look, as understory's own
 // rowHighlightStyle (see its doc there) — a muted grey background band,
@@ -70,18 +76,4 @@ func recolorState(trimmed string) lipgloss.Style {
 	return style
 }
 
-// colorizeRows recolors the State and Since columns of a table's
-// already rendered view and highlights the whole line of whichever row
-// carries cursorSentinel (see app.go's doc on it), by delegating
-// straight to loam.ColorizeRows. Pass sinceCol < 0 to skip Since
-// coloring (e.g. a table built without that column).
-func colorizeRows(view string, cols []table.Column, stateCol, sinceCol int) string {
-	wordCols := []loam.WordColumn{{Index: stateCol, Style: recolorState}}
-	if sinceCol >= 0 {
-		wordCols = append(wordCols, loam.WordColumn{
-			Index: sinceCol,
-			Style: func(string) lipgloss.Style { return subtleStyle },
-		})
-	}
-	return loam.ColorizeRows(view, cols, wordCols, rowHighlightStyle)
-}
+

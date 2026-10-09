@@ -406,7 +406,7 @@ func TestBuildRowsTagsOnlyTheCursorRowsSinceCell(t *testing.T) {
 		entry(2, ancestry.Ghostty, "working"),
 	}
 
-	rows := buildRows(entries, 1, "", time.Now(), nil, "")
+	rows := buildRows(entries, 1, "", 0, time.Now(), nil, "")
 
 	if strings.Contains(rows[0][colSince], cursorSentinel) {
 		t.Fatalf("got cursorSentinel on non-cursor row 0's Since cell %q, want it absent", rows[0][colSince])
@@ -421,7 +421,7 @@ func TestBuildRowsDisplaysSelectedModelAndUnknownPlaceholder(t *testing.T) {
 	pi.Kind = "pi"
 	pi.ModelName, pi.ModelProvider = "GPT-6 Sol", "ai-model-router"
 	unknown := entry(2, ancestry.Ghostty, "idle")
-	rows := buildRows([]registry.RegistryEntry{pi, unknown}, 0, "", time.Now(), nil, "")
+	rows := buildRows([]registry.RegistryEntry{pi, unknown}, 0, "", 0, time.Now(), nil, "")
 	if got, want := rows[0][colModel], "GPT-6 Sol [ai-model-router]"; got != want {
 		t.Fatalf("Model = %q, want %q", got, want)
 	}
@@ -431,7 +431,7 @@ func TestBuildRowsDisplaysSelectedModelAndUnknownPlaceholder(t *testing.T) {
 	if got, want := len(rows[0]), len(New(time.Second, nil).table.Columns()); got != want {
 		t.Fatalf("row cells = %d, want %d columns", got, want)
 	}
-	placeholder := buildRows(nil, 0, "", time.Now(), nil, "")
+	placeholder := buildRows(nil, 0, "", 0, time.Now(), nil, "")
 	if got, want := len(placeholder[0]), len(rows[0]); got != want {
 		t.Fatalf("placeholder cells = %d, want %d columns", got, want)
 	}

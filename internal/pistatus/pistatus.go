@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -99,6 +100,12 @@ func parse(data []byte, now time.Time) (Status, bool) {
 	if w.State == "" {
 		return Status{}, false
 	}
+	// The TUI renders Message as a single line under its row (see
+	// internal/tui/message.go); a stray newline from a session name or
+	// dialog title would silently become an extra line and desync the
+	// line-to-row mapping there. The extension already takes first lines
+	// for errors; this is belt-and-braces for everything else.
+	w.Message = strings.ReplaceAll(strings.ReplaceAll(w.Message, "\r\n", " "), "\n", " ")
 	// Terminal states never expire: the extension's done/error writes are
 	// one-shot by design (see MaxAge), so staleness is their normal state
 	// of being, not a sign of a dead extension. Process liveness is

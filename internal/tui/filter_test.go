@@ -31,6 +31,20 @@ func typeRunes(m Model, s string) Model {
 	return m
 }
 
+func TestFilterMatchesTheDisplayMessage(t *testing.T) {
+	m := New(999, nil)
+	entries := filterEntries()
+	entries[0].Message = "rate limit exceeded"
+	m.applyEntries(entries)
+
+	updated, _ := m.Update(keyMsg("/"))
+	m = typeRunes(updated.(Model), "rate")
+	rows := m.table.Rows()
+	if len(rows) != 1 || rows[0][colPID] != "1" {
+		t.Fatalf("rows = %v, want only the row whose message matches", rows)
+	}
+}
+
 func TestSlashEntersFilterModeAndTypingFiltersRows(t *testing.T) {
 	m := New(999, nil)
 	m.applyEntries(filterEntries())
