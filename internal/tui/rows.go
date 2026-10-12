@@ -63,9 +63,11 @@ func locationCellText(e registry.RegistryEntry, home string, width int) string {
 // (pi is waiting on you in a dialog, mid-run or not) ranks highest, then
 // error (a turn failed, needs a look) and done (finished, ready to
 // check), then working (busy, nothing for you to do), then idle, then
-// stopped (paused via the p keybind — user-deliberate, so it needs no
-// attention, but it shouldn't scatter to the bottom either), then unknown
-// (no real status: extension missing/stale, or not pi).
+// stopped (suspended externally, e.g. Ctrl+Z — user-deliberate, so it
+// needs no attention, but it shouldn't scatter to the bottom either),
+// then unknown (no real status: extension missing/stale, or not pi),
+// then parked (shelved by the user with p — below everything live, the
+// same shelf position understory gives parked worktrees).
 var statePriority = map[string]int{
 	"blocked": 0,
 	"error":   1,
@@ -74,11 +76,12 @@ var statePriority = map[string]int{
 	"idle":    4,
 	"stopped": 5,
 	"unknown": 6,
+	"parked":  7,
 }
 
 // stateOrder is statePriority's states in display order, used for the
 // header's per-state summary counts too.
-var stateOrder = []string{"blocked", "error", "done", "working", "idle", "stopped", "unknown"}
+var stateOrder = []string{"blocked", "error", "done", "working", "idle", "stopped", "unknown", "parked"}
 
 func statePriorityOf(state string) int {
 	if p, ok := statePriority[state]; ok {
@@ -88,26 +91,67 @@ func statePriorityOf(state string) int {
 }
 
 // displayState is the state actually shown for e: the raw State, with
-// exactly one overlay — a stopped process (SIGSTOP, e.g. via the p
-// keybind) reports the synthetic "stopped", which the raw State can't
-// express at all (pistatus keeps reporting whatever pi last wrote,
-// paused or not). There is deliberately no sticky done/error treatment:
-// the raw signal already moves on the moment the session does anything
-// else (a fresh turn reads working, Escape reads idle), so acting on the
-// session needs no separate canopy-side acknowledgment. Sorting,
-// coloring, the summary line, and the State/Since cells all go through
-// this instead of e.State directly.
+// exactly two overlays. A stopped process (SIGSTOP, e.g. Ctrl+Z in its
+// own terminal) reports the synthetic "stopped", which the raw State
+// can't express at all (pistatus keeps reporting whatever pi last wrote,
+// paused or not). A parked session (see registry.RegistryEntry.Parked)
+// reports "parked" until follow-up lands. stopped wins over parked: a
+// frozen process cannot report anything, so its parked mark's follow-up
+// detection just died — exactly the zombie the bright stopped treatment
+// exists to surface. There is deliberately no sticky done/error
+// treatment: the raw signal already moves on the moment the session does
+// anything else (a fresh turn reads working, Escape reads idle), so
+// acting on the session needs no separate canopy-side acknowledgment.
+// Sorting, coloring, the summary line, and the State/Since cells all go
+// through this instead of e.State directly.
 func displayState(e registry.RegistryEntry) string {
 	if e.Stopped {
 		return "stopped"
 	}
+	if EffectivelyParked(e) {
+		return "parked"
+	}
 	return e.State
+}
+
+// EffectivelyParked reports whether e's parked mark is currently in
+// force: marked AND no follow-up since (the same rule coppice's
+// _effectively_parked enforces for worktrees). A row with no real
+// status has no follow-up signal and stays parked until unparked by
+// hand. The mark file itself is never rewritten here: reactivation is
+// purely read-time, mirroring understory.
+func EffectivelyParked(e registry.RegistryEntry) bool {
+	if e.Parked == nil {
+		return false
+	}
+	return !parkFollowedUp(e)
+}
+
+// parkFollowedUp reports whether real activity landed after e was
+// parked. Two signals, because canopy-status.ts's writes come in two
+// kinds (see its header): a state STRING change always counts (idle →
+// working, working → done, ...), and for done/error — the one-shot
+// settle states the heartbeat never rewrites — a RealStateReportedAt
+// newer than the mark's snapshot means a brand-new settle under the
+// same string (done → working → done with no "working" poll in
+// between, the same case newSettles in bell.go solves with RawAt). For
+// every other state the heartbeat bumps updatedAt every few seconds
+// purely as a liveness signal, so a RawAt comparison alone would wake
+// an idle parked row on its very first heartbeat.
+func parkFollowedUp(e registry.RegistryEntry) bool {
+	if e.Parked == nil || !e.RealState {
+		return false
+	}
+	if e.State != e.Parked.State {
+		return true
+	}
+	return isAttention(e.State) && e.RealStateReportedAt.After(e.Parked.ReportedAt)
 }
 
 // sortEntries orders entries by statePriority, most actionable first, then
 // grouped by surface, then stable by pid. Ranks by displayState, so a
-// paused row sorts as stopped rather than by the state pistatus last
-// reported for it.
+// suspended row sorts as stopped and a shelved one as parked, rather
+// than by the state pistatus last reported for either.
 func sortEntries(entries []registry.RegistryEntry) {
 	sort.SliceStable(entries, func(i, j int) bool {
 		a, b := entries[i], entries[j]
@@ -229,8 +273,13 @@ func stateCellText(e registry.RegistryEntry, now time.Time, blinks map[string]ti
 // sinceCellText is the Since column's plain-text cell value: how long the
 // entry has been in its current state, or "" if that's not known yet (a
 // StateSince hasn't been stamped, e.g. in tests that build entries by
-// hand).
+// hand). For a parked row the "current state" is the park itself, so it
+// counts from the mark's ParkedAt — how long the session has sat on the
+// shelf, the same age understory's parked rows show.
 func sinceCellText(e registry.RegistryEntry, now time.Time) string {
+	if e.Parked != nil && displayState(e) == "parked" {
+		return humanizeSince(now.Sub(e.Parked.ParkedAt))
+	}
 	if e.StateSince.IsZero() {
 		return ""
 	}

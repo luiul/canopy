@@ -35,8 +35,9 @@ var stateStyles = map[string]lipgloss.Style{
 	"done":    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10")),   // finished, ready to check
 	"working": lipgloss.NewStyle().Foreground(lipgloss.Color("11")),              // busy, nothing for you to do yet
 	"idle":    lipgloss.NewStyle().Foreground(lipgloss.Color("240")),             // waiting on a prompt
-	"stopped": lipgloss.NewStyle().Foreground(lipgloss.Color("14")),              // paused via SIGSTOP (the p keybind)
+	"stopped": lipgloss.NewStyle().Foreground(lipgloss.Color("14")),              // suspended externally (Ctrl+Z); canopy never stops a process itself
 	"unknown": lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("238")), // no real status (extension missing/stale, or not pi)
+	"parked":  lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")),   // shelved by the user (p); bright blue inside the grey row, understory's parked convention
 }
 
 func stateStyle(word string) lipgloss.Style {
@@ -63,6 +64,7 @@ var sinceStyles = map[string]lipgloss.Style{
 	"idle":    lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
 	"stopped": lipgloss.NewStyle().Foreground(lipgloss.Color("14")),
 	"unknown": lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("238")),
+	"parked":  lipgloss.NewStyle().Foreground(lipgloss.Color("12")),
 }
 
 func sinceStyle(state string) lipgloss.Style {
@@ -89,16 +91,18 @@ func sinceStyle(state string) lipgloss.Style {
 var rowHighlightStyle = lipgloss.NewStyle().Background(lipgloss.AdaptiveColor{Light: "254", Dark: "237"})
 
 // isQuiet reports whether a state belongs to the quiet tier: idle
-// (waiting on a prompt) and unknown (no real status) never need
-// attention, so their whole data line recedes behind a faint grey-out
-// (see dimQuietRow) and the rows that do need you (blocked, error,
-// done, working) pop against the grey — the same two-tier split
-// understory gets from greying out its parked rows. stopped is
-// deliberately NOT quiet: pausing is user-deliberate but easy to
-// forget, and a forgotten stopped session is a zombie, so the row keeps
-// its full-brightness cyan.
+// (waiting on a prompt), unknown (no real status), and parked (shelved
+// by the user) never need attention, so their whole data line recedes
+// behind a faint grey-out (see dimQuietRow) and the rows that do need
+// you (blocked, error, done, working) pop against the grey — the same
+// two-tier split understory gets from greying out its parked rows.
+// stopped is deliberately NOT quiet: an externally suspended session is
+// easy to forget, and a forgotten stopped session is a zombie, so the
+// row keeps its full-brightness cyan. Parked IS quiet for the mirror
+// reason: the user shelved it on purpose and the mark's follow-up
+// detection will bring it back bright the moment anything moves.
 func isQuiet(state string) bool {
-	return state == "idle" || state == "unknown"
+	return state == "idle" || state == "unknown" || state == "parked"
 }
 
 // quietRowStyle is a quiet row's grey-out: the whole line faint, the

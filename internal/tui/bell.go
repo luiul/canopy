@@ -63,6 +63,11 @@ func newSettles(previous, fresh []registry.RegistryEntry) []string {
 // one per poll for as long as the dialog stays open). The caller adds the
 // returned keys to its rung set and prunes keys whose fresh State has
 // left blocked, so a later, separate dialog rings again.
+//
+// An effectively parked row never rings: parking a blocked session is
+// the deliberate "I'll answer that dialog later" gesture, so its bell
+// stays shelved with it — until the dialog's state actually moves
+// (which ends the park, see EffectivelyParked) or the user unparks.
 func newlyBlocked(previous, fresh []registry.RegistryEntry, rung map[string]bool) []string {
 	prevByKey := make(map[string]registry.RegistryEntry, len(previous))
 	for _, p := range previous {
@@ -70,7 +75,7 @@ func newlyBlocked(previous, fresh []registry.RegistryEntry, rung map[string]bool
 	}
 	var keys []string
 	for _, f := range fresh {
-		if f.State != "blocked" || rung[f.Key()] {
+		if f.State != "blocked" || rung[f.Key()] || EffectivelyParked(f) {
 			continue
 		}
 		if was, ok := prevByKey[f.Key()]; ok && was.State == "blocked" {

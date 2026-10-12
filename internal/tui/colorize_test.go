@@ -62,7 +62,7 @@ func TestSinceStyleSharesStateHueWithoutBold(t *testing.T) {
 }
 
 func TestIsQuietPinsTheQuietTier(t *testing.T) {
-	for _, s := range []string{"idle", "unknown"} {
+	for _, s := range []string{"idle", "unknown", "parked"} {
 		if !isQuiet(s) {
 			t.Fatalf("%s must be quiet (it never needs attention)", s)
 		}

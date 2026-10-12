@@ -351,31 +351,23 @@ func TestDWithNoDoneRowsJustNotifies(t *testing.T) {
 	}
 }
 
-func TestPPausesARunningRowAndResumesAStoppedOne(t *testing.T) {
+// The old p binding (pause/resume via SIGSTOP/SIGCONT) is gone: it was
+// verified broken for shell-launched interactive pi sessions (the shell
+// reclaims the tty on SIGSTOP, and SIGCONT cannot hand it back — resume
+// never returned a usable session). p now parks (see parked_test.go);
+// this pin stays so the signal path can never quietly grow back.
+func TestPNeverSignalsTheProcess(t *testing.T) {
 	calls := withKillProcess(t, true)
-	m := New(999, nil)
+	m := New(999, nil).WithParkedDir(t.TempDir())
 	m.applyEntries([]registry.RegistryEntry{entry(7, ancestry.Ghostty, "working")})
 
 	updated, cmd := m.Update(keyMsg("p"))
 	m = updated.(Model)
-	if cmd == nil {
-		t.Fatal("want p to signal immediately, without a confirmation prompt")
+	if cmd != nil {
+		cmd()
 	}
-	cmd()
-	if len(*calls) != 1 || (*calls)[0].sig != syscall.SIGSTOP {
-		t.Fatalf("got calls %+v, want one SIGSTOP", *calls)
-	}
-
-	// The same row, now stopped (as the next poll would report it): p
-	// resumes instead.
-	e := entry(7, ancestry.Ghostty, "idle")
-	e.Stopped = true
-	m.applyEntries([]registry.RegistryEntry{e})
-	updated, cmd = m.Update(keyMsg("p"))
-	m = updated.(Model)
-	cmd()
-	if len(*calls) != 2 || (*calls)[1].sig != syscall.SIGCONT {
-		t.Fatalf("got calls %+v, want a SIGCONT for the stopped row", *calls)
+	if len(*calls) != 0 {
+		t.Fatalf("got calls %+v, want none: parking changes no process", *calls)
 	}
 }
 
@@ -519,7 +511,7 @@ func TestDisplayStateReportsStoppedAsItsOwnSyntheticState(t *testing.T) {
 	}
 
 	// Stopped outranks whatever pistatus last reported, done included: the
-	// raw file can't express "paused by the user" at all, so the synthetic
+	// raw file can't express "suspended by the user" at all, so the synthetic
 	// word is the more informative reading.
 	done := entry(1, ancestry.Ghostty, "done")
 	done.Stopped = true

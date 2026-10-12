@@ -28,7 +28,7 @@ func TestQuestionMarkOpensAHelpOverlayListingEveryKeybinding(t *testing.T) {
 		"keybindings",
 		"↑/↓, k/j", "pgup/pgdn, b/f", "u/d", "g/G, home/end",
 		"enter", "x / X", "p", "D", "r", "?", "q, ctrl+c", "mouse",
-		"SIGTERM", "SIGKILL", "SIGSTOP", "SIGCONT",
+		"SIGTERM", "SIGKILL", "park/unpark", "shelve it dimmed",
 		"press any key to close",
 	} {
 		if !strings.Contains(view, want) {

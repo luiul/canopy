@@ -34,11 +34,11 @@ const messageIndent = "  ↳ "
 // messageStyles tints a detail line by the state it belongs to: the same
 // hues as stateStyles but never bold — bold stays reserved for the
 // done/error State words themselves, and a whole line of bold error text
-// reads poorly. idle/unknown detail lines (the session's first task, not
-// an actionable payload) wear subtleStyle's grey, so they recede along
-// with their faint data line (see dimQuietRow) instead of reading white
-// under a greyed-out row. stopped is the one state left plain: its row
-// stays bright (see isQuiet), so its task line does too.
+// reads poorly. idle/unknown/parked detail lines (the session's first
+// task, not an actionable payload) wear subtleStyle's grey, so they
+// recede along with their faint data line (see dimQuietRow) instead of
+// reading white under a greyed-out row. stopped is the one state left
+// plain: its row stays bright (see isQuiet), so its task line does too.
 var messageStyles = map[string]lipgloss.Style{
 	"blocked": lipgloss.NewStyle().Foreground(lipgloss.Color("208")),
 	"error":   lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
@@ -46,6 +46,7 @@ var messageStyles = map[string]lipgloss.Style{
 	"working": lipgloss.NewStyle().Foreground(lipgloss.Color("11")),
 	"idle":    subtleStyle,
 	"unknown": subtleStyle,
+	"parked":  subtleStyle,
 }
 
 func messageStyle(state string) lipgloss.Style {
@@ -80,9 +81,11 @@ func sessionName(e registry.RegistryEntry) string {
 //	(message) — both are the actionable content, shown alone.
 //	working → "name · activity"; done → "name · outcome" — either part
 //	droppable when absent.
-//	everything else (idle, stopped, unknown) → the task: the first
-//	prompt of the session, the identity an unnamed session otherwise
-//	lacks.
+//	everything else (idle, stopped, unknown, parked) → the task: the
+//	first prompt of the session, the identity an unnamed session
+//	otherwise lacks. For a parked row that's deliberate: the task names
+//	what's sitting on the shelf, not the turn outcome you already read
+//	when you shelved it.
 //
 // Any state whose composed line comes out empty falls back to the task,
 // so an unnamed working row before its first tool call still says what

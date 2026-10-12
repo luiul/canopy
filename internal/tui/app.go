@@ -23,6 +23,7 @@ import (
 
 	"github.com/luiul/canopy/internal/jump"
 	"github.com/luiul/canopy/internal/kill"
+	"github.com/luiul/canopy/internal/parked"
 	"github.com/luiul/canopy/internal/registry"
 	"github.com/luiul/dashkit/confirm"
 	"github.com/luiul/dashkit/loam"
@@ -32,7 +33,7 @@ import (
 
 // killProcess is a package-level seam onto kill.Process — the same seam
 // pattern registry.go uses for its scan functions — swapped out in tests
-// so the keybind flows (x/X/p/D) can be exercised without signaling real
+// so the keybind flows (x/X/D) can be exercised without signaling real
 // processes.
 var killProcess = kill.Process
 
@@ -190,6 +191,16 @@ type Model struct {
 	// happen regardless of this flag.
 	bellEnabled bool
 
+	// parkedDir is where parked session marks live (see internal/parked):
+	// re-read every poll so marks sync across canopy instances, and swept
+	// against the live pid set so a dead session's mark never outlives
+	// it. p toggles the selected row's mark. Empty means the parked store
+	// is off: applyParkedMarks no-ops and p reports it. Deliberately NOT
+	// defaulted in New — a test that forgot it was touching the real
+	// parked.Dir would let applyParkedMarks' sweep delete real marks;
+	// Run opts in via WithParkedDir instead (the WithBell pattern).
+	parkedDir string
+
 	// pendingKill is the armed kill confirmation prompt's state machine
 	// (see github.com/luiul/dashkit/confirm): the prompt's payload (a
 	// killPrompt, nil while closed) plus the auto-cancel token
@@ -287,6 +298,15 @@ func New(interval time.Duration, kinds map[string]bool) Model {
 // call in this package's tests).
 func (m Model) WithBell(enabled bool) Model {
 	m.bellEnabled = enabled
+	return m
+}
+
+// WithParkedDir points the parked mark store at dir (parked.Dir() in
+// production, a temp dir in tests). Chainable off New; see WithBell for
+// why this pattern. Off by default so a bare New can never sweep real
+// marks from a test (see Model.parkedDir's doc).
+func (m Model) WithParkedDir(dir string) Model {
+	m.parkedDir = dir
 	return m
 }
 
@@ -508,6 +528,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !ok {
 				return m, nil
 			}
+			// Parked sessions are protected from killing, the same invariant
+			// coppice enforces for parked worktrees ("unpark to remove"):
+			// the mark means "I shelved this on purpose", so a kill aimed
+			// at it is almost certainly aimed at the wrong row. A row whose
+			// follow-up already landed is live again (not EffectivelyParked)
+			// and kills normally.
+			if EffectivelyParked(entry) {
+				return m, m.setNotify("session is parked: unpark first (p)", true)
+			}
 			// The graceful/forceful ladder: x asks the process to terminate
 			// itself (SIGTERM — pi, for example, persists session state on a
 			// clean exit), X forces it (SIGKILL) for when SIGTERM isn't
@@ -523,14 +552,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !ok {
 				return m, nil
 			}
-			// Pause/resume needs no confirmation: unlike killing it is fully
-			// reversible (SIGCONT undoes SIGSTOP), and the row itself shows
-			// the resulting "stopped" state on the very next poll.
-			sig := syscall.SIGSTOP
-			if entry.Stopped {
-				sig = syscall.SIGCONT
+			// Park/unpark needs no confirmation: it changes no process,
+			// only where the row sits and whether it asks for attention,
+			// and the row itself shows the result on this very frame. The
+			// mark is file-backed (see internal/parked), so other canopy
+			// instances pick it up on their next poll. Stamping the
+			// in-memory entries here too flips the row now instead of one
+			// poll later.
+			if m.parkedDir == "" {
+				return m, m.setNotify("parked store is not configured", true)
 			}
-			return m, killCmd([]registry.RegistryEntry{entry}, sig)
+			parkedNow, err := parked.Toggle(m.parkedDir, entry, time.Now())
+			if err != nil {
+				return m, m.setNotify(err.Error(), true)
+			}
+			m.stampParked(entry.Pid, parkedNow, entry)
+			m.resetRows(entry.Key())
+			if parkedNow {
+				return m, m.setNotify(fmt.Sprintf("parked %s (pid %d): shelved until real activity lands", entry.Kind, entry.Pid), false)
+			}
+			return m, m.setNotify(fmt.Sprintf("unparked %s (pid %d)", entry.Kind, entry.Pid), false)
 		case "D":
 			// Bulk form of x for cleanup: SIGTERM every row currently
 			// reading done.
@@ -749,6 +790,16 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 		previousKey = entry.Key()
 	}
 
+	// Stamp the parked marks onto the fresh entries first: the bell
+	// diffing below still works on the raw signals (newSettles compares
+	// report timestamps, untouched by stamping — a parked row's new
+	// settle still rings, which is the whole point of the wake-up), but
+	// newlyBlocked consults displayState so a shelved blocked prompt
+	// stays silent. Re-reading the mark store every poll is what syncs
+	// parked state across canopy instances; sweeping here is what buries
+	// marks whose pid died.
+	m.applyParkedMarks(fresh)
+
 	settled := newSettles(m.entries, fresh)
 	bell := len(settled) > 0
 	// Blocked rings separately, on its own two-poll debounce (see
@@ -784,6 +835,72 @@ func (m *Model) applyEntries(fresh []registry.RegistryEntry) bool {
 	m.resetRows(previousKey)
 	return bell
 }
+
+// stampParked sets or clears the parked mark on the in-memory entry for
+// pid, so a p keypress renders its own result immediately rather than
+// one poll later. Parking snapshots the entry's current lifecycle signal
+// into the mark (what follow-up detection compares against); unparking
+// just drops it. The file written by parked.Toggle stays the source of
+// truth the next poll reloads.
+func (m *Model) stampParked(pid int, parkedNow bool, e registry.RegistryEntry) {
+	for i := range m.entries {
+		if m.entries[i].Pid != pid {
+			continue
+		}
+		if parkedNow {
+			m.entries[i].Parked = &registry.ParkMark{
+				State:      e.State,
+				ParkedAt:   time.Now(),
+				ReportedAt: e.RealStateReportedAt,
+			}
+		} else {
+			m.entries[i].Parked = nil
+		}
+	}
+}
+
+// applyParkedMarks decorates fresh with the current mark store's
+// contents (see applyEntries for why this runs after the bell diffing)
+// and sweeps marks whose pid no longer scans live. The sort that
+// follows then shelves parked rows below the live ones.
+func (m *Model) applyParkedMarks(fresh []registry.RegistryEntry) {
+	if m.parkedDir == "" {
+		return
+	}
+	marks := parked.Load(m.parkedDir)
+	live := make(map[int]bool, len(fresh))
+	now := time.Now()
+	for i := range fresh {
+		live[fresh[i].Pid] = true
+		mark, ok := marks[fresh[i].Pid]
+		if !ok {
+			continue
+		}
+		// A pid the OS recycled since the mark was written would attach
+		// it to a stranger: if THIS process started after the mark's
+		// ParkedAt, the mark belonged to the pid's dead previous owner
+		// (a parked session that exited with no canopy poll in between
+		// to sweep it). Drop the mark instead of shelving a session
+		// nobody parked. Uptime is a whole-second floor (see
+		// registry.RegistryEntry.Uptime), so allow slack: a session
+		// parked within seconds of its own start must not false-positive.
+		// Zero Uptime (no ps sample this poll) skips the check.
+		if start := now.Add(-fresh[i].Uptime); fresh[i].Uptime > 0 && start.After(mark.ParkedAt.Add(recycledPidSlack)) {
+			_ = parked.Remove(m.parkedDir, fresh[i].Pid)
+			continue
+		}
+		mk := mark
+		fresh[i].Parked = &mk
+	}
+	parked.Sweep(m.parkedDir, live)
+}
+
+// recycledPidSlack is the identity-guard tolerance in applyParkedMarks:
+// how far a process's computed start time may overshoot a mark's
+// ParkedAt before the mark counts as belonging to a dead previous owner
+// of the pid. Mirrors the slack kill.Process gives its own pid-reuse
+// guard (see internal/kill), which exists for the same OS behavior.
+const recycledPidSlack = 5 * time.Second
 
 // resetRows rebuilds the table's rows from the current (possibly
 // filtered) displayed set, restoring the cursor to previousKey's row when
@@ -990,9 +1107,9 @@ var helpEntries = []loam.HelpBinding{
 	{Key: "u/d", Desc: "half page up/down (lowercase d; the uppercase D below terminates every done session)"},
 	{Key: "g/G, home/end", Desc: "jump to the top/bottom"},
 	{Key: "enter", Desc: "jump to the session's window"},
-	{Key: "x / X", Desc: "terminate (SIGTERM) / force-kill (SIGKILL) the selected session, with confirmation"},
-	{Key: "p", Desc: "pause (SIGSTOP) / resume (SIGCONT) the selected session"},
-	{Key: "D", Desc: "terminate every done session (SIGTERM), with confirmation"},
+	{Key: "x / X", Desc: "terminate (SIGTERM) / force-kill (SIGKILL) the selected session, with confirmation (parked sessions are protected: unpark first)"},
+	{Key: "p", Desc: "park/unpark the selected session: shelve it dimmed below the live rows; real activity wakes it again"},
+	{Key: "D", Desc: "terminate every done session (SIGTERM), with confirmation (parked sessions are skipped)"},
 	{Key: "r", Desc: "refresh now"},
 	{Key: "/", Desc: "filter the rows (fuzzy); enter still jumps while typing, esc applies the filter and leaves the input"},
 	{Key: "esc", Desc: "clear the applied filter (mid-filter: leave the input, filter stays applied)"},
@@ -1042,7 +1159,7 @@ func (m Model) footerView() string {
 	if m.filterQuery != "" {
 		return subtleStyle.Render(fmt.Sprintf("filter: %s · esc clear · / edit", m.filterQuery))
 	}
-	return subtleStyle.Render("↑/↓ move · enter jump · x kill · / filter · ? help · q quit")
+	return subtleStyle.Render("↑/↓ move · enter jump · x kill · p park · / filter · ? help · q quit")
 }
 
 // View implements tea.Model.
@@ -1073,7 +1190,7 @@ func Run(interval time.Duration, kinds map[string]bool, bellEnabled bool) error 
 	// without it the terminal never sends focus-in events. Terminals that
 	// don't support focus reporting simply never deliver the message, which
 	// degrades to tick-only behavior.
-	p := tea.NewProgram(New(interval, kinds).WithBell(bellEnabled), tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus())
+	p := tea.NewProgram(New(interval, kinds).WithBell(bellEnabled).WithParkedDir(parked.Dir()), tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus())
 	_, err := p.Run()
 	return err
 }

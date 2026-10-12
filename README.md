@@ -67,7 +67,7 @@ working    12s     pi      VS Code   ~/projects/hellofresh/analytics            
 idle       1h20m   pi      Ghostty   ~/projects/personal/harvest                —                                   0%    88M    2d       40211
  ↳ import the harvest CSV exports
 
-↑/↓ move · enter jump · x kill · / filter · ? help · q quit
+↑/↓ move · enter jump · x kill · p park · / filter · ? help · q quit
 ```
 
 (the currently selected row also gets a full-width grey highlight in the
@@ -117,14 +117,16 @@ Model shows the selected name and provider when the companion extension reports 
 
 State is color-coded: orange for `blocked`, bold red for `error`, bold
 green for `done`, yellow for `working`, dim for `idle`/`unknown`, cyan
-for `stopped`. Since shares the row's state hue without bold, so the
+for `stopped`, bold bright blue for `parked`. Since shares the row's
+state hue without bold, so the
 first two columns read as one color block per state and same-state
 neighbors read as one group. Rows that never need attention (`idle`,
-`unknown`) recede: the whole line goes faint except the State word,
+`unknown`, `parked`) recede: the whole line goes faint except the State
+word,
 which keeps its full brightness (the same grey-out understory gives its
 parked rows), so the table splits into an attention tier and a quiet
-tier at a glance. `stopped` stays bright on purpose: a forgotten paused
-session is a zombie. A row with something to say (see "Real pi status"
+tier at a glance. `stopped` stays bright on purpose: a forgotten
+suspended session is a zombie. A row with something to say (see "Real pi status"
 below) shows it on a second line directly under the row, tinted in the
 same hue without bold: the dialog title for `blocked`, the first error
 line for `error`, the current tool call for `working` (`bash: go test
@@ -150,7 +152,8 @@ including the first poll right after canopy starts up, if a session is
 already sitting done at that point (the first blink burst treats "just
 discovered" the same as "just transitioned", too). Sessions are sorted
 most-actionable first: `blocked`, then `error`, `done`, `working`,
-`idle`, `stopped`, and `unknown`.
+`idle`, `stopped`, and `unknown`. `parked` sits below all of them, on
+the shelf (see "Parked sessions" below).
 Pass `--no-color` (or set `NO_COLOR`) to disable the color/blink treatment
 and get plain text, and `--no-bell` to disable just the bell.
 
@@ -163,6 +166,31 @@ in canopy itself — acting on the session *is* the acknowledgment, and
 the display follows it directly. `blocked` needs no treatment either: it
 is transient by definition and clears on its own the moment the dialog
 closes.
+
+### Parked sessions
+
+For a session whose work you have read but which needs no immediate
+decision, `p` parks it. A parked row shelves below every live row, dims
+(the word `parked` stays bright blue inside the grey, understory's
+convention), never rings or blinks, and leaves the header's per-state
+counts, which show `N parked` instead. The mark is one small file per
+session under `~/.pi/agent/canopy-status/parked/`, so it survives
+restarts and syncs across canopy windows, and it is swept away when the
+process exits. `p` again unparks by hand.
+
+Reactivation is read-time, exactly like understory's parked worktrees:
+the moment the session reports real new activity (a fresh turn, a new
+settle), the row turns live again on its own, bell included if the new
+activity is a `done` or `error` settle. Heartbeats and model metadata
+never count as activity. Parking a `blocked` session shelves its ring
+too, until the dialog's state actually moves.
+
+Parked sessions are protected from process control, the same invariant
+coppice enforces for parked worktrees: `x`/`X` refuse with "unpark
+first", and `D` skips them. If a parked process is ever suspended
+externally (Ctrl+Z in its terminal), `stopped` wins over `parked`: a
+frozen session cannot report activity, so its follow-up detection is
+dead and the row stays bright until it is resumed or killed.
 
 ## Configuration
 
@@ -197,17 +225,18 @@ canopy can also act on a session, not just watch it. These act on the
 selected row (or, for `D`, on every done row at once):
 
 - `x` terminates the selected session gracefully (SIGTERM), `X` forces it
-  (SIGKILL). Both ask first: the footer shows the target's kind, pid, and
+  (SIGKILL). A parked session is protected: both refuse until you unpark
+  it. Both ask first: the footer shows the target's kind, pid, and
   location (plus a warning if the session is mid-turn), `y` confirms,
   `n`/`esc`/`enter` cancels, and an unanswered prompt cancels itself
   after 10 seconds. The prompt is yellow for a terminate, red for a
   force-kill.
 - `D` terminates every session currently reading `done` (SIGTERM), with
   the same confirmation, for cleaning up a screen full of finished
-  sessions at once.
-- `p` pauses a session (SIGSTOP); pressed again on the same, now
-  `stopped`, row, it resumes it (SIGCONT). No confirmation here: pausing
-  is fully reversible.
+  sessions at once. Parked sessions are skipped.
+- `p` parks the selected session, or unparks a parked one (see "Parked
+  sessions" above). No confirmation: parking changes no process, only
+  where the row sits and whether it asks for attention.
 
 (`?` lists these in the app itself, along with every other binding.)
 

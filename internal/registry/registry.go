@@ -132,14 +132,48 @@ type RegistryEntry struct {
 	RealStateReportedAt time.Time
 
 	// Stopped is true when the process itself is currently stopped (SIGSTOP,
-	// ps state "T" — see scan.ProcessInfo.Stopped), e.g. paused via canopy's
-	// own p keybind. The TUI overlays this as a synthetic "stopped" display
-	// state; the raw State field keeps whatever pistatus last said (or
-	// "unknown"), exactly like the done overlay keeps display and raw apart
-	// (see internal/tui's displayState).
+	// ps state "T" — see scan.ProcessInfo.Stopped), e.g. suspended from its
+	// own terminal with Ctrl+Z. canopy never stops a process itself: this
+	// is detection only, no write path. The TUI overlays this as a
+	// synthetic "stopped" display state; the raw State field keeps whatever
+	// pistatus last said (or "unknown"), exactly like the done overlay
+	// keeps display and raw apart (see internal/tui's displayState).
 	Stopped bool
 
+	// Parked is the canopy-side parked mark for this session (see
+	// internal/parked): the user shelved this row on purpose, so the TUI
+	// renders it dimmed below the live rows until real follow-up activity
+	// lands. Discovery never sets this — PollOnce knows nothing about
+	// parked marks; the TUI stamps it from the mark store after every
+	// poll. nil means not parked.
+	Parked *ParkMark
+
 	Misses int
+}
+
+// ParkMark is a parked session's mark: when it was shelved, and the
+// lifecycle signal (State + RealStateReportedAt) at that moment, which
+// is what follow-up detection compares against — a State change, or a
+// ReportedAt-newer done/error write (the only states canopy-status.ts's
+// heartbeat never rewrites), means the session moved on since it was
+// parked, and the row reads live again (the same read-time rule
+// understory uses for parked worktrees: head commit newer than
+// parked-at). Persisted one JSON file per pid under internal/parked's
+// Dir.
+type ParkMark struct {
+	// State is the raw State at park time: follow-up detection's first
+	// leg (any change of this string counts).
+	State string `json:"state"`
+	// ParkedAt is when the user parked the session; the State column's
+	// Since cell counts from here while parked.
+	ParkedAt time.Time `json:"parkedAt"`
+	// ReportedAt is RealStateReportedAt at park time: follow-up
+	// detection's second leg, meaningful only for done/error — their
+	// one-shot writes freeze updatedAt at the settle, so a newer one is
+	// always a genuinely new settle. Every other state's heartbeat bumps
+	// updatedAt as pure liveness, which is why it can never be compared
+	// on its own (see internal/tui's parkFollowedUp).
+	ReportedAt time.Time `json:"reportedAt"`
 }
 
 // Key identifies an entry across polls. pids get reused by the OS; scoping
