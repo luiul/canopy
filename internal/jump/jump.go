@@ -1,13 +1,13 @@
 // Package jump brings whichever window is actually running a given agent
 // process to the front. It maps a row's Surface (VS Code / Ghostty /
-// unknown) onto github.com/luiul/dashkit/mycelium's shared open-or-focus logic —
-// switch to an already-open window when one matches the row's working
-// directory, or open a brand-new one when none does — rather than
-// re-implementing that registry-backed detection here: understory
-// needs the exact same behavior for a worktree row with no agent
-// connection of its own, so it lives in mycelium once instead of being
-// duplicated in both trees. Nothing to jump to for Surface Unknown,
-// canopy doesn't know what's hosting it.
+// unknown) onto github.com/luiul/dashkit/mycelium's shared open-or-focus
+// logic — focus an already-open window when one's title names the row's
+// cwd (or its git work-tree root, see mycelium's match stages), or open
+// a brand-new one when none does — rather than re-implementing that
+// window detection here: understory needs the exact same behavior for a
+// worktree row with no agent connection of its own, so it lives in
+// mycelium once instead of being duplicated in both trees. Nothing to
+// jump to for Surface Unknown, canopy doesn't know what's hosting it.
 package jump
 
 import (
@@ -50,7 +50,13 @@ func To(entry registry.RegistryEntry) Result {
 		if entry.Cwd == "" {
 			return Result{false, "no known working directory to focus"}
 		}
-		return fromMycelium(openGhostty(entry.Cwd))
+		// The agent's tty is the exact surface identity: mycelium
+		// prefers the Ghostty window whose title carries it (the
+		// session-title pi extension writes it there), so two agents
+		// side by side in the same repo on the same branch each jump
+		// to their own window. Without a match on the tty it falls
+		// back to the path alone.
+		return fromMycelium(openGhostty(entry.Tty, entry.Cwd))
 	default:
 		return Result{false, "don't know how to jump to this process's window yet"}
 	}

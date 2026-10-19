@@ -285,10 +285,11 @@ One Go package per concern:
   (VS Code / Ghostty) is hosting it.
 - `internal/jump`: maps a row's Surface onto
   [`github.com/luiul/dashkit/mycelium`](https://github.com/luiul/dashkit/tree/main/mycelium)'s
-  shared open-or-focus logic (`code --reuse-window`/`-n` for VS Code, Ghostty
-  AppleScript for a bare tab), switching to an already-open window when one
-  matches the row's working directory, or opening a brand-new one when none
-  does. The window detection and switch-or-create behavior itself
+  shared open-or-focus logic (matching window titles for both editors,
+  AXRaise to focus, a new window when nothing matches), switching to an
+  already-open window when one's title names the row's cwd or its git
+  work-tree root, or opening a brand-new one when none does. The window
+  detection and switch-or-create behavior itself
   lives in mycelium, not here, since understory needs the exact
   same thing for a worktree row with no agent connection of its own.
 - `internal/kill`: delivers signals (SIGTERM/SIGKILL/SIGSTOP/SIGCONT) to a
@@ -462,10 +463,17 @@ the same as everything else canopy reads.
   screen (a failed scan is no evidence anything exited) and shows a
   warning banner in the header, instead of silently looking identical to
   "no sessions."
-- Ghostty jump-to matches by working directory, not tty/pid; ambiguous if
-  two tabs share a cwd. If no open tab matches anymore (e.g. it was closed),
-  Enter opens a brand-new Ghostty window at that cwd instead, same
-  reuse-or-create behavior as VS Code's.
+- Ghostty jump-to matches by window title (the dotfiles zsh title hook
+  renders the work-tree root plus branch, and the session-title pi
+  extension keeps that grammar while an agent runs), not by tty/pid:
+  Ghostty's AppleScript `tty`/`pid` properties don't work as of 1.3.1,
+  and the old working-directory match misfocused or opened duplicates.
+  Ambiguous if two windows share a work-tree root and branch. If no open
+  window matches anymore (e.g. it was closed), Enter opens a brand-new
+  Ghostty window at that path instead, same open-or-create behavior as
+  VS Code's. One gap: a background tab's title isn't listed by System
+  Events, so an agent in another window's background tab is invisible to
+  the match.
 - VS Code jump-to matches by exact folder path against the window
   titles (the dotfiles `window.title` setting renders each title as the
   opened folder's full path), so same-named worktrees are no longer

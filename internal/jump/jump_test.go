@@ -22,7 +22,7 @@ func entry(surface ancestry.Surface, mutate func(*registry.RegistryEntry)) regis
 // covers the window-detection logic these fakes stand in for; these tests
 // only need to verify that To() dispatches to the right one, with the
 // right argument, and maps its Result straight through.
-func withFakes(t *testing.T, vscode func(path string) mycelium.Result, ghostty func(path string) mycelium.Result) {
+func withFakes(t *testing.T, vscode func(path string) mycelium.Result, ghostty func(tty, path string) mycelium.Result) {
 	t.Helper()
 	origVSCode, origGhostty := openVSCode, openGhostty
 	if vscode != nil {
@@ -111,11 +111,11 @@ func TestJumpToVSCodeWithoutACwdFailsClearlyWithoutCallingMycelium(t *testing.T)
 	}
 }
 
-func TestJumpToGhosttyDelegatesToMyceliumWithTheEntrysCwd(t *testing.T) {
-	var gotPath string
-	withFakes(t, nil, func(path string) mycelium.Result {
-		gotPath = path
-		return mycelium.Result{OK: true, Message: "Focused in Ghostty."}
+func TestJumpToGhosttyDelegatesToMyceliumWithTheEntrysTtyAndCwd(t *testing.T) {
+	var gotTty, gotPath string
+	withFakes(t, nil, func(tty, path string) mycelium.Result {
+		gotTty, gotPath = tty, path
+		return mycelium.Result{OK: true, Message: "Focused Ghostty window."}
 	})
 
 	result := To(entry(ancestry.Ghostty, nil))
@@ -126,11 +126,14 @@ func TestJumpToGhosttyDelegatesToMyceliumWithTheEntrysCwd(t *testing.T) {
 	if gotPath != "/Users/x/dotfiles" {
 		t.Fatalf("got path %q, want /Users/x/dotfiles", gotPath)
 	}
+	if gotTty != "s017" {
+		t.Fatalf("got tty %q, want the entry's tty s017", gotTty)
+	}
 }
 
 func TestJumpToGhosttyWithoutACwdFailsClearlyWithoutCallingMycelium(t *testing.T) {
 	called := false
-	withFakes(t, nil, func(path string) mycelium.Result {
+	withFakes(t, nil, func(tty, path string) mycelium.Result {
 		called = true
 		return mycelium.Result{OK: true}
 	})
@@ -150,7 +153,7 @@ func TestJumpToUnknownSurfaceSaysSoWithoutCallingMycelium(t *testing.T) {
 	withFakes(t, func(path string) mycelium.Result {
 		vscodeCalled = true
 		return mycelium.Result{OK: true}
-	}, func(path string) mycelium.Result {
+	}, func(tty, path string) mycelium.Result {
 		ghosttyCalled = true
 		return mycelium.Result{OK: true}
 	})
