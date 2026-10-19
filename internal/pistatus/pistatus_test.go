@@ -21,7 +21,7 @@ func TestReadDirReturnsAFreshStatus(t *testing.T) {
 	updatedAt := now.Add(-2 * time.Second)
 	writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"working","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
 
-	got, ok := ReadDir(dir, 123, now)
+	got, ok := ReadDir(dir, 123, time.Time{}, now)
 	if !ok {
 		t.Fatalf("got ok=false, want true")
 	}
@@ -37,14 +37,14 @@ func TestReadDirRejectsAStaleStatus(t *testing.T) {
 	updatedAt := now.Add(-(MaxAge + time.Second)) // just past MaxAge
 	writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"working","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
 
-	if _, ok := ReadDir(dir, 123, now); ok {
+	if _, ok := ReadDir(dir, 123, time.Time{}, now); ok {
 		t.Fatalf("got ok=true for a status past MaxAge, want false")
 	}
 }
 
 func TestReadDirReturnsFalseForAMissingFile(t *testing.T) {
 	dir := t.TempDir()
-	if _, ok := ReadDir(dir, 999, time.Now()); ok {
+	if _, ok := ReadDir(dir, 999, time.Time{}, time.Now()); ok {
 		t.Fatalf("got ok=true for a pid with no status file, want false")
 	}
 }
@@ -52,7 +52,7 @@ func TestReadDirReturnsFalseForAMissingFile(t *testing.T) {
 func TestReadDirReturnsFalseForMalformedJSON(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, 123, `not json`)
-	if _, ok := ReadDir(dir, 123, time.Now()); ok {
+	if _, ok := ReadDir(dir, 123, time.Time{}, time.Now()); ok {
 		t.Fatalf("got ok=true for malformed JSON, want false")
 	}
 }
@@ -61,13 +61,13 @@ func TestReadDirReturnsFalseForAnEmptyState(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
 	writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"","updatedAt":"`+now.Format(time.RFC3339Nano)+`"}`)
-	if _, ok := ReadDir(dir, 123, now); ok {
+	if _, ok := ReadDir(dir, 123, time.Time{}, now); ok {
 		t.Fatalf("got ok=true for an empty state field, want false")
 	}
 }
 
 func TestReadDirReturnsFalseForAnEmptyDir(t *testing.T) {
-	if _, ok := ReadDir("", 123, time.Now()); ok {
+	if _, ok := ReadDir("", 123, time.Time{}, time.Now()); ok {
 		t.Fatalf("got ok=true for an empty dir, want false")
 	}
 }
@@ -78,7 +78,7 @@ func TestReadDirReturnsTheMessage(t *testing.T) {
 	updatedAt := now.Add(-2 * time.Second)
 	writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"blocked","message":"Allow this?","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
 
-	got, ok := ReadDir(dir, 123, now)
+	got, ok := ReadDir(dir, 123, time.Time{}, now)
 	if !ok {
 		t.Fatalf("got ok=false, want true")
 	}
@@ -93,7 +93,7 @@ func TestReadDirReturnsDetailAndTaskSingleLined(t *testing.T) {
 	updatedAt := now.Add(-2 * time.Second)
 	writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"done","message":"sprint-planning","detail":"TLDR: done\nsecond line","task":"plan the thing","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
 
-	got, ok := ReadDir(dir, 123, now)
+	got, ok := ReadDir(dir, 123, time.Time{}, now)
 	if !ok {
 		t.Fatalf("got ok=false, want true")
 	}
@@ -111,7 +111,7 @@ func TestReadDirReadsEveryStateTheExtensionWrites(t *testing.T) {
 	for _, state := range []string{"working", "blocked", "done", "error", "idle"} {
 		dir := t.TempDir()
 		writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"`+state+`","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
-		got, ok := ReadDir(dir, 123, now)
+		got, ok := ReadDir(dir, 123, time.Time{}, now)
 		if !ok || got.State != state {
 			t.Errorf("state %q: got %+v, ok=%v", state, got, ok)
 		}
@@ -128,7 +128,7 @@ func TestReadDirNeverRejectsAStaleTerminalState(t *testing.T) {
 	for _, state := range []string{"done", "error"} {
 		dir := t.TempDir()
 		writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"`+state+`","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
-		got, ok := ReadDir(dir, 123, now)
+		got, ok := ReadDir(dir, 123, time.Time{}, now)
 		if !ok || got.State != state {
 			t.Errorf("state %q: got %+v, ok=%v, want the terminal write to never expire", state, got, ok)
 		}
@@ -144,7 +144,66 @@ func TestReadDirRejectsAStaleBlockedStatus(t *testing.T) {
 	updatedAt := now.Add(-(MaxAge + time.Second))
 	writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"blocked","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
 
-	if _, ok := ReadDir(dir, 123, now); ok {
+	if _, ok := ReadDir(dir, 123, time.Time{}, now); ok {
 		t.Fatalf("got ok=true for a blocked status past MaxAge, want false")
+	}
+}
+
+func TestReadDirRejectsAStatusPredatingTheProcess(t *testing.T) {
+	// A file written before the pid's process even started is a leftover
+	// from a recycled pid, not this process's status. done is the state
+	// this must catch: MaxAge exempts it, so without the predating rule a
+	// recycled pid inherits the previous session's done forever.
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	procStartedAt := now.Add(-time.Hour)
+	updatedAt := now.Add(-2 * time.Hour) // predates the process itself
+	for _, state := range []string{"done", "error", "working", "idle"} {
+		dir := t.TempDir()
+		writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"`+state+`","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
+		if _, ok := ReadDir(dir, 123, procStartedAt, now); ok {
+			t.Errorf("state %q: got ok=true for a write predating the process, want false", state)
+		}
+	}
+}
+
+func TestReadDirKeepsATerminalWriteInsideTheProcessLifetime(t *testing.T) {
+	// The predating rule must not break a long-settled row: a process six
+	// hours old that settled an hour ago keeps its done, because the write
+	// is younger than the process (and done is exempt from MaxAge anyway).
+	dir := t.TempDir()
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	procStartedAt := now.Add(-6 * time.Hour)
+	updatedAt := now.Add(-time.Hour)
+	writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"done","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
+
+	if _, ok := ReadDir(dir, 123, procStartedAt, now); !ok {
+		t.Fatalf("got ok=false for a done inside the process lifetime, want true")
+	}
+}
+
+func TestReadDirGraceAbsorbsEtimeRounding(t *testing.T) {
+	// ps etime is second-granular, so a genuine write can compute as a
+	// hair older than the process start; ProcStartGrace must absorb that.
+	dir := t.TempDir()
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	procStartedAt := now.Add(-time.Hour)
+	updatedAt := procStartedAt.Add(-2 * time.Second) // before the start, inside the grace
+	writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"done","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
+
+	if _, ok := ReadDir(dir, 123, procStartedAt, now); !ok {
+		t.Fatalf("got ok=false for a write inside ProcStartGrace of the process start, want true")
+	}
+}
+
+func TestReadDirSkipsThePredatingRuleWithoutAProcessStart(t *testing.T) {
+	// No ps sample for this pid: the zero start skips the predating rule,
+	// and the old trust rules alone decide (here: done stays readable).
+	dir := t.TempDir()
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	updatedAt := now.Add(-2 * time.Hour)
+	writeFile(t, dir, 123, `{"pid":123,"cwd":"/x","state":"done","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
+
+	if _, ok := ReadDir(dir, 123, time.Time{}, now); !ok {
+		t.Fatalf("got ok=false with an unknown process start, want true (rule skipped)")
 	}
 }

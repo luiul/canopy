@@ -43,7 +43,7 @@ it's modeled as the machine's entry/exit rather than another peer state.
 
 | State     | Meaning                                                                                  |
 |-----------|------------------------------------------------------------------------------------------|
-| `unknown` | No real status: the extension is not installed, its file is stale, or the kind is not pi. |
+| `unknown` | No real status: the extension is not installed, its file is stale or predates the process itself (a recycled pid's leftover), or the kind is not pi. |
 | `idle`    | Not doing work, nothing pending for the user. Also reported for an aborted run (Escape).  |
 | `working` | Actively processing (tool call, generation, streaming, compaction).                       |
 | `blocked` | pi is waiting on the user in an extension dialog. Transient: clears on its own.           |
@@ -285,6 +285,22 @@ and expire normally; a dead extension's row falls back to `unknown`
 within `MaxAge`, while a settled row keeps reading its (still true)
 terminal state (and process liveness is the ps scan's job, not the
 file's).
+
+One more guard on the same file: a status file older than the process
+itself is never trusted, whatever the state (`pistatus`'s predating
+rule). Only the process can write its own status (`canopy-status.ts`
+runs inside it, stamping its own `process.pid`), so a write that
+predates the process's own start, computed from the ps table's uptime,
+is a leftover from an earlier process whose pid the OS recycled: pi
+leaves its file behind whenever it dies without its cleanup (killed,
+terminal closed), and pids come back around. Without the guard the
+leftover's `done`/`error` (exempt from `MaxAge` above) would be
+inherited by the recycled pid forever, exactly the "stuck at done"
+row; `working`/`blocked`/`idle` leftovers expire on their own within
+`MaxAge`. With it, a settled row keeps its state for its process's
+whole life (a write can never predate the process it was written in),
+and only the inherited lie falls away to `unknown`. The model report
+(`pistatus.ReadModel`) gets the same rule for the same reason.
 
 Regression coverage in `internal/tui/app_test.go` exercises both halves
 of the rule ("same write across polls never re-rings" and "a genuinely

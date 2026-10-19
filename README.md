@@ -443,7 +443,8 @@ the same as everything else canopy reads.
   AppleScript).
 - State is real only for `pi` with the companion extension installed
   (see "Real pi status"). Anything else — other tracked kinds, a `pi`
-  process without the extension, or one whose status file went stale —
+  process without the extension, or one whose status file went stale or
+  predates the process itself (a leftover file from a recycled pid) —
   reads `unknown`. canopy deliberately does not guess from CPU usage: a
   heuristic that cannot tell "a turn just finished" from "idle for an
   hour" is worse than an honest `unknown`. The CPU column itself is still

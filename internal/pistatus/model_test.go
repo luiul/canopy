@@ -21,9 +21,37 @@ func TestReadModelDirReturnsFreshSelectedModel(t *testing.T) {
 	updatedAt := now.Add(-60 * time.Second) // idle longer than the state's 10s MaxAge
 	writeModelFile(t, dir, 123, `{"pid":123,"model":"GPT-6 Sol","provider":"ai-model-router","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
 
-	got, ok := ReadModelDir(dir, 123, now)
+	got, ok := ReadModelDir(dir, 123, time.Time{}, now)
 	if !ok || got != (Model{Pid: 123, Name: "GPT-6 Sol", Provider: "ai-model-router", UpdatedAt: updatedAt}) {
 		t.Fatalf("got %+v, ok=%v, want the selected model", got, ok)
+	}
+}
+
+func TestReadModelDirRejectsAReportPredatingTheProcess(t *testing.T) {
+	// Same leftover risk as the state file (see ReadDir's predating
+	// rule): a recycled pid must not inherit the previous process's
+	// model, so a report older than the process itself reads as none.
+	dir := t.TempDir()
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	procStartedAt := now.Add(-time.Hour)
+	updatedAt := now.Add(-2 * time.Hour)
+	writeModelFile(t, dir, 123, `{"pid":123,"model":"GPT-6 Sol","provider":"ai-model-router","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
+
+	if got, ok := ReadModelDir(dir, 123, procStartedAt, now); ok {
+		t.Fatalf("got %+v, want no model for a report predating the process", got)
+	}
+}
+
+func TestReadModelDirKeepsAFreshReportInsideTheProcessLifetime(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	procStartedAt := now.Add(-time.Hour)
+	updatedAt := now.Add(-time.Minute)
+	writeModelFile(t, dir, 123, `{"pid":123,"model":"GPT-6 Sol","provider":"ai-model-router","updatedAt":"`+updatedAt.Format(time.RFC3339Nano)+`"}`)
+
+	got, ok := ReadModelDir(dir, 123, procStartedAt, now)
+	if !ok || got.Name != "GPT-6 Sol" {
+		t.Fatalf("got %+v, ok=%v, want the model for a report inside the process lifetime", got, ok)
 	}
 }
 
@@ -45,13 +73,13 @@ func TestReadModelDirRejectsInvalidReports(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			writeModelFile(t, dir, 123, tc.body)
-			if got, ok := ReadModelDir(dir, 123, now); ok {
+			if got, ok := ReadModelDir(dir, 123, time.Time{}, now); ok {
 				t.Fatalf("got %+v, want no selected model", got)
 			}
 		})
 	}
 	for _, dir := range []string{"", t.TempDir()} {
-		if got, ok := ReadModelDir(dir, 123, now); ok {
+		if got, ok := ReadModelDir(dir, 123, time.Time{}, now); ok {
 			t.Fatalf("dir %q: got %+v, want no selected model", dir, got)
 		}
 	}

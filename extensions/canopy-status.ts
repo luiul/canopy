@@ -78,6 +78,12 @@
  * repeating — a refreshed done would look like a brand-new done and
  * re-ring the bell for a turn that just finished long ago.
  *
+ * Leftover files need no cleanup discipline on this side for one reason:
+ * canopy also stops trusting any file older than the process itself
+ * (pistatus's predating rule, checked against the process's ps uptime),
+ * so a status file left behind by an unclean exit (kill, closed terminal)
+ * is never inherited by whichever later process recycles the pid.
+ *
  * Only interactive sessions report. SDK subagents share process.pid with
  * their parent, so letting them write would replace the parent's records.
  * Print, JSON, and RPC sessions must not write or remove those files.

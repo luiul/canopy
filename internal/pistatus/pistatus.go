@@ -36,6 +36,14 @@ import (
 // poll-to-poll to tell two settles apart).
 const MaxAge = 10 * time.Second
 
+// ProcStartGrace is the slack allowed by the predating rule (see ReadDir):
+// ps's etime is second-granular and the table snapshot and the file read
+// happen milliseconds apart, so a genuine write can compute as a hair
+// older than the process's own start. A few seconds absorbs that rounding
+// and small clock steps, while never covering a recycled pid's leftover
+// file, which is typically hours or days old.
+const ProcStartGrace = 5 * time.Second
+
 // Status is one pid's last self-reported state ("working", "blocked",
 // "done", "error", or "idle"; see canopy-status.ts for the exact
 // transitions, and docs/agent-state-machine.md for how the two terminal
@@ -79,18 +87,21 @@ func Dir() string {
 }
 
 // Read returns pid's status from Dir(), if canopy-status.ts wrote one
-// recently enough to trust (see MaxAge). ok=false (no file, unreadable,
-// malformed, empty state, or stale) means exactly one thing to callers:
-// the entry reads "unknown", the same as if the extension weren't
-// installed at all.
-func Read(pid int) (Status, bool) {
-	return ReadDir(Dir(), pid, time.Now())
+// recently enough to trust (see MaxAge) and not before the process itself
+// started (see ReadDir). ok=false (no file, unreadable, malformed, empty
+// state, stale, or predating the process) means exactly one thing to
+// callers: the entry reads "unknown", the same as if the extension
+// weren't installed at all. procStartedAt is when the pid's process itself
+// started; the zero value means unknown and skips the predating rule.
+func Read(pid int, procStartedAt time.Time) (Status, bool) {
+	return ReadDir(Dir(), pid, procStartedAt, time.Now())
 }
 
 // ReadDir is Read with an explicit dir and "now", so tests can point it at
 // a temp directory and a fixed clock instead of the real home directory
-// and wall-clock time.
-func ReadDir(dir string, pid int, now time.Time) (Status, bool) {
+// and wall-clock time. procStartedAt is when the pid's process itself
+// started; the zero value means unknown and skips the predating rule.
+func ReadDir(dir string, pid int, procStartedAt, now time.Time) (Status, bool) {
 	if dir == "" {
 		return Status{}, false
 	}
@@ -98,10 +109,10 @@ func ReadDir(dir string, pid int, now time.Time) (Status, bool) {
 	if err != nil {
 		return Status{}, false
 	}
-	return parse(data, now)
+	return parse(data, procStartedAt, now)
 }
 
-func parse(data []byte, now time.Time) (Status, bool) {
+func parse(data []byte, procStartedAt, now time.Time) (Status, bool) {
 	var w wireStatus
 	if err := json.Unmarshal(data, &w); err != nil {
 		return Status{}, false
@@ -118,6 +129,21 @@ func parse(data []byte, now time.Time) (Status, bool) {
 	w.Message = singleLine(w.Message)
 	w.Detail = singleLine(w.Detail)
 	w.Task = singleLine(w.Task)
+	// The predating rule: only the process itself can have written its
+	// status file (canopy-status.ts runs inside it, stamping its own
+	// process.pid), so a write older than the process's own start is not
+	// this process's status: it is a leftover file from an earlier process
+	// whose pid the OS recycled (pi leaves its file behind whenever it dies
+	// without its cleanup, e.g. killed or its terminal closed, and pids
+	// come back around). It is the one check that can retire a done/error
+	// file: MaxAge exempts them so a still-settled row keeps its terminal
+	// state for the process's whole life, which is exactly why a recycled
+	// pid would otherwise inherit the previous session's done forever.
+	// working/blocked/idle leftovers expire on their own via MaxAge; a
+	// zero procStartedAt (no ps sample for this pid) skips the rule.
+	if !procStartedAt.IsZero() && w.UpdatedAt.Before(procStartedAt.Add(-ProcStartGrace)) {
+		return Status{}, false
+	}
 	// Terminal states never expire: the extension's done/error writes are
 	// one-shot by design (see MaxAge), so staleness is their normal state
 	// of being, not a sign of a dead extension. Process liveness is

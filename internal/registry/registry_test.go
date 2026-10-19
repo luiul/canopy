@@ -150,14 +150,14 @@ func withResolveCwds(t *testing.T, fn func([]int) map[int]string) {
 	t.Cleanup(func() { resolveCwds = previous })
 }
 
-func withPistatusRead(t *testing.T, fn func(int) (pistatus.Status, bool)) {
+func withPistatusRead(t *testing.T, fn func(int, time.Time) (pistatus.Status, bool)) {
 	t.Helper()
 	previous := pistatusRead
 	pistatusRead = fn
 	t.Cleanup(func() { pistatusRead = previous })
 }
 
-func withPistatusReadModel(t *testing.T, fn func(int) (pistatus.Model, bool)) {
+func withPistatusReadModel(t *testing.T, fn func(int, time.Time) (pistatus.Model, bool)) {
 	t.Helper()
 	previous := pistatusReadModel
 	pistatusReadModel = fn
@@ -172,7 +172,7 @@ func TestExternalEntriesReturnsNilForNoMatches(t *testing.T) {
 
 func TestExternalEntriesClassifiesFromTheInjectedProcessTable(t *testing.T) {
 	withResolveCwds(t, func(pids []int) map[int]string { return map[int]string{42: "/x"} })
-	withPistatusRead(t, func(int) (pistatus.Status, bool) { return pistatus.Status{}, false })
+	withPistatusRead(t, func(int, time.Time) (pistatus.Status, bool) { return pistatus.Status{}, false })
 
 	table := map[int]scan.ProcessInfo{
 		42: {Pid: 42, Pcpu: 5.0, RssKb: 1024, Etime: time.Minute},
@@ -201,7 +201,7 @@ func TestExternalEntriesClassifiesFromTheInjectedProcessTable(t *testing.T) {
 
 func TestExternalEntriesMarksStoppedProcesses(t *testing.T) {
 	withResolveCwds(t, func(pids []int) map[int]string { return map[int]string{} })
-	withPistatusRead(t, func(int) (pistatus.Status, bool) { return pistatus.Status{}, false })
+	withPistatusRead(t, func(int, time.Time) (pistatus.Status, bool) { return pistatus.Status{}, false })
 
 	table := map[int]scan.ProcessInfo{
 		7: {Pid: 7, Pcpu: 0, Etime: time.Hour, State: "T"},  // stopped (SIGSTOP)
@@ -230,7 +230,7 @@ func TestExternalEntriesPrefersPistatusForPi(t *testing.T) {
 	// must win over the default "unknown".
 	withResolveCwds(t, func(pids []int) map[int]string { return map[int]string{} })
 	reportedAt := time.Now()
-	withPistatusRead(t, func(pid int) (pistatus.Status, bool) {
+	withPistatusRead(t, func(pid int, procStartedAt time.Time) (pistatus.Status, bool) {
 		return pistatus.Status{Pid: pid, Cwd: "/pi-cwd", State: "done", Message: "sprint-planning", UpdatedAt: reportedAt}, true
 	})
 
@@ -257,10 +257,71 @@ func TestExternalEntriesPrefersPistatusForPi(t *testing.T) {
 	}
 }
 
+func TestExternalEntriesPassesTheProcessStartToPistatus(t *testing.T) {
+	// The predating rule (pistatus.Read's procStartedAt) only works if the
+	// merge site computes the process's own start from the table's uptime
+	// sample and hands it to the read: a leftover status file inherited by
+	// a recycled pid must read unknown, and the start time is the one input
+	// that can tell that leftover apart from a genuine report.
+	withResolveCwds(t, func([]int) map[int]string { return nil })
+	var gotStart time.Time
+	var gotModelStart time.Time
+	withPistatusRead(t, func(pid int, procStartedAt time.Time) (pistatus.Status, bool) {
+		gotStart = procStartedAt
+		return pistatus.Status{Pid: pid, State: "done", UpdatedAt: procStartedAt.Add(-2 * time.Hour)}, false
+	})
+	withPistatusReadModel(t, func(pid int, procStartedAt time.Time) (pistatus.Model, bool) {
+		gotModelStart = procStartedAt
+		return pistatus.Model{}, false
+	})
+
+	table := map[int]scan.ProcessInfo{9: {Pid: 9, Pcpu: 0, Etime: time.Hour}}
+	matches := []scan.ProcessMatch{{Pid: 9, Tty: "ttys000", Kind: "pi", Args: "pi"}}
+	got := externalEntries(matches, table)
+
+	if len(got) != 1 {
+		t.Fatalf("got %+v, want 1 entry", got)
+	}
+	if got[0].State != "unknown" || got[0].RealState {
+		t.Fatalf("got %+v, want state unknown for a rejected (ok=false) status read", got[0])
+	}
+	for name, start := range map[string]time.Time{"status": gotStart, "model": gotModelStart} {
+		if start.IsZero() {
+			t.Fatalf("%s read got a zero process start, want one derived from the table's uptime", name)
+		}
+		// Etime is one hour, so the start must compute to roughly now-1h;
+		// allow a few minutes of slack for the wall clock between capture
+		// and read.
+		age := time.Since(start)
+		if age < 55*time.Minute || age > 65*time.Minute {
+			t.Fatalf("%s read got process start %v (age %v), want roughly one hour ago", name, start, age)
+		}
+	}
+}
+
+func TestExternalEntriesSkipsTheProcessStartCheckWithoutASample(t *testing.T) {
+	// No process-table sample for the pid: the read must get the zero
+	// start (rule skipped) rather than a bogus now-0 one, which would
+	// reject every report as predating the process.
+	withResolveCwds(t, func([]int) map[int]string { return nil })
+	withPistatusRead(t, func(pid int, procStartedAt time.Time) (pistatus.Status, bool) {
+		if !procStartedAt.IsZero() {
+			t.Fatalf("got process start %v, want the zero value with no ps sample", procStartedAt)
+		}
+		return pistatus.Status{Pid: pid, Cwd: "/x", State: "done", UpdatedAt: time.Now()}, true
+	})
+	withPistatusReadModel(t, func(int, time.Time) (pistatus.Model, bool) { return pistatus.Model{}, false })
+
+	got := externalEntries([]scan.ProcessMatch{{Pid: 9, Tty: "ttys000", Kind: "pi", Args: "pi"}}, nil)
+	if len(got) != 1 || got[0].State != "done" || !got[0].RealState {
+		t.Fatalf("got %+v, want the done report trusted when the start is unknown", got)
+	}
+}
+
 func TestExternalEntriesReadsPiModelWithoutARealState(t *testing.T) {
 	withResolveCwds(t, func([]int) map[int]string { return nil })
-	withPistatusRead(t, func(int) (pistatus.Status, bool) { return pistatus.Status{}, false })
-	withPistatusReadModel(t, func(pid int) (pistatus.Model, bool) {
+	withPistatusRead(t, func(int, time.Time) (pistatus.Status, bool) { return pistatus.Status{}, false })
+	withPistatusReadModel(t, func(pid int, procStartedAt time.Time) (pistatus.Model, bool) {
 		return pistatus.Model{Pid: pid, Name: "GPT-6 Sol", Provider: "ai-model-router"}, true
 	})
 
@@ -272,8 +333,8 @@ func TestExternalEntriesReadsPiModelWithoutARealState(t *testing.T) {
 
 func TestExternalEntriesLeavesModelUnknownWhenReportIsMissing(t *testing.T) {
 	withResolveCwds(t, func([]int) map[int]string { return nil })
-	withPistatusRead(t, func(int) (pistatus.Status, bool) { return pistatus.Status{}, false })
-	withPistatusReadModel(t, func(int) (pistatus.Model, bool) { return pistatus.Model{}, false })
+	withPistatusRead(t, func(int, time.Time) (pistatus.Status, bool) { return pistatus.Status{}, false })
+	withPistatusReadModel(t, func(int, time.Time) (pistatus.Model, bool) { return pistatus.Model{}, false })
 
 	got := externalEntries([]scan.ProcessMatch{{Pid: 9, Tty: "ttys000", Kind: "pi"}}, nil)
 	if len(got) != 1 || got[0].ModelName != "" || got[0].ModelProvider != "" {
@@ -283,11 +344,11 @@ func TestExternalEntriesLeavesModelUnknownWhenReportIsMissing(t *testing.T) {
 
 func TestExternalEntriesLeavesNonPiKindsUntouchedByPistatus(t *testing.T) {
 	withResolveCwds(t, func(pids []int) map[int]string { return map[int]string{} })
-	withPistatusRead(t, func(int) (pistatus.Status, bool) {
+	withPistatusRead(t, func(int, time.Time) (pistatus.Status, bool) {
 		t.Fatalf("pistatusRead should never be consulted for a non-pi kind")
 		return pistatus.Status{}, false
 	})
-	withPistatusReadModel(t, func(int) (pistatus.Model, bool) {
+	withPistatusReadModel(t, func(int, time.Time) (pistatus.Model, bool) {
 		t.Fatalf("pistatusReadModel should never be consulted for a non-pi kind")
 		return pistatus.Model{}, false
 	})

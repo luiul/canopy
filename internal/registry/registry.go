@@ -233,10 +233,23 @@ func externalEntries(matches []scan.ProcessMatch, table map[int]scan.ProcessInfo
 		// (see internal/pistatus) writes pi's own real
 		// working/blocked/done/error/idle straight from its program-status
 		// state machine when it's installed. No file (extension not
-		// installed, stale, or this pid isn't actually `pi`) just leaves the
-		// "unknown" above in place.
+		// installed, stale, predating the process itself, or this pid isn't
+		// actually `pi`) just leaves the "unknown" above in place.
+		//
+		// Model reporting has its own freshness window: an idle pi session can
+		// still have a valid model even after its state report expires. Read
+		// it independently rather than gating it on RealState.
+		//
+		// Both reads get the process's own start time, computed from the
+		// table's uptime sample, so pistatus's predating rule can drop a
+		// leftover file inherited from a recycled pid. No sample (uptime 0)
+		// passes the zero value and skips that rule.
 		if m.Kind == "pi" {
-			if st, ok := pistatusRead(m.Pid); ok {
+			procStartedAt := time.Time{}
+			if uptime > 0 {
+				procStartedAt = time.Now().Add(-uptime)
+			}
+			if st, ok := pistatusRead(m.Pid, procStartedAt); ok {
 				entry.State = st.State
 				entry.Message = st.Message
 				entry.Detail = st.Detail
@@ -247,12 +260,7 @@ func externalEntries(matches []scan.ProcessMatch, table map[int]scan.ProcessInfo
 					entry.Cwd = st.Cwd
 				}
 			}
-		}
-		// Model reporting has its own freshness window: an idle pi session can
-		// still have a valid model even after its state report expires. Read
-		// it independently rather than gating it on RealState.
-		if m.Kind == "pi" {
-			if model, ok := pistatusReadModel(m.Pid); ok {
+			if model, ok := pistatusReadModel(m.Pid, procStartedAt); ok {
 				entry.ModelName = model.Name
 				entry.ModelProvider = model.Provider
 			}

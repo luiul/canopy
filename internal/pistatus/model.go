@@ -30,14 +30,17 @@ type wireModel struct {
 }
 
 // ReadModel returns the selected model for pid, if a recent model report
-// exists. Model freshness is independent of Read's agent-state freshness:
+// exists and it was not written before the process itself started (the
+// same predating rule as Read: a leftover report must not be inherited by
+// a recycled pid). procStartedAt zero means unknown, the rule is skipped.
+// Model freshness is independent of Read's agent-state freshness:
 // a model selection must not look like a new done event.
-func ReadModel(pid int) (Model, bool) {
-	return ReadModelDir(Dir(), pid, time.Now())
+func ReadModel(pid int, procStartedAt time.Time) (Model, bool) {
+	return ReadModelDir(Dir(), pid, procStartedAt, time.Now())
 }
 
 // ReadModelDir is ReadModel with an explicit directory and clock for tests.
-func ReadModelDir(dir string, pid int, now time.Time) (Model, bool) {
+func ReadModelDir(dir string, pid int, procStartedAt, now time.Time) (Model, bool) {
 	if dir == "" {
 		return Model{}, false
 	}
@@ -48,7 +51,8 @@ func ReadModelDir(dir string, pid int, now time.Time) (Model, bool) {
 	var w wireModel
 	if err := json.Unmarshal(data, &w); err != nil || w.Pid != pid ||
 		strings.TrimSpace(w.Name) == "" || strings.TrimSpace(w.Provider) == "" ||
-		w.UpdatedAt.IsZero() || now.Before(w.UpdatedAt) || now.Sub(w.UpdatedAt) > ModelMaxAge {
+		w.UpdatedAt.IsZero() || now.Before(w.UpdatedAt) || now.Sub(w.UpdatedAt) > ModelMaxAge ||
+		(!procStartedAt.IsZero() && w.UpdatedAt.Before(procStartedAt.Add(-ProcStartGrace))) {
 		return Model{}, false
 	}
 	return Model(w), true
