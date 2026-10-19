@@ -78,11 +78,13 @@
  * repeating — a refreshed done would look like a brand-new done and
  * re-ring the bell for a turn that just finished long ago.
  *
- * Leftover files need no cleanup discipline on this side for one reason:
- * canopy also stops trusting any file older than the process itself
- * (pistatus's predating rule, checked against the process's ps uptime),
- * so a status file left behind by an unclean exit (kill, closed terminal)
- * is never inherited by whichever later process recycles the pid.
+ * Leftover files from an unclean exit (kill, closed terminal) are handled
+ * from both sides: canopy stops trusting any file older than the process
+ * itself (pistatus's predating rule, checked against the process's ps
+ * uptime), so an inherited file never lies in the window before the
+ * sweep below runs; and the first interactive session start in each
+ * process sweeps the directory, deleting files whose pid no longer
+ * exists, so leftovers are transient instead of piling up.
  *
  * Only interactive sessions report. SDK subagents share process.pid with
  * their parent, so letting them write would replace the parent's records.
@@ -231,6 +233,47 @@ function removeStatus() {
 	}
 }
 
+// isAlive reports whether pid names a live process: kill(pid, 0) sends no
+// signal, it only asks whether the pid exists, so it throws exactly for
+// pids the OS has let go. EPERM is the alive-but-not-ours case, so it
+// counts as alive too: the one thing this must never do is delete a
+// live session's file.
+function isAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (e) {
+		return (e as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+// sweepLeftovers removes status files for pids that no longer exist. A pi
+// that dies without its cleanup (killed, its terminal closed) leaves its
+// file behind; canopy's predating rule stops trusting such a file at read
+// time, and this sweep makes it actually go away instead of piling up.
+// Runs once per process, at the first interactive session start (see
+// session_start), so it costs a directory read every few hours, not on
+// any hot path. Only <pid>.json and <pid>.model.json in STATUS_DIR
+// itself: subdirectories (e.g. parked/) and foreign names are not ours
+// to touch.
+function sweepLeftovers() {
+	let names: string[];
+	try {
+		names = fs.readdirSync(STATUS_DIR);
+	} catch {
+		return; // no directory yet: nothing to sweep
+	}
+	for (const name of names) {
+		const pidMatch = /^(\d+)(?:\.model)?\.json$/.exec(name);
+		if (!pidMatch || isAlive(Number(pidMatch[1]))) continue;
+		try {
+			fs.unlinkSync(path.join(STATUS_DIR, name));
+		} catch {
+			// Best-effort only: a leftover that survives one sweep dies in the next.
+		}
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	if (process.platform !== "darwin") return;
 
@@ -369,6 +412,7 @@ export default function (pi: ExtensionAPI) {
 		if (!ownsStatus) {
 			ownsStatus = true;
 			process.once("exit", cleanup);
+			sweepLeftovers();
 		}
 		// A fresh session forgets the previous session's run (pi's reset()).
 		runActive = false;

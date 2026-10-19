@@ -442,3 +442,49 @@ test("a session without a name omits the message", async (t) => {
 	assert.equal(status.message, undefined);
 	await pi.fire("session_shutdown", ctx);
 });
+
+test("session start sweeps leftover status files for dead pids, once per process", async (t) => {
+	const h = await harness(t);
+	const dir = path.dirname(h.status);
+	// A leftover pair from a pid the OS has let go of, a live session's own
+	// file (the current pid), and entries that are not ours to touch.
+	const dead = path.join(dir, "999999.json");
+	const deadModel = path.join(dir, "999999.model.json");
+	const parked = path.join(dir, "parked");
+	fs.mkdirSync(parked, { recursive: true }); // the dir does not exist until the first write
+	const parkedFile = path.join(parked, "1.json");
+	fs.writeFileSync(parkedFile, "{}");
+	const foreign = path.join(dir, "notes.txt");
+	fs.writeFileSync(dead, JSON.stringify({ pid: 999999, state: "done", updatedAt: new Date().toISOString() }));
+	fs.writeFileSync(deadModel, JSON.stringify({ pid: 999999, model: "GPT-6 Sol", provider: "ai-model-router", updatedAt: new Date().toISOString() }));
+	fs.writeFileSync(foreign, "not ours");
+
+	const pi = h.create();
+	const ctx = context("tui", true);
+	await pi.fire("session_start", ctx);
+	assert.equal(fs.existsSync(dead), false, "a dead pid's status file must be swept");
+	assert.equal(fs.existsSync(deadModel), false, "a dead pid's model file must be swept");
+	assert.equal(fs.existsSync(parkedFile), true, "subdirectories are not ours to touch");
+	assert.equal(fs.existsSync(foreign), true, "foreign names are not ours to touch");
+	assert.equal(readStatus(h.status).state, "idle", "the live session's own file is kept and overwritten normally");
+
+	// Once per process: a second session start in the same process must not
+	// sweep again (a leftover that appeared meanwhile waits for the next
+	// pi process, covered meanwhile by canopy's predating rule).
+	fs.writeFileSync(dead, "{}");
+	await pi.fire("session_start", ctx);
+	assert.equal(fs.existsSync(dead), true, "the sweep must run once per process, not on every session start");
+	await pi.fire("session_shutdown", ctx);
+});
+
+test("non-interactive sessions never sweep", async (t) => {
+	const h = await harness(t);
+	const dir = path.dirname(h.status);
+	fs.mkdirSync(dir, { recursive: true }); // the dir does not exist until the first write
+	const dead = path.join(dir, "999998.json");
+	fs.writeFileSync(dead, JSON.stringify({ pid: 999998, state: "done", updatedAt: new Date().toISOString() }));
+	const pi = h.create();
+	await pi.fire("session_start", context("print", false));
+	await pi.fire("agent_start", context("print", false));
+	assert.equal(fs.existsSync(dead), true, "a non-interactive session must not delete anything");
+});

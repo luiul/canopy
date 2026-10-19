@@ -301,6 +301,10 @@ row; `working`/`blocked`/`idle` leftovers expire on their own within
 whole life (a write can never predate the process it was written in),
 and only the inherited lie falls away to `unknown`. The model report
 (`pistatus.ReadModel`) gets the same rule for the same reason.
+`canopy-status.ts` also sweeps the directory once per process, at its
+first interactive session start, deleting files whose pid no longer
+exists, so leftovers are transient instead of piling up; the predating
+rule covers the window before the next sweep runs.
 
 Regression coverage in `internal/tui/app_test.go` exercises both halves
 of the rule ("same write across polls never re-rings" and "a genuinely
