@@ -1,6 +1,6 @@
 # canopy
 
-An interactive dashboard for every agent CLI session on this machine (`pi` tracked by default; the set is yours to configure, see [Configuration](#configuration)), wherever it actually is: a VS Code integrated terminal or a bare Ghostty tab, with its live state and jump-to-window on Enter.
+An interactive dashboard for every agent CLI session on this machine (`pi` tracked by default; see [Configuration](#configuration)). It shows live state across VS Code integrated terminals, Ghostty tabs, and unknown hosts. Enter always opens or focuses Ghostty at the session's working directory. Surface is discovered host metadata, not an editor selector.
 
 This is the Go implementation, and the one actively developed going
 forward. An earlier Python/Textual prototype lives at `../canopy-python`
@@ -22,8 +22,8 @@ tools, one pair for agent sessions, one pair for git worktrees:
 |---|---|---|
 | [`wt`](https://worktrunk.dev) (worktrunk) | engine | creates/removes worktrees, runs lifecycle hooks (`post-start`, `pre-remove`, ...), maintains the shared registry |
 | [coppice](https://github.com/luiul/coppice) | lifecycle CLI | cross-repo `new`/`list`/`remove`/`clean` worktrees, on top of `wt`, from anywhere on disk |
-| [understory](https://github.com/luiul/understory) | worktree radar | live, read-only dashboard of every worktree in the registry; open-or-focus a VS Code window on Enter |
-| **canopy** (this repo) | agent radar | live, read-only dashboard of every agent CLI session on the machine; jump-to-window on Enter |
+| [understory](https://github.com/luiul/understory) | worktree radar | live, read-only dashboard of every worktree in the registry; open or focus Ghostty on Enter |
+| **canopy** (this repo) | agent radar | live, read-only dashboard of every agent CLI session on the machine; open or focus Ghostty on Enter |
 
 ```mermaid
 flowchart LR
@@ -281,17 +281,8 @@ One Go package per concern:
   `extensions/canopy-status.ts` companion writes for a running `pi`
   process: pi's own real working/blocked/done/error/idle, mirrored from
   pi's program-status state machine (see "Real pi status" below).
-- `internal/ancestry`: walks a process's parent chain to classify which app
-  (VS Code / Ghostty) is hosting it.
-- `internal/jump`: maps a row's Surface onto
-  [`github.com/luiul/dashkit/mycelium`](https://github.com/luiul/dashkit/tree/main/mycelium)'s
-  shared open-or-focus logic (matching window titles for both editors,
-  AXRaise to focus, a new window when nothing matches), switching to an
-  already-open window when one's title names the row's cwd or its git
-  work-tree root, or opening a brand-new one when none does. The window
-  detection and switch-or-create behavior itself
-  lives in mycelium, not here, since understory needs the exact
-  same thing for a worktree row with no agent connection of its own.
+- `internal/ancestry`: walks a process's parent chain to classify its host (VS Code, Ghostty, or unknown). Surface keeps that discovery result for display. It does not select an editor.
+- `internal/jump`: always calls [`github.com/luiul/dashkit/mycelium`](https://github.com/luiul/dashkit/tree/main/mycelium)'s Ghostty open-or-focus logic when cwd is known. It passes cwd unmodified and prefers the agent's tty in window titles. Mycelium falls back to path matching and opens a new Ghostty window when none matches. Understory shares that matching logic for worktree rows without a tty. Empty cwd returns a clear error without opening anything.
 - `internal/kill`: delivers signals (SIGTERM/SIGKILL/SIGSTOP/SIGCONT) to a
   row's process for the `x`/`X`/`p`/`D` keybinds, behind a process
   identity check (pid plus lifetime, from a fresh `ps` snapshot) so a
@@ -318,8 +309,8 @@ cd canopy
 scripts/install.sh   # builds, installs to ~/.local/bin, code-signs with a
                      # stable local identity so the macOS Automation
                      # permission (needed by mycelium's jump-to on every
-                     # run: System Events for VS Code windows, Ghostty's
-                     # scripting bridge for terminal rows) survives future
+                     # run: System Events for Ghostty titles and raise,
+                     # Ghostty's scripting bridge for new windows) survives future
                      # rebuilds instead of resetting every time -- see the
                      # script's own comment for why and how to set up that
                      # signing identity once
@@ -470,16 +461,11 @@ the same as everything else canopy reads.
   and the old working-directory match misfocused or opened duplicates.
   Ambiguous if two windows share a work-tree root and branch. If no open
   window matches anymore (e.g. it was closed), Enter opens a brand-new
-  Ghostty window at that path instead, same open-or-create behavior as
-  VS Code's. One gap: a background tab's title isn't listed by System
+  Ghostty window at that path instead. This applies to every Surface,
+  including VS Code and unknown hosts. One gap: a background tab's title isn't listed by System
   Events, so an agent in another window's background tab is invisible to
   the match.
-- VS Code jump-to matches by exact folder path against the window
-  titles (the dotfiles `window.title` setting renders each title as the
-  opened folder's full path), so same-named worktrees are no longer
-  indistinguishable. The matched window is raised directly with an
-  AXRaise: the right window comes to front, but not necessarily the
-  specific integrated-terminal tab within it.
+- Host discovery does not select navigation. Surface describes the discovered host, but Enter only opens or focuses Ghostty. Opening Ghostty does not move or reconnect an agent running in another host. Ghostty title matching cannot select an Orca or herdr pane. Those panes are not supported navigation targets.
 - Mouse click-to-jump isn't implemented (keyboard only: arrow keys,
   Enter); Bubble Tea's table widget doesn't ship row-click handling out
   of the box the way Textual's `DataTable` does.

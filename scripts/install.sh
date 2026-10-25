@@ -11,9 +11,9 @@ set -euo pipefail
 # changes the hash, so macOS treats the new binary as a brand-new,
 # never-before-seen app and drops any Automation permission already
 # granted to the old one. canopy needs it (for mycelium's AppleScript,
-# backing jump's open-or-focus on every run: System Events for the VS
-# Code window listing and raise, Ghostty's scripting bridge for
-# terminal rows) on every run, so without a stable signature it'd need
+# backing jump's open-or-focus on every run: System Events for Ghostty
+# window titles and raise, plus Ghostty's scripting bridge for new
+# windows) on every run, so without a stable signature it'd need
 # re-approving after every single rebuild.
 #
 # Signing with a real certificate (self-signed is fine for local dev)

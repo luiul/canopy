@@ -29,7 +29,7 @@ import (
 // (RealState/RealStateReportedAt handling) can be exercised against a
 // canned Status without a real ~/.pi/agent/canopy-status/<pid>.json file
 // on disk, the same seam pattern internal/jump already uses for mycelium's
-// OpenVSCode/OpenGhostty.
+// OpenGhostty.
 var pistatusRead = pistatus.Read
 
 // pistatusReadModel is independent of pistatusRead: the model report stays

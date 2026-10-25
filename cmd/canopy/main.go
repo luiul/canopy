@@ -2,7 +2,7 @@
 // session (pi by default, the set configurable via internal/config)
 // running on this machine, wherever it actually
 // is: a VS Code integrated terminal, or a bare Ghostty tab, with its live
-// state and jump-to-window on Enter.
+// state. Enter always opens or focuses Ghostty for its working directory.
 package main
 
 import (
@@ -30,9 +30,10 @@ const helpText = `canopy: interactive dashboard for every tracked agent session 
 this machine (pi by default): VS Code integrated terminals and bare
 Ghostty tabs alike.
 
-Arrow keys to move, Enter to jump to the selected session's window, x to
-terminate it (with confirmation), ? for every keybinding, r to refresh,
-q to quit.
+Arrow keys to move, Enter to open or focus Ghostty for the selected
+session's working directory, x to terminate it (with confirmation),
+? for every keybinding, r to refresh, q to quit.
+Surface shows the discovered host. It does not select an editor.
 
 Usage:
   canopy [flags]
@@ -99,8 +100,8 @@ func parseFlags(args []string, out io.Writer) (options, error) {
 
 // checkPlatform reports an error if goos isn't "darwin". canopy's process
 // discovery (ps/lsof output parsing in internal/scan), ancestry
-// classification, and jump-to-window (AppleScript for Ghostty, `code
-// --reuse-window` for VS Code) are all macOS-specific — documented in
+// classification, and Ghostty navigation (AppleScript) are all
+// macOS-specific, documented in
 // README.md's Limitations section, not an oversight. Without this check,
 // running canopy on another OS wouldn't fail outright; BSD ps's column
 // output differs from GNU ps's in ways that mostly just fail to parse

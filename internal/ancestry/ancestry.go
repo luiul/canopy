@@ -4,9 +4,8 @@
 //
 // A bare Ghostty tab's shell is a child of `ghostty` itself, and a VS Code
 // integrated terminal's shell is a child of one of VS Code's `Code Helper`
-// processes. canopy's jump package picks the actual jump mechanism
-// (AppleScript for Ghostty, `code --reuse-window` for VS Code) from this
-// classification.
+// processes. This classification is host metadata for the dashboard.
+// It does not select an editor: jump always opens or focuses Ghostty.
 package ancestry
 
 import (

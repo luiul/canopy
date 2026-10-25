@@ -8,171 +8,79 @@ import (
 	"github.com/luiul/dashkit/mycelium"
 )
 
-func entry(surface ancestry.Surface, mutate func(*registry.RegistryEntry)) registry.RegistryEntry {
-	e := registry.RegistryEntry{Pid: 1, Kind: "pi", Tty: "s017", Cwd: "/Users/x/dotfiles", Surface: surface, State: "working"}
-	if mutate != nil {
-		mutate(&e)
+func TestToAlwaysUsesGhostty(t *testing.T) {
+	surfaces := []ancestry.Surface{ancestry.Ghostty, ancestry.VSCode, ancestry.Unknown, ancestry.Surface("unexpected")}
+	cases := []struct {
+		name      string
+		cwd       string
+		tty       string
+		result    mycelium.Result
+		want      Result
+		wantCalls int
+	}{
+		{
+			name:      "focus",
+			cwd:       "/Users/x/dotfiles",
+			tty:       "s017",
+			result:    mycelium.Result{OK: true, Message: "Focused Ghostty window."},
+			want:      Result{OK: true, Message: "Focused Ghostty window."},
+			wantCalls: 1,
+		},
+		{
+			name:      "open subdirectory unmodified",
+			cwd:       "/x/worktrees/feature/global-ops/pipelines",
+			tty:       "s009",
+			result:    mycelium.Result{OK: true, Message: "Opened Ghostty window."},
+			want:      Result{OK: true, Message: "Opened Ghostty window."},
+			wantCalls: 1,
+		},
+		{
+			name:      "no tty",
+			cwd:       "/Users/x/dotfiles",
+			result:    mycelium.Result{OK: true, Message: "Focused Ghostty by path."},
+			want:      Result{OK: true, Message: "Focused Ghostty by path."},
+			wantCalls: 1,
+		},
+		{
+			name:      "failure",
+			cwd:       "/Users/x/dotfiles",
+			tty:       "s017",
+			result:    mycelium.Result{OK: false, Message: "couldn't open Ghostty"},
+			want:      Result{OK: false, Message: "couldn't open Ghostty"},
+			wantCalls: 1,
+		},
+		{
+			name:   "no cwd",
+			tty:    "s017",
+			result: mycelium.Result{OK: true, Message: "must not be called"},
+			want:   Result{OK: false, Message: "no known working directory to open"},
+		},
 	}
-	return e
-}
 
-// withFakes swaps openVSCode/openGhostty for the duration of fn, restoring
-// the real mycelium functions afterward, so no test here ever shells out
-// to the real `code` CLI or osascript. mycelium's own test suite already
-// covers the window-detection logic these fakes stand in for; these tests
-// only need to verify that To() dispatches to the right one, with the
-// right argument, and maps its Result straight through.
-func withFakes(t *testing.T, vscode func(path string) mycelium.Result, ghostty func(tty, path string) mycelium.Result) {
-	t.Helper()
-	origVSCode, origGhostty := openVSCode, openGhostty
-	if vscode != nil {
-		openVSCode = vscode
-	}
-	if ghostty != nil {
-		openGhostty = ghostty
-	}
-	t.Cleanup(func() {
-		openVSCode = origVSCode
-		openGhostty = origGhostty
-	})
-}
+	for _, surface := range surfaces {
+		for _, tc := range cases {
+			t.Run(string(surface)+"/"+tc.name, func(t *testing.T) {
+				original := openGhostty
+				t.Cleanup(func() { openGhostty = original })
+				calls := 0
+				var gotTty, gotPath string
+				openGhostty = func(tty, path string) mycelium.Result {
+					calls++
+					gotTty, gotPath = tty, path
+					return tc.result
+				}
 
-func TestJumpToVSCodeDelegatesToMyceliumWithTheEntrysCwd(t *testing.T) {
-	var gotPath string
-	withFakes(t, func(path string) mycelium.Result {
-		gotPath = path
-		return mycelium.Result{OK: true, Message: "Focused VS Code window for " + path + "."}
-	}, nil)
-
-	result := To(entry(ancestry.VSCode, nil))
-
-	if !result.OK {
-		t.Fatalf("want ok, got %+v", result)
-	}
-	if gotPath != "/Users/x/dotfiles" {
-		t.Fatalf("got path %q, want /Users/x/dotfiles", gotPath)
-	}
-	if result.Message != "Focused VS Code window for /Users/x/dotfiles." {
-		t.Fatalf("got message %q", result.Message)
-	}
-}
-
-func TestJumpToVSCodePassesTheCwdThroughUnmodified(t *testing.T) {
-	// The cwd goes to mycelium unmodified — the window to reuse may be
-	// open on exactly that folder (a monorepo package the agent runs
-	// in), and mycelium falls back to the work-tree root on its own.
-	var gotPath string
-	withFakes(t, func(path string) mycelium.Result {
-		gotPath = path
-		return mycelium.Result{OK: true}
-	}, nil)
-
-	To(entry(ancestry.VSCode, func(e *registry.RegistryEntry) {
-		e.Cwd = "/x/worktrees/ISA-18436/global-ops/pipelines"
-	}))
-
-	if gotPath != "/x/worktrees/ISA-18436/global-ops/pipelines" {
-		t.Fatalf("got path %q, want the entry's cwd passed through unmodified", gotPath)
-	}
-}
-
-func TestJumpToVSCodeSurfacesAFailureFromMycelium(t *testing.T) {
-	withFakes(t, func(path string) mycelium.Result {
-		return mycelium.Result{OK: false, Message: "couldn't open VS Code"}
-	}, nil)
-
-	result := To(entry(ancestry.VSCode, nil))
-
-	if result.OK {
-		t.Fatalf("want not ok, got %+v", result)
-	}
-	if result.Message != "couldn't open VS Code" {
-		t.Fatalf("got message %q", result.Message)
-	}
-}
-
-func TestJumpToVSCodeWithoutACwdFailsClearlyWithoutCallingMycelium(t *testing.T) {
-	called := false
-	withFakes(t, func(path string) mycelium.Result {
-		called = true
-		return mycelium.Result{OK: true}
-	}, nil)
-
-	result := To(entry(ancestry.VSCode, func(e *registry.RegistryEntry) { e.Cwd = "" }))
-
-	if result.OK {
-		t.Fatalf("want not ok, got %+v", result)
-	}
-	if !contains(result.Message, "working directory") {
-		t.Fatalf("got message %q, want it to mention working directory", result.Message)
-	}
-	if called {
-		t.Fatalf("want mycelium never called without a known cwd")
-	}
-}
-
-func TestJumpToGhosttyDelegatesToMyceliumWithTheEntrysTtyAndCwd(t *testing.T) {
-	var gotTty, gotPath string
-	withFakes(t, nil, func(tty, path string) mycelium.Result {
-		gotTty, gotPath = tty, path
-		return mycelium.Result{OK: true, Message: "Focused Ghostty window."}
-	})
-
-	result := To(entry(ancestry.Ghostty, nil))
-
-	if !result.OK {
-		t.Fatalf("want ok, got %+v", result)
-	}
-	if gotPath != "/Users/x/dotfiles" {
-		t.Fatalf("got path %q, want /Users/x/dotfiles", gotPath)
-	}
-	if gotTty != "s017" {
-		t.Fatalf("got tty %q, want the entry's tty s017", gotTty)
-	}
-}
-
-func TestJumpToGhosttyWithoutACwdFailsClearlyWithoutCallingMycelium(t *testing.T) {
-	called := false
-	withFakes(t, nil, func(tty, path string) mycelium.Result {
-		called = true
-		return mycelium.Result{OK: true}
-	})
-
-	result := To(entry(ancestry.Ghostty, func(e *registry.RegistryEntry) { e.Cwd = "" }))
-
-	if result.OK {
-		t.Fatalf("want not ok, got %+v", result)
-	}
-	if called {
-		t.Fatalf("want mycelium never called without a known cwd")
-	}
-}
-
-func TestJumpToUnknownSurfaceSaysSoWithoutCallingMycelium(t *testing.T) {
-	vscodeCalled, ghosttyCalled := false, false
-	withFakes(t, func(path string) mycelium.Result {
-		vscodeCalled = true
-		return mycelium.Result{OK: true}
-	}, func(tty, path string) mycelium.Result {
-		ghosttyCalled = true
-		return mycelium.Result{OK: true}
-	})
-
-	result := To(entry(ancestry.Unknown, nil))
-
-	if result.OK {
-		t.Fatalf("want not ok, got %+v", result)
-	}
-	if vscodeCalled || ghosttyCalled {
-		t.Fatalf("want neither mycelium function called for an unknown surface")
-	}
-}
-
-func contains(s, substr string) bool {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
+				got := To(registry.RegistryEntry{Surface: surface, Cwd: tc.cwd, Tty: tc.tty})
+				if got != tc.want {
+					t.Fatalf("To() = %+v, want %+v", got, tc.want)
+				}
+				if calls != tc.wantCalls {
+					t.Fatalf("OpenGhostty calls = %d, want %d", calls, tc.wantCalls)
+				}
+				if calls > 0 && (gotTty != tc.tty || gotPath != tc.cwd) {
+					t.Fatalf("OpenGhostty(%q, %q), want (%q, %q)", gotTty, gotPath, tc.tty, tc.cwd)
+				}
+			})
 		}
 	}
-	return false
 }
