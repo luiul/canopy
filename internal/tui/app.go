@@ -52,18 +52,24 @@ const notifyDuration = 4 * time.Second
 //
 // Order is deliberately urgency-first: State and Since (what needs you, and
 // for how long) come first, matching the top-to-bottom state-priority sort.
-// Kind identifies the agent, then Surface and Location show where it lives.
-// Model follows its location. CPU/RAM/Uptime and PID are secondary context.
-// Model and Location share surplus after useful text fits. Model gets
-// content priority over a long path. Neither has a hard growth ceiling.
-// Note: there is no leading cursor column. Selected rows are highlighted
-// via loam.ColorizeRows' post-render row highlight; see loam's doc.
+// Kind identifies the agent, then Surface and the identity block (Location,
+// Branch, TTY) show exactly where it lives, in the same grammar as the
+// Ghostty window title ("<path> • <branch> • <tty>", written by the
+// dotfiles session-title pi extension), so a row can be matched to its
+// window by eye. Model follows the identity block. CPU/RAM/Uptime and PID
+// are secondary context. Model and Location share surplus after useful text
+// fits. Model gets content priority over a long path. Neither has a hard
+// growth ceiling. Note: there is no leading cursor column. Selected rows
+// are highlighted via loam.ColorizeRows' post-render row highlight; see
+// loam's doc.
 const (
 	colState = iota
 	colSince
 	colKind
 	colSurface
 	colLocation
+	colBranch
+	colTTY
 	colModel
 	colCPU
 	colRAM
@@ -254,6 +260,8 @@ func defaultColumns() []table.Column {
 		{Title: "Kind", Width: 6}, // fits pi, pig, and claude
 		{Title: "Surface", Width: 8},
 		{Title: "Location", Width: locationNormalWidth},
+		{Title: "Branch", Width: branchNormalWidth},
+		{Title: "TTY", Width: ttyContentWidth},
 		{Title: "Model", Width: modelContentWidth + 1},
 		{Title: "CPU", Width: 4},
 		{Title: "RAM", Width: ramContentWidth},
@@ -965,12 +973,26 @@ const (
 	pidContentWidth     = 5
 	locationNormalWidth = 20
 	locationHardFloor   = 8
+	// branchNormalWidth is a cap, not a growth target: branch names vary
+	// widely ("main" to "prep-matilda-presentation"), so the cell text is
+	// tail-truncated to it (branchCellText) rather than measured into the
+	// allocator, keeping a long name from stealing flex space. The drag
+	// floor is a normal branch-name floor ("feature/x" fits), and the
+	// header (6) plus one fits above it.
+	branchNormalWidth = 10
+	branchHardFloor   = 7
+	// ttyContentWidth fits the widest short tty name ("ttys999"). tty
+	// numbers can exceed three digits under heavy terminal churn, but the
+	// allocator still measures real content per poll (columnPolicies), so
+	// a rare wider value widens the column for that poll only.
+	ttyContentWidth = 7
+	ttyHardFloor    = 4
 )
 
 // Drag floors and automatic hard floors must agree.
 func columnMinWidths() []int {
 	return []int{stateContentWidth, 6, kindDragFloor, surfaceContentWidth,
-		locationHardFloor, modelHardFloor, 4, ramContentWidth,
+		locationHardFloor, branchHardFloor, ttyHardFloor, modelHardFloor, 4, ramContentWidth,
 		uptimeContentWidth, pidContentWidth}
 }
 
@@ -990,7 +1012,8 @@ func (m Model) columnPolicies() []trellis.ColumnPolicy {
 	for _, e := range m.entries {
 		labels := []string{
 			stateCellText(e, now, m.blinks), sinceCellText(e, now), e.Kind,
-			surfaceLabel(e.Surface), location(e, m.home), modelCellText(e),
+			surfaceLabel(e.Surface), location(e, m.home), branchCellText(e),
+			ttyCellText(e), modelCellText(e),
 			cpuCellText(e), ramCellText(e), uptimeCellText(e), fmt.Sprint(e.Pid),
 		}
 		for i, label := range labels {

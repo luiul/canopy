@@ -53,6 +53,33 @@ func TestFocusMsgTriggersAnImmediatePoll(t *testing.T) {
 	}
 }
 
+func TestSortEntriesGroupsSameStateBySurfaceThenCwdThenTty(t *testing.T) {
+	// Same state, same surface: sessions in the same repo sit adjacent,
+	// and within a repo the tty order matches the Ghostty tab list.
+	a := entry(1, ancestry.Ghostty, "idle")
+	a.Cwd, a.Tty = "/Users/x/dotfiles", "ttys011"
+	b := entry(2, ancestry.Ghostty, "idle")
+	b.Cwd, b.Tty = "/Users/x/dotfiles", "ttys002"
+	c := entry(3, ancestry.Ghostty, "idle")
+	c.Cwd, c.Tty = "/Users/x/canopy", "ttys000"
+	d := entry(4, ancestry.VSCode, "idle")
+	d.Cwd = "/Users/x/dotfiles"
+	entries := []registry.RegistryEntry{a, b, c, d}
+
+	sortEntries(entries)
+
+	var got []int
+	for _, e := range entries {
+		got = append(got, e.Pid)
+	}
+	// "ghostty" < "vscode" as surfaces, then cwd groups the Ghostty rows
+	// (canopy before dotfiles), then tty orders within the dotfiles group.
+	want := []int{3, 2, 1, 4}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got order %v, want %v", got, want)
+	}
+}
+
 func TestSortEntriesRanksDoneAboveWorking(t *testing.T) {
 	entries := []registry.RegistryEntry{
 		entry(1, ancestry.Ghostty, "working"),
@@ -894,11 +921,13 @@ func TestMouseDragNowWorksOnLocationsOwnRightHandBorder(t *testing.T) {
 	cols := m.table.Columns()
 	_, originY := m.renderHeader()
 	borderX := locationBorderX(cols)
-	oldLocationWidth, oldModelWidth := cols[colLocation].Width, cols[colModel].Width
+	oldLocationWidth, oldBranchWidth := cols[colLocation].Width, cols[colBranch].Width
 
 	updated, _ := m.Update(tea.MouseMsg{X: borderX, Y: originY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	m = updated.(Model)
-	// Drag left: Location gives width to Model, its right-hand neighbor.
+	// Drag left: Location gives width to Branch, its right-hand neighbor
+	// in the identity block (Branch and TTY sit between Location and Model
+	// since the identity-block reorder).
 	updated, _ = m.Update(tea.MouseMsg{X: borderX - 4, Y: originY, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
 	m = updated.(Model)
 
@@ -906,8 +935,8 @@ func TestMouseDragNowWorksOnLocationsOwnRightHandBorder(t *testing.T) {
 	if got, want := gotCols[colLocation].Width, oldLocationWidth-4; got != want {
 		t.Fatalf("Location width = %d, want %d (its own border must respond to a drag now)", got, want)
 	}
-	if got, want := gotCols[colModel].Width, oldModelWidth+4; got != want {
-		t.Fatalf("Model width = %d, want %d", got, want)
+	if got, want := gotCols[colBranch].Width, oldBranchWidth+4; got != want {
+		t.Fatalf("Branch width = %d, want %d", got, want)
 	}
 }
 
@@ -945,7 +974,8 @@ func TestMouseDragBetweenTwoAlreadyMinimalColumnsIsANoOp(t *testing.T) {
 }
 
 func TestResizeColumnsNeverOverflowsTheTerminal(t *testing.T) {
-	// At 110 cells Location absorbs the deficit without hiding PID.
+	// At 110 cells Location has already hit its hard floor absorbing the
+	// identity block's fixed width, without hiding PID or overflowing.
 	m := New(999*time.Second, nil)
 	m.width, m.height = 110, 40
 	m.resizeColumns()
@@ -958,18 +988,30 @@ func TestResizeColumnsNeverOverflowsTheTerminal(t *testing.T) {
 	if total != m.width {
 		t.Fatalf("got total table width %d, want terminal width %d", total, m.width)
 	}
-	if got, want := cols[colLocation].Width, 13; got != want {
-		t.Fatalf("Location width = %d, want %d (below its floor of 20, but the table fits)", got, want)
+	if got, want := cols[colLocation].Width, 8; got != want {
+		t.Fatalf("Location width = %d, want %d (below its normal floor of 20, but the table fits)", got, want)
 	}
 
-	// Model gives up its normal target before compact fields or PID clip.
-	m.width = 95
-	m.resizeColumns()
-	if got := m.table.Columns()[colLocation].Width; got != 8 {
-		t.Fatalf("Location width = %d at width 95, want the hard floor 8", got)
+	// The exact fit boundary is the sum of every column's drag floor plus
+	// padding (94 cells with the identity block), computed from the same
+	// table the layout tests use rather than hardcoded, so a future column
+	// change moves it with the code. Below it the tooNarrow banner shows.
+	hard := loam.CellPadding * len(columnMinWidths())
+	for _, floor := range columnMinWidths() {
+		hard += floor
 	}
-	if got := layoutWidth(m.table.Columns()); got != 95 || m.tooNarrow {
-		t.Fatalf("95-cell layout must fit exactly, got %d tooNarrow=%v", got, m.tooNarrow)
+	m.width = hard
+	m.resizeColumns()
+	if got := m.table.Columns()[colLocation].Width; got != locationHardFloor {
+		t.Fatalf("Location width = %d at the boundary, want the hard floor %d", got, locationHardFloor)
+	}
+	if got := layoutWidth(m.table.Columns()); got != hard || m.tooNarrow {
+		t.Fatalf("%d-cell layout must fit exactly, got %d tooNarrow=%v", hard, got, m.tooNarrow)
+	}
+	m.width = hard - 1
+	m.resizeColumns()
+	if !m.tooNarrow {
+		t.Fatal("one cell below the boundary must flag tooNarrow")
 	}
 }
 

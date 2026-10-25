@@ -55,16 +55,16 @@ canopy's scope could stay exactly "agent sessions," nothing else.
 canopy — agent sessions on this machine
 5 sessions: 1 blocked · 1 error · 1 done · 1 working · 1 idle
 
-State      Since   Kind    Surface   Location                                  Model                               CPU   RAM    Uptime   PID
-blocked    40s     pi      VS Code   ~/projects/personal/canopy                 GPT-6.1 Sol (US) [amazon-bedrock]    0%    278M   1h       86872
+State      Since   Kind    Surface   Location                                  Branch             TTY      Model                               CPU   RAM    Uptime   PID
+blocked    40s     pi      VS Code   ~/projects/personal/canopy                 main               ttys017  GPT-6.1 Sol (US) [amazon-bedrock]    0%    278M   1h       86872
  ↳ Allow Bash: rm -rf node_modules?
-error      3m      pi      VS Code   …speed-up-ci/global-ops                    —                                   0%    140M   2h30m    9514
+error      3m      pi      VS Code   …speed-up-ci/global-ops                    global-ops         ttys009  —                                   0%    140M   2h30m    9514
  ↳ Rate limit exceeded: too many requests, please retry in 30 seconds
-done       8m      pi      Ghostty   ~/some/other/project                       —                                   0%    95M    1d       65834
+done       8m      pi      Ghostty   ~/some/other/project                       —                  ttys002  —                                   0%    95M    1d       65834
  ↳ sprint-planning · Fixed the flaky test; go test ./... green.
-working    12s     pi      VS Code   ~/projects/hellofresh/analytics            GPT-6 Luna (EU) [ai-model-router]      4%    310M   45m      90210
+working    12s     pi      VS Code   ~/projects/hellofresh/analytics            main               ttys014  GPT-6 Luna (EU) [ai-model-router]      4%    310M   45m      90210
  ↳ bash: npm run build
-idle       1h20m   pi      Ghostty   ~/projects/personal/harvest                —                                   0%    88M    2d       40211
+idle       1h20m   pi      Ghostty   ~/projects/personal/harvest                —                  ttys006  —                                   0%    88M    2d       40211
  ↳ import the harvest CSV exports
 
 ↑/↓ move · enter jump · x kill · p park · / filter · ? help · q quit
@@ -78,8 +78,10 @@ keybinding list as an overlay (any key closes it again).
 
 `/` filters the rows, the same gesture jira-today's fzf picker uses:
 typing narrows the table fuzzily (a subsequence match over the row's
-state, surface, location, kind, pid, and detail line — so `rate limit`
-finds the throttled session and `go test` the one running it), `enter`
+state, surface, location, kind, pid, branch, tty, and detail line — so
+`rate limit`
+finds the throttled session, `go test` the one running it, and `ttys002`
+the one window among several in the same repo), `enter`
 still jumps while the
 input is focused, and `esc` leaves the input with the filter still
 applied. A second `esc`, now back in normal mode, clears it. While the
@@ -105,15 +107,15 @@ testing, releasing) is written down once in
 
 Each internal column border can be dragged with the mouse. The two columns beside it trade width, so a drag does not change the table's total width. Canopy shares this behavior with understory through [`github.com/luiul/dashkit/trellis`](https://github.com/luiul/dashkit/tree/main/trellis). Header dividers mark the borders through [`loam.DrawHeaderBorders`](https://github.com/luiul/dashkit/tree/main/loam).
 
-The table fills the terminal width. State, Since, Kind, Surface, CPU, RAM, Uptime, and PID stay compact. Model and Location fit useful text first, then share spare space with equal weights. Filtering does not move borders because sizing uses the full current row set.
+The table fills the terminal width. State, Since, Kind, Surface, Branch, TTY, CPU, RAM, Uptime, and PID stay compact. Model and Location fit useful text first, then share spare space with equal weights. Filtering does not move borders because sizing uses the full current row set.
 
 Mouse choices survive polls and terminal resizes. New longer labels can truncate after a drag because the chosen proportions take priority. Width changes cancel an active gesture but keep its latest proportions. Height-only changes leave it intact. Preferences stay in memory only. Restart returns to automatic sizing.
 
 The selected row has a subtle grey background across the table. State keeps its own color on that row. Canopy shares this rendering with understory through [`github.com/luiul/dashkit/loam`](https://github.com/luiul/dashkit/tree/main/loam).
 
-Columns follow the scan order: State and Since show what needs attention, then Kind identifies the agent. Surface and Location show where it lives before Model shows what it uses. CPU, RAM, Uptime, and PID provide secondary details at the right. CPU and RAM come from `ps`. Uptime is the process age, not its time in the current state.
+Columns follow the scan order: State and Since show what needs attention, then Kind identifies the agent. Surface and the identity block (Location, Branch, TTY) show where it lives, in the same grammar as the Ghostty window title (`<path> • <branch> • <tty>`, written by the dotfiles session-title pi extension), so a row can be matched to its tab by eye: TTY carries the exact short tty name the tab title shows, and Branch is read from the session cwd's `.git/HEAD` by file reads alone (a worktree's `gitdir:` pointer included), no `git` subprocess per poll. Model shows what the session uses, and CPU, RAM, Uptime, and PID provide secondary details at the right. CPU and RAM come from `ps`. Uptime is the process age, not its time in the current state.
 
-Model shows the selected name and provider when the companion extension reports them. Missing reports show `—`. Location shortens the home-directory prefix to `~`, and when the column is too narrow for the path it truncates the *head* (`…speed-up-ci/global-ops`), because the tail is what identifies the session — the head is the same `~/worktrees/…` prefix on nearly every row. Model has content priority over a long path. Normal targets are 28 cells for Model and 20 for Location, with no growth ceilings. On narrow terminals, Location can shrink to eight cells, then Model can shrink to its five-cell header floor before compact fields give up space. Below the combined 77-cell hard minimum, a notice explains that the table is clipped. No columns are hidden.
+Model shows the selected name and provider when the companion extension reports them. Missing reports show `—`, as do unknown Branch and TTY values. Location shortens the home-directory prefix to `~`, and when the column is too narrow for the path it truncates the *head* (`…speed-up-ci/global-ops`), because the tail is what identifies the session — the head is the same `~/worktrees/…` prefix on nearly every row. Branch truncates the same way at ten cells, keeping the distinctive tail (`…presentation`). Model has content priority over a long path. Normal targets are 28 cells for Model and 20 for Location, with no growth ceilings. On narrow terminals, Location can shrink to eight cells, then Model can shrink to its five-cell header floor before compact fields give up space. Below the combined 94-cell hard minimum (twelve columns' floors plus cell padding), a notice explains that the table is clipped. No columns are hidden. The identity block costs about nineteen cells of fixed width, so the guarantee that every reported model label fits in full now starts at 160 columns; below that Model is the first column to truncate.
 
 State is color-coded: orange for `blocked`, bold red for `error`, bold
 green for `done`, yellow for `working`, dim for `idle`/`unknown`, cyan
@@ -153,7 +155,10 @@ already sitting done at that point (the first blink burst treats "just
 discovered" the same as "just transitioned", too). Sessions are sorted
 most-actionable first: `blocked`, then `error`, `done`, `working`,
 `idle`, `stopped`, and `unknown`. `parked` sits below all of them, on
-the shelf (see "Parked sessions" below).
+the shelf (see "Parked sessions" below). Within a state, sessions in
+the same repo sit adjacent (grouped by surface, then location, then
+tty), mirroring the identity grammar of the Ghostty window title, so
+the eye can scan a repo cluster and match each row to its tab.
 Pass `--no-color` (or set `NO_COLOR`) to disable the color/blink treatment
 and get plain text, and `--no-bell` to disable just the bell.
 
@@ -456,10 +461,13 @@ the same as everything else canopy reads.
   "no sessions."
 - Ghostty jump-to matches by window title (the dotfiles zsh title hook
   renders the work-tree root plus branch, and the session-title pi
-  extension keeps that grammar while an agent runs), not by tty/pid:
+  extension keeps that grammar while an agent runs, appending the
+  session's tty, the same value the dashboard's TTY column shows), not
+  by tty/pid:
   Ghostty's AppleScript `tty`/`pid` properties don't work as of 1.3.1,
   and the old working-directory match misfocused or opened duplicates.
-  Ambiguous if two windows share a work-tree root and branch. If no open
+  The tty in the title disambiguates two windows sharing a work-tree
+  root and branch. If no open
   window matches anymore (e.g. it was closed), Enter opens a brand-new
   Ghostty window at that path instead. This applies to every Surface,
   including VS Code and unknown hosts. One gap: a background tab's title isn't listed by System

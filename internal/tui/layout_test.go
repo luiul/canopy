@@ -23,17 +23,19 @@ func TestColumnOrderKeepsLocationBeforeModelAndResources(t *testing.T) {
 	for _, c := range m.table.Columns() {
 		titles = append(titles, c.Title)
 	}
-	want := []string{"State", "Since", "Kind", "Surface", "Location", "Model", "CPU", "RAM", "Uptime", "PID"}
+	want := []string{"State", "Since", "Kind", "Surface", "Location", "Branch", "TTY", "Model", "CPU", "RAM", "Uptime", "PID"}
 	if !reflect.DeepEqual(titles, want) {
 		t.Fatalf("column order = %v, want %v", titles, want)
 	}
 	e := entry(54321, ancestry.VSCode, "working")
 	e.Kind, e.ModelName, e.ModelProvider = "pig", "GPT-6.1 Sol (US)", "amazon-bedrock"
+	e.Branch = "main"
 	m.applyEntries([]registry.RegistryEntry{e})
 	row := m.table.Rows()[0]
 	checks := map[int]string{
 		colState: "working", colKind: "pig", colModel: modelCellText(e),
 		colSurface: "VS Code", colLocation: location(e, m.home),
+		colBranch: "main", colTTY: "s017",
 		colCPU: cpuCellText(e), colRAM: ramCellText(e), colUptime: uptimeCellText(e), colPID: "54321",
 	}
 	for i, want := range checks {
@@ -57,7 +59,12 @@ func sendLayoutMouse(m Model, x, y int, action tea.MouseAction, button tea.Mouse
 }
 
 func TestModelWidthFitsReportedLabelsAtNormalTerminalWidths(t *testing.T) {
-	for _, width := range []int{120, 140, 180, 240} {
+	// The identity block (Branch, TTY) costs ~19 cells of fixed width, so
+	// the full-label guarantee now starts at 160 columns. Below that the
+	// table must still fit exactly and keep the rightmost PID visible,
+	// with Model the first column to truncate (it yields before any
+	// compact field clips).
+	for _, width := range []int{160, 180, 240} {
 		for _, model := range []struct{ name, provider string }{
 			{"GPT-6.1 Sol", "ai-model-router"},
 			{"GPT-6.1 Sol (US)", "amazon-bedrock"},
@@ -82,6 +89,22 @@ func TestModelWidthFitsReportedLabelsAtNormalTerminalWidths(t *testing.T) {
 				}
 			})
 		}
+	}
+	for _, width := range []int{120, 140} {
+		t.Run(fmt.Sprintf("%d/fits-and-pid-visible", width), func(t *testing.T) {
+			m := New(time.Second, nil)
+			m.width, m.height = width, 35
+			e := entry(54321, ancestry.VSCode, "working")
+			e.Cwd = m.home + "/" + strings.Repeat("long-path/", 20)
+			e.ModelName, e.ModelProvider = "GPT-6.1 Sol (US)", "amazon-bedrock"
+			m.applyEntries([]registry.RegistryEntry{e})
+			if got := layoutWidth(m.table.Columns()); got != width {
+				t.Fatalf("table width = %d, want %d", got, width)
+			}
+			if !strings.Contains(m.View(), "54321") {
+				t.Fatalf("View clipped final PID: %q", m.View())
+			}
+		})
 	}
 }
 

@@ -203,14 +203,12 @@ func TestFilterCursorFollowsTheSameEntryWhileTyping(t *testing.T) {
 	c := entry(3, ancestry.Ghostty, "idle")
 	c.Cwd = "/Users/x/canopy"
 	entries = append(entries, c)
-	m.applyEntries(entries) // sorted: pid 2 (working), then pid 1, pid 3
+	m.applyEntries(entries) // sorted: pid 2 (working), then pid 3, pid 1 (cwd sort)
 
-	// Select pid 3 (last row), then filter to the canopy rows: pid 3 is
+	// Select pid 3 (the middle row), then filter to the canopy rows: pid 3 is
 	// still displayed, so the cursor must follow it rather than staying
-	// on row index 2 (which no longer exists).
+	// on row index 1's old position.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = updated.(Model)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	m = updated.(Model)
 	if got, _ := m.selectedEntry(); got.Pid != 3 {
 		t.Fatalf("selected = %+v before filtering, want pid 3", got)
@@ -222,6 +220,34 @@ func TestFilterCursorFollowsTheSameEntryWhileTyping(t *testing.T) {
 
 	if got, ok := m.selectedEntry(); !ok || got.Pid != 3 {
 		t.Fatalf("selected = %+v after filtering, want the cursor to have followed pid 3", got)
+	}
+}
+
+func TestFilterMatchesBranchAndTty(t *testing.T) {
+	// Branch and TTY are stable identity columns, so they are filterable:
+	// "/ttys002" isolates one window among several in the same repo (the
+	// Ghostty title match by eye), "/sandbox" the one agent on that branch.
+	entries := filterEntries()
+	entries[0].Tty, entries[0].Branch = "ttys002", "main"
+	entries[1].Tty, entries[1].Branch = "ttys009", "sandbox"
+
+	for _, tc := range []struct {
+		query string
+		want  string // the matching row's PID cell
+	}{
+		{"/ttys002", "1"},
+		{"/sandbox", "2"},
+		{"/main", "1"},
+	} {
+		m := New(999, nil)
+		m.applyEntries(entries)
+		updated, _ := m.Update(keyMsg("/"))
+		m = updated.(Model)
+		m = typeRunes(m, tc.query[1:]) // without the leading slash, typed after entering filter mode
+		rows := m.table.Rows()
+		if len(rows) != 1 || rows[0][colPID] != tc.want {
+			t.Errorf("query %q: rows = %v, want the single pid %s row", tc.query, rows, tc.want)
+		}
 	}
 }
 

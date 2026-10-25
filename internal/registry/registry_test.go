@@ -2,6 +2,8 @@ package registry
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -148,6 +150,84 @@ func withResolveCwds(t *testing.T, fn func([]int) map[int]string) {
 	previous := resolveCwds
 	resolveCwds = fn
 	t.Cleanup(func() { resolveCwds = previous })
+}
+
+func withResolveBranch(t *testing.T, fn func(string) string) {
+	t.Helper()
+	previous := resolveBranch
+	resolveBranch = fn
+	t.Cleanup(func() { resolveBranch = previous })
+}
+
+func TestReadGitBranchReadsNormalReposWorktreesAndDetachedHeads(t *testing.T) {
+	// A normal repo: .git is a directory whose HEAD names the branch.
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readGitBranch(repo); got != "main" {
+		t.Fatalf("normal repo branch = %q, want main", got)
+	}
+
+	// A worktree: .git is a pointer file to the main repo's per-worktree
+	// gitdir, whose own HEAD carries the worktree's branch (slash-bearing
+	// branch names included, verbatim after refs/heads/).
+	main := t.TempDir()
+	tree := t.TempDir()
+	gitdir := filepath.Join(main, ".git", "worktrees", "sandbox")
+	if err := os.MkdirAll(gitdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, ".git"), []byte("gitdir: "+gitdir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitdir, "HEAD"), []byte("ref: refs/heads/feature/speed-up-ci\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readGitBranch(tree); got != "feature/speed-up-ci" {
+		t.Fatalf("worktree branch = %q, want feature/speed-up-ci", got)
+	}
+
+	// A detached HEAD: no ref line, so the commit short sha stands in.
+	detached := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(detached, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(detached, ".git", "HEAD"), []byte("abcdef1234567890abcdef1234567890abcdef12\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readGitBranch(detached); got != "abcdef1" {
+		t.Fatalf("detached branch = %q, want the short sha abcdef1", got)
+	}
+
+	// Not a repo, and no cwd at all: best-effort "" everywhere.
+	if got := readGitBranch(t.TempDir()); got != "" {
+		t.Fatalf("empty-repo branch = %q, want empty", got)
+	}
+	if got := readGitBranch(""); got != "" {
+		t.Fatalf("empty-cwd branch = %q, want empty", got)
+	}
+}
+
+func TestExternalEntriesResolvesBranchFromTheCwd(t *testing.T) {
+	withResolveCwds(t, func(pids []int) map[int]string { return map[int]string{42: "/x"} })
+	withPistatusRead(t, func(int, time.Time) (pistatus.Status, bool) { return pistatus.Status{}, false })
+	withResolveBranch(t, func(cwd string) string {
+		if cwd != "/x" {
+			t.Errorf("resolveBranch called with cwd %q, want /x", cwd)
+		}
+		return "main"
+	})
+
+	matches := []scan.ProcessMatch{{Pid: 42, Tty: "ttys000", Kind: "claude", Args: "claude"}}
+	got := externalEntries(matches, map[int]scan.ProcessInfo{})
+
+	if len(got) != 1 || got[0].Branch != "main" {
+		t.Fatalf("got %+v, want one entry carrying branch main", got)
+	}
 }
 
 func withPistatusRead(t *testing.T, fn func(int, time.Time) (pistatus.Status, bool)) {

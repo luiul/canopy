@@ -16,6 +16,9 @@ package registry
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,6 +43,58 @@ var pistatusReadModel = pistatus.ReadModel
 // tests so externalEntries can be exercised without shelling out to lsof.
 var resolveCwds = scan.ResolveCwds
 
+// resolveBranch is a package-level seam onto readGitBranch, swapped out in
+// tests so externalEntries can be exercised without touching the
+// filesystem, the same seam pattern as resolveCwds above.
+var resolveBranch = readGitBranch
+
+// readGitBranch resolves the checked-out branch of cwd by reading files
+// only, no subprocess (one or two small reads per row per poll, far cheaper
+// than shelling out to git): cwd/.git/HEAD for a normal repo, or, when
+// .git is a worktree pointer file ("gitdir: <path>"), that gitdir's HEAD
+// (the per-worktree HEAD a worktree actually checks out). "ref:"
+// prefixed HEADs yield the branch name after refs/heads/; anything else is
+// a detached HEAD, shown as its commit short sha. "" for anything
+// unreadable: not a repo, HEAD missing, permissions — best-effort, the
+// dashboard shows "—", never a warning.
+func readGitBranch(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	gitPath := filepath.Join(cwd, ".git")
+	info, err := os.Stat(gitPath)
+	if err != nil {
+		return ""
+	}
+	headPath := filepath.Join(gitPath, "HEAD")
+	if !info.IsDir() {
+		// A worktree: .git is a pointer file to the main repo's
+		// .git/worktrees/<name> dir, whose own HEAD carries the branch.
+		data, err := os.ReadFile(gitPath)
+		if err != nil {
+			return ""
+		}
+		line := strings.TrimSpace(string(data))
+		dir, ok := strings.CutPrefix(line, "gitdir:")
+		if !ok {
+			return ""
+		}
+		headPath = filepath.Join(strings.TrimSpace(dir), "HEAD")
+	}
+	data, err := os.ReadFile(headPath)
+	if err != nil {
+		return ""
+	}
+	head := strings.TrimSpace(string(data))
+	if ref, ok := strings.CutPrefix(head, "ref: refs/heads/"); ok {
+		return ref
+	}
+	if len(head) >= 7 {
+		return head[:7] // detached HEAD: commit short sha
+	}
+	return ""
+}
+
 // scanAgentProcesses and scanProcessTable are package-level seams onto
 // scan's own exec.Command wrappers, swapped out in tests so PollOnce's
 // warning-surfacing and merge logic (see PollResult) can be exercised
@@ -57,9 +112,16 @@ const MissLimit = 1
 
 // RegistryEntry is one row of the dashboard.
 type RegistryEntry struct {
-	Pid     int
-	Kind    string
-	Tty     string
+	Pid  int
+	Kind string
+	Tty  string
+	// Branch is the git branch of the entry's Cwd, read from .git/HEAD
+	// ("" means unknown: not a repo, or HEAD unreadable). The branch
+	// component of the Ghostty window-title grammar — the session-title
+	// pi extension renders "<path> • <branch> • <tty>" in every Ghostty
+	// tab — so the dashboard can show the same identity triple it will
+	// look for when jumping (see internal/jump).
+	Branch  string
 	Cwd     string // "" means unknown
 	Surface ancestry.Surface
 	State   string
@@ -217,11 +279,13 @@ func externalEntries(matches []scan.ProcessMatch, table map[int]scan.ProcessInfo
 			uptime = info.Etime
 			stopped = info.Stopped()
 		}
+		cwd := cwdByPid[m.Pid]
 		entry := RegistryEntry{
 			Pid:        m.Pid,
 			Kind:       m.Kind,
 			Tty:        m.Tty,
-			Cwd:        cwdByPid[m.Pid],
+			Cwd:        cwd,
+			Branch:     resolveBranch(cwd),
 			Surface:    surface,
 			State:      "unknown",
 			CPUPercent: cpuPercent,

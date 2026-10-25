@@ -149,8 +149,11 @@ func parkFollowedUp(e registry.RegistryEntry) bool {
 }
 
 // sortEntries orders entries by statePriority, most actionable first, then
-// grouped by surface, then stable by pid. Ranks by displayState, so a
-// suspended row sorts as stopped and a shelved one as parked, rather
+// grouped by surface, then grouped by cwd so sessions in the same repo sit
+// adjacent (mirroring the identity grammar of the Ghostty window title:
+// path, then branch, then tty — the same clustering the eye uses to match a
+// row to its tab), then by tty, then stable by pid. Ranks by displayState,
+// so a suspended row sorts as stopped and a shelved one as parked, rather
 // than by the state pistatus last reported for either.
 func sortEntries(entries []registry.RegistryEntry) {
 	sort.SliceStable(entries, func(i, j int) bool {
@@ -161,8 +164,11 @@ func sortEntries(entries []registry.RegistryEntry) {
 		if a.Surface != b.Surface {
 			return a.Surface < b.Surface
 		}
-		if a.Kind != b.Kind {
-			return a.Kind < b.Kind
+		if a.Cwd != b.Cwd {
+			return a.Cwd < b.Cwd
+		}
+		if a.Tty != b.Tty {
+			return a.Tty < b.Tty
 		}
 		return a.Pid < b.Pid
 	})
@@ -190,12 +196,13 @@ func (m *Model) refreshCursorTag() {
 // filterCells are the cell strings a filterQuery is matched against (see
 // github.com/luiul/dashkit/sieve): the row's stable text columns, which
 // are State's display word, Surface, Location (the full path, not the
-// tail-truncated cell), Kind, PID, and the composed detail line (so
-// "/rate limit" finds the throttled row and "/go test" the row running
-// it). The volatile columns (Since, CPU, RAM, Uptime) are deliberately
-// excluded: their values tick over under the user's fingers, so a row
-// would match-or-not from one poll to the next for reasons invisible in
-// the query.
+// tail-truncated cell), Kind, PID, Branch, and TTY (so "/ttys002" finds
+// the one window among several in the same repo), plus the composed detail
+// line (so "/rate limit" finds the throttled row and "/go test" the row
+// running it). The volatile columns (Since, CPU, RAM, Uptime) are
+// deliberately excluded: their values tick over under the user's fingers,
+// so a row would match-or-not from one poll to the next for reasons
+// invisible in the query.
 func filterCells(e registry.RegistryEntry, home string) []string {
 	return []string{
 		displayState(e),
@@ -203,6 +210,8 @@ func filterCells(e registry.RegistryEntry, home string) []string {
 		location(e, home),
 		e.Kind,
 		fmt.Sprintf("%d", e.Pid),
+		e.Branch,
+		e.Tty,
 		detailLineText(e),
 	}
 }
@@ -219,7 +228,7 @@ func buildRows(entries []registry.RegistryEntry, cursor int, home string, locati
 	if len(entries) == 0 {
 		// Keep empty-state messages in Location, next to the session paths.
 		// An active filter says why no rows remain and how to clear it.
-		placeholder := table.Row{"", "", "", "", "", "", "", "", "", ""}
+		placeholder := table.Row{"", "", "", "", "", "", "", "", "", "", "", ""}
 		if filterQuery != "" {
 			placeholder[colLocation] = fmt.Sprintf("no sessions match filter %q (esc clears)", filterQuery)
 		} else {
@@ -235,6 +244,8 @@ func buildRows(entries []registry.RegistryEntry, cursor int, home string, locati
 			e.Kind,
 			surfaceLabel(e.Surface),
 			locationCellText(e, home, locationWidth),
+			branchCellText(e),
+			ttyCellText(e),
 			modelCellText(e),
 			cpuCellText(e),
 			ramCellText(e),
@@ -243,6 +254,34 @@ func buildRows(entries []registry.RegistryEntry, cursor int, home string, locati
 		}
 	}
 	return rows
+}
+
+// branchCellText is the Branch column's plain-text cell: the entry's git
+// branch, tail-truncated to branchNormalWidth (the tail is the distinctive
+// part of a branch name: "…presentation" beats "prep-mat…"), "—" when
+// unknown (not a repo, HEAD unreadable, or a non-pi kind whose cwd isn't a
+// repo). Tail-truncated here rather than measured into columnPolicies so a
+// long name can't steal flex space from Location and Model; the truncation
+// cap and the column's normal width are the same constant.
+func branchCellText(e registry.RegistryEntry) string {
+	if e.Branch == "" {
+		return "—"
+	}
+	return loam.TruncateHead(e.Branch, branchNormalWidth)
+}
+
+// ttyCellText is the TTY column's plain-text cell: the controlling
+// terminal's short name, verbatim in the same form `ps -o tty=` reports
+// and the session-title pi extension writes into the Ghostty window title
+// ("ttys002") — the exact string to look for in a tab title to match this
+// row to its window, and the string internal/jump hands to mycelium for
+// the same match. "—" when unknown (should not happen: the scan skips
+// processes without a controlling terminal).
+func ttyCellText(e registry.RegistryEntry) string {
+	if e.Tty == "" {
+		return "—"
+	}
+	return e.Tty
 }
 
 // modelCellText displays pi's selected model and provider. Unknown models
