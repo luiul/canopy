@@ -22,7 +22,7 @@ jobs:
           go build -ldflags "-X main.version=${VERSION}" -o dist/canopy ./cmd/canopy
           tar -C dist -czf dist/canopy-${GITHUB_REF_NAME}-darwin-$(go env GOARCH).tar.gz canopy
       - name: Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*.tar.gz
           generate_release_notes: true
